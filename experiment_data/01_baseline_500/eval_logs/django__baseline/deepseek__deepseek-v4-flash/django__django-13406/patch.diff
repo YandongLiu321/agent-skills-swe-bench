@@ -1,0 +1,34 @@
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index b48d0df9c0..c0f780ac27 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -210,6 +210,11 @@ class QuerySet:
+ 
+     @query.setter
+     def query(self, value):
++        if getattr(value, 'values_select', ()):
++            # Restore values()/values_list() state when only Query (rather than
++            # QuerySet) was pickled.
++            self._iterable_class = getattr(value, '_iterable_class', ValuesIterable)
++            self._fields = getattr(value, '_fields', None)
+         self._query = value
+ 
+     def as_manager(cls):
+@@ -829,6 +834,8 @@ class QuerySet:
+         fields += tuple(expressions)
+         clone = self._values(*fields, **expressions)
+         clone._iterable_class = ValuesIterable
++        clone.query._fields = clone._fields
++        clone.query._iterable_class = clone._iterable_class
+         return clone
+ 
+     def values_list(self, *fields, flat=False, named=False):
+@@ -860,6 +867,8 @@ class QuerySet:
+             else FlatValuesListIterable if flat
+             else ValuesListIterable
+         )
++        clone.query._fields = clone._fields
++        clone.query._iterable_class = clone._iterable_class
+         return clone
+ 
+     def dates(self, field_name, kind, order='ASC'):

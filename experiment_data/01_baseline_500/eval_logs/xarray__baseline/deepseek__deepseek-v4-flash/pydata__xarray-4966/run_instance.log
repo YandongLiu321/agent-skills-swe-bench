@@ -1,0 +1,110 @@
+2026-10-04 14:59:44,279 - INFO - Creating container for pydata__xarray-4966...
+2026-10-04 14:59:44,390 - INFO - Container for pydata__xarray-4966 created: f03d3bb9199161c9d2acef90cf21f32c8c84aadbc9151cf60f550f18b91bd42f
+2026-10-04 14:59:44,616 - INFO - Container for pydata__xarray-4966 started: f03d3bb9199161c9d2acef90cf21f32c8c84aadbc9151cf60f550f18b91bd42f
+2026-10-04 14:59:44,619 - INFO - Intermediate patch for pydata__xarray-4966 written to logs\run_evaluation\xarray__baseline\deepseek__deepseek-v4-flash\pydata__xarray-4966\patch.diff, now applying to container...
+2026-10-04 14:59:44,740 - INFO - >>>>> Applied Patch:
+Checking patch xarray/coding/variables.py...
+Applied patch xarray/coding/variables.py cleanly.
+
+2026-10-04 14:59:44,900 - INFO - Git diff before:
+diff --git a/xarray/coding/variables.py b/xarray/coding/variables.py
+index b035ff82..20c6ffc8 100644
+--- a/xarray/coding/variables.py
++++ b/xarray/coding/variables.py
+@@ -292,13 +292,24 @@ class UnsignedIntegerCoder(VariableCoder):
+         # https://www.unidata.ucar.edu/software/netcdf/docs/BestPractices.html
+         #     "_Unsigned = "true" to indicate that
+         #      integer data should be treated as unsigned"
+-        if encoding.get("_Unsigned", "false") == "true":
++        if encoding.get("_Unsigned") == "true":
+             pop_to(encoding, attrs, "_Unsigned")
+             signed_dtype = np.dtype("i%s" % data.dtype.itemsize)
+             if "_FillValue" in attrs:
+                 new_fill = signed_dtype.type(attrs["_FillValue"])
+                 attrs["_FillValue"] = new_fill
+             data = duck_array_ops.around(data).astype(signed_dtype)
++        elif encoding.get("_Unsigned") == "false":
++            # The netCDF-C library and THREDDS use "_Unsigned = false"
++            # to indicate that integer data stored as unsigned should be
++            # interpreted as signed.
++            encoded_dtype = np.dtype(encoding.get("dtype", data.dtype))
++            if encoded_dtype.kind == "u":
++                pop_to(encoding, attrs, "_Unsigned")
++                if "_FillValue" in attrs:
++                    new_fill = encoded_dtype.type(attrs["_FillValue"])
++                    attrs["_FillValue"] = new_fill
++                data = duck_array_ops.around(data).astype(encoded_dtype)
+ 
+         return Variable(dims, data, attrs, encoding)
+ 
+@@ -316,6 +327,14 @@ class UnsignedIntegerCoder(VariableCoder):
+                     if "_FillValue" in attrs:
+                         new_fill = unsigned_dtype.type(attrs["_FillValue"])
+                         attrs["_FillValue"] = new_fill
++            elif data.dtype.kind == "u":
++                if unsigned == "false":
++                    signed_dtype = np.dtype("i%s" % data.dtype.itemsize)
++                    transform = partial(np.asarray, dtype=signed_dtype)
++                    data = lazy_elemwise_func(data, transform, signed_dtype)
++                    if "_FillValue" in attrs:
++                        new_fill = signed_dtype.type(attrs["_FillValue"])
++                        attrs["_FillValue"] = new_fill
+             else:
+                 warnings.warn(
+                     "variable %r has _Unsigned attribute but is not "
+2026-10-04 14:59:44,901 - INFO - Eval script for pydata__xarray-4966 written to logs\run_evaluation\xarray__baseline\deepseek__deepseek-v4-flash\pydata__xarray-4966\eval.sh; copying to container...
+2026-10-04 14:59:56,457 - INFO - Test runtime: 11.50 seconds
+2026-10-04 14:59:56,459 - INFO - Test output for pydata__xarray-4966 written to logs\run_evaluation\xarray__baseline\deepseek__deepseek-v4-flash\pydata__xarray-4966\test_output.txt
+2026-10-04 14:59:56,515 - INFO - Git diff after:
+diff --git a/xarray/coding/variables.py b/xarray/coding/variables.py
+index b035ff82..20c6ffc8 100644
+--- a/xarray/coding/variables.py
++++ b/xarray/coding/variables.py
+@@ -292,13 +292,24 @@ class UnsignedIntegerCoder(VariableCoder):
+         # https://www.unidata.ucar.edu/software/netcdf/docs/BestPractices.html
+         #     "_Unsigned = "true" to indicate that
+         #      integer data should be treated as unsigned"
+-        if encoding.get("_Unsigned", "false") == "true":
++        if encoding.get("_Unsigned") == "true":
+             pop_to(encoding, attrs, "_Unsigned")
+             signed_dtype = np.dtype("i%s" % data.dtype.itemsize)
+             if "_FillValue" in attrs:
+                 new_fill = signed_dtype.type(attrs["_FillValue"])
+                 attrs["_FillValue"] = new_fill
+             data = duck_array_ops.around(data).astype(signed_dtype)
++        elif encoding.get("_Unsigned") == "false":
++            # The netCDF-C library and THREDDS use "_Unsigned = false"
++            # to indicate that integer data stored as unsigned should be
++            # interpreted as signed.
++            encoded_dtype = np.dtype(encoding.get("dtype", data.dtype))
++            if encoded_dtype.kind == "u":
++                pop_to(encoding, attrs, "_Unsigned")
++                if "_FillValue" in attrs:
++                    new_fill = encoded_dtype.type(attrs["_FillValue"])
++                    attrs["_FillValue"] = new_fill
++                data = duck_array_ops.around(data).astype(encoded_dtype)
+ 
+         return Variable(dims, data, attrs, encoding)
+ 
+@@ -316,6 +327,14 @@ class UnsignedIntegerCoder(VariableCoder):
+                     if "_FillValue" in attrs:
+                         new_fill = unsigned_dtype.type(attrs["_FillValue"])
+                         attrs["_FillValue"] = new_fill
++            elif data.dtype.kind == "u":
++                if unsigned == "false":
++                    signed_dtype = np.dtype("i%s" % data.dtype.itemsize)
++                    transform = partial(np.asarray, dtype=signed_dtype)
++                    data = lazy_elemwise_func(data, transform, signed_dtype)
++                    if "_FillValue" in attrs:
++                        new_fill = signed_dtype.type(attrs["_FillValue"])
++                        attrs["_FillValue"] = new_fill
+             else:
+                 warnings.warn(
+                     "variable %r has _Unsigned attribute but is not "
+2026-10-04 14:59:56,515 - INFO - Grading answer for pydata__xarray-4966...
+2026-10-04 14:59:56,516 - INFO - report: {'pydata__xarray-4966': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['xarray/tests/test_coding.py::test_decode_signed_from_unsigned[1]', 'xarray/tests/test_coding.py::test_decode_signed_from_unsigned[2]', 'xarray/tests/test_coding.py::test_decode_signed_from_unsigned[4]', 'xarray/tests/test_coding.py::test_decode_signed_from_unsigned[8]'], 'failure': []}, 'PASS_TO_PASS': {'success': ['xarray/tests/test_coding.py::test_CFMaskCoder_decode', 'xarray/tests/test_coding.py::test_CFMaskCoder_encode_missing_fill_values_conflict[numeric-with-dtype]', 'xarray/tests/test_coding.py::test_CFMaskCoder_encode_missing_fill_values_conflict[numeric-without-dtype]', 'xarray/tests/test_coding.py::test_CFMaskCoder_encode_missing_fill_values_conflict[times-with-dtype]', 'xarray/tests/test_coding.py::test_CFMaskCoder_missing_value', 'xarray/tests/test_coding.py::test_CFMaskCoder_decode_dask', 'xarray/tests/test_coding.py::test_coder_roundtrip', 'xarray/tests/test_coding.py::test_scaling_converts_to_float32[u1]', 'xarray/tests/test_coding.py::test_scaling_converts_to_float32[u2]', 'xarray/tests/test_coding.py::test_scaling_converts_to_float32[i1]', 'xarray/tests/test_coding.py::test_scaling_converts_to_float32[i2]', 'xarray/tests/test_coding.py::test_scaling_converts_to_float32[f2]', 'xarray/tests/test_coding.py::test_scaling_converts_to_float32[f4]', 'xarray/tests/test_coding.py::test_scaling_offset_as_list[0.1-10]', 'xarray/tests/test_coding.py::test_scaling_offset_as_list[0.1-scale_factor1]', 'xarray/tests/test_coding.py::test_scaling_offset_as_list[add_offset1-10]', 'xarray/tests/test_coding.py::test_scaling_offset_as_list[add_offset1-scale_factor1]', 'xarray/tests/test_coding.py::test_decode_unsigned_from_signed[1]', 'xarray/tests/test_coding.py::test_decode_unsigned_from_signed[2]', 'xarray/tests/test_coding.py::test_decode_unsigned_from_signed[4]', 'xarray/tests/test_coding.py::test_decode_unsigned_from_signed[8]'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pydata__xarray-4966: resolved: True
+2026-10-04 14:59:56,516 - INFO - Attempting to stop container sweb.eval.pydata__xarray-4966.xarray__baseline...
+2026-10-04 15:00:11,780 - INFO - Container sweb.eval.pydata__xarray-4966.xarray__baseline stopped successfully.
+2026-10-04 15:00:11,780 - INFO - Attempting to remove container sweb.eval.pydata__xarray-4966.xarray__baseline...
+2026-10-04 15:00:11,868 - INFO - Container sweb.eval.pydata__xarray-4966.xarray__baseline removed successfully.

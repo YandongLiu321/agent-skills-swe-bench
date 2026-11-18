@@ -1,0 +1,472 @@
+2026-10-07 00:29:14,972 - INFO - Creating container for django__django-15930...
+2026-10-07 00:29:15,020 - INFO - Container for django__django-15930 created: e36599c621950c7cbb102546d6671819bf7d87fd01aea92ee1f7c9ca02f2ea59
+2026-10-07 00:29:15,134 - INFO - Container for django__django-15930 started: e36599c621950c7cbb102546d6671819bf7d87fd01aea92ee1f7c9ca02f2ea59
+2026-10-07 00:29:15,136 - INFO - Intermediate patch for django__django-15930 written to logs\run_evaluation\django__django-verification\deepseek__deepseek-v4-flash\django__django-15930\patch.diff, now applying to container...
+2026-10-07 00:29:15,219 - INFO - >>>>> Applied Patch:
+Checking patch django/core/exceptions.py...
+Checking patch django/db/backends/mysql/compiler.py...
+Checking patch django/db/models/expressions.py...
+Checking patch django/db/models/query_utils.py...
+Checking patch django/db/models/sql/compiler.py...
+Checking patch django/db/models/sql/where.py...
+Applied patch django/core/exceptions.py cleanly.
+Applied patch django/db/backends/mysql/compiler.py cleanly.
+Applied patch django/db/models/expressions.py cleanly.
+Applied patch django/db/models/query_utils.py cleanly.
+Applied patch django/db/models/sql/compiler.py cleanly.
+Applied patch django/db/models/sql/where.py cleanly.
+
+2026-10-07 00:29:16,724 - INFO - Git diff before:
+diff --git a/django/core/exceptions.py b/django/core/exceptions.py
+index 7be4e16bc5..317e61960f 100644
+--- a/django/core/exceptions.py
++++ b/django/core/exceptions.py
+@@ -233,6 +233,12 @@ class EmptyResultSet(Exception):
+     pass
+ 
+ 
++class FullResultSet(Exception):
++    """A database query predicate is guaranteed to match all rows."""
++
++    pass
++
++
+ class SynchronousOnlyOperation(Exception):
+     """The user tried to call a sync-only function from an async context."""
+ 
+diff --git a/django/db/backends/mysql/compiler.py b/django/db/backends/mysql/compiler.py
+index a8ab03a55e..12b973d7a4 100644
+--- a/django/db/backends/mysql/compiler.py
++++ b/django/db/backends/mysql/compiler.py
+@@ -1,4 +1,4 @@
+-from django.core.exceptions import FieldError
++from django.core.exceptions import FieldError, FullResultSet
+ from django.db.models.expressions import Col
+ from django.db.models.sql import compiler
+ 
+@@ -39,7 +39,10 @@ class SQLDeleteCompiler(compiler.SQLDeleteCompiler, SQLCompiler):
+         ]
+         from_sql, from_params = self.get_from_clause()
+         result.extend(from_sql)
+-        where_sql, where_params = self.compile(where)
++        try:
++            where_sql, where_params = self.compile(where)
++        except FullResultSet:
++            where_sql, where_params = "", []
+         if where_sql:
+             result.append("WHERE %s" % where_sql)
+         return " ".join(result), tuple(from_params) + tuple(where_params)
+diff --git a/django/db/models/expressions.py b/django/db/models/expressions.py
+index 822968ef56..049c14e2ed 100644
+--- a/django/db/models/expressions.py
++++ b/django/db/models/expressions.py
+@@ -7,7 +7,7 @@ from collections import defaultdict
+ from decimal import Decimal
+ from uuid import UUID
+ 
+-from django.core.exceptions import EmptyResultSet, FieldError
++from django.core.exceptions import EmptyResultSet, FieldError, FullResultSet
+ from django.db import DatabaseError, NotSupportedError, connection
+ from django.db.models import fields
+ from django.db.models.constants import LOOKUP_SEP
+@@ -1388,9 +1388,15 @@ class Case(SQLiteNumericMixin, Expression):
+                 case_sql, case_params = compiler.compile(case)
+             except EmptyResultSet:
+                 continue
++            except FullResultSet:
++                # The condition is always true and subsequent cases are
++                # unreachable, so it can be used as the default.
++                default_sql, default_params = compiler.compile(case.result)
++                break
+             case_parts.append(case_sql)
+             sql_params.extend(case_params)
+-        default_sql, default_params = compiler.compile(self.default)
++        else:
++            default_sql, default_params = compiler.compile(self.default)
+         if not case_parts:
+             return default_sql, default_params
+         case_joiner = case_joiner or self.case_joiner
+diff --git a/django/db/models/query_utils.py b/django/db/models/query_utils.py
+index d566cc1883..e353dcec4a 100644
+--- a/django/db/models/query_utils.py
++++ b/django/db/models/query_utils.py
+@@ -10,7 +10,7 @@ import inspect
+ import logging
+ from collections import namedtuple
+ 
+-from django.core.exceptions import FieldError
++from django.core.exceptions import FieldError, FullResultSet
+ from django.db import DEFAULT_DB_ALIAS, DatabaseError
+ from django.db.models.constants import LOOKUP_SEP
+ from django.utils import tree
+@@ -377,4 +377,7 @@ class FilteredRelation:
+         # Resolve the condition in Join.filtered_relation.
+         query = compiler.query
+         where = query.build_filtered_relation_q(self.condition, reuse=set(self.path))
+-        return compiler.compile(where)
++        try:
++            return compiler.compile(where)
++        except FullResultSet:
++            return "", []
+diff --git a/django/db/models/sql/compiler.py b/django/db/models/sql/compiler.py
+index cfac22a019..a9fbe433bc 100644
+--- a/django/db/models/sql/compiler.py
++++ b/django/db/models/sql/compiler.py
+@@ -4,7 +4,7 @@ import re
+ from functools import partial
+ from itertools import chain
+ 
+-from django.core.exceptions import EmptyResultSet, FieldError
++from django.core.exceptions import EmptyResultSet, FieldError, FullResultSet
+ from django.db import DatabaseError, NotSupportedError
+ from django.db.models.constants import LOOKUP_SEP
+ from django.db.models.expressions import F, OrderBy, RawSQL, Ref, Value
+@@ -155,7 +155,10 @@ class SQLCompiler:
+         expressions = self.collapse_group_by(expressions, having_group_by)
+ 
+         for expr in expressions:
+-            sql, params = self.compile(expr)
++            try:
++                sql, params = self.compile(expr)
++            except FullResultSet:
++                sql, params = "", ()
+             sql, params = expr.select_format(self, sql, params)
+             params_hash = make_hashable(params)
+             if (sql, params_hash) not in seen:
+@@ -299,6 +302,8 @@ class SQLCompiler:
+                     sql, params = "0", ()
+                 else:
+                     sql, params = self.compile(Value(empty_result_set_value))
++            except FullResultSet:
++                sql, params = "1", ()
+             else:
+                 sql, params = col.select_format(self, sql, params)
+             ret.append((col, (sql, params), alias))
+@@ -620,9 +625,16 @@ class SQLCompiler:
+                         raise
+                     # Use a predicate that's always False.
+                     where, w_params = "0 = 1", []
+-                having, h_params = (
+-                    self.compile(self.having) if self.having is not None else ("", [])
+-                )
++                except FullResultSet:
++                    where, w_params = "", []
++                try:
++                    having, h_params = (
++                        self.compile(self.having)
++                        if self.having is not None
++                        else ("", [])
++                    )
++                except FullResultSet:
++                    having, h_params = "", []
+                 result = ["SELECT"]
+                 params = []
+ 
+@@ -1717,7 +1729,10 @@ class SQLDeleteCompiler(SQLCompiler):
+ 
+     def _as_sql(self, query):
+         result = ["DELETE FROM %s" % self.quote_name_unless_alias(query.base_table)]
+-        where, params = self.compile(query.where)
++        try:
++            where, params = self.compile(query.where)
++        except FullResultSet:
++            where, params = "", []
+         if where:
+             result.append("WHERE %s" % where)
+         return " ".join(result), tuple(params)
+@@ -1805,7 +1820,10 @@ class SQLUpdateCompiler(SQLCompiler):
+             "UPDATE %s SET" % qn(table),
+             ", ".join(values),
+         ]
+-        where, params = self.compile(self.query.where)
++        try:
++            where, params = self.compile(self.query.where)
++        except FullResultSet:
++            where, params = "", []
+         if where:
+             result.append("WHERE %s" % where)
+         return " ".join(result), tuple(update_params + params)
+diff --git a/django/db/models/sql/where.py b/django/db/models/sql/where.py
+index 42a4b054a5..0c32fd3b52 100644
+--- a/django/db/models/sql/where.py
++++ b/django/db/models/sql/where.py
+@@ -4,7 +4,7 @@ Code to manage the creation and SQL rendering of 'where' constraints.
+ import operator
+ from functools import reduce
+ 
+-from django.core.exceptions import EmptyResultSet
++from django.core.exceptions import EmptyResultSet, FullResultSet
+ from django.db.models.expressions import Case, When
+ from django.db.models.lookups import Exact
+ from django.utils import tree
+@@ -81,9 +81,9 @@ class WhereNode(tree.Node):
+     def as_sql(self, compiler, connection):
+         """
+         Return the SQL version of the where clause and the value to be
+-        substituted in. Return '', [] if this node matches everything,
+-        None, [] if this node is empty, and raise EmptyResultSet if this
+-        node can't match anything.
++        substituted in. Return '', [] if this node is empty, and raise
++        EmptyResultSet if this node can't match anything. Raise FullResultSet
++        if this node matches everything.
+         """
+         result = []
+         result_params = []
+@@ -112,6 +112,8 @@ class WhereNode(tree.Node):
+                 sql, params = compiler.compile(child)
+             except EmptyResultSet:
+                 empty_needed -= 1
++            except FullResultSet:
++                full_needed -= 1
+             else:
+                 if sql:
+                     result.append(sql)
+@@ -125,14 +127,14 @@ class WhereNode(tree.Node):
+             # counts.
+             if empty_needed == 0:
+                 if self.negated:
+-                    return "", []
++                    raise FullResultSet
+                 else:
+                     raise EmptyResultSet
+             if full_needed == 0:
+                 if self.negated:
+                     raise EmptyResultSet
+                 else:
+-                    return "", []
++                    raise FullResultSet
+         conn = " %s " % self.connector
+         sql_string = conn.join(result)
+         if sql_string:
+2026-10-07 00:29:16,725 - INFO - Eval script for django__django-15930 written to logs\run_evaluation\django__django-verification\deepseek__deepseek-v4-flash\django__django-15930\eval.sh; copying to container...
+2026-10-07 00:29:23,313 - INFO - Test runtime: 6.55 seconds
+2026-10-07 00:29:23,314 - INFO - Test output for django__django-15930 written to logs\run_evaluation\django__django-verification\deepseek__deepseek-v4-flash\django__django-15930\test_output.txt
+2026-10-07 00:29:23,353 - INFO - Git diff after:
+diff --git a/django/core/exceptions.py b/django/core/exceptions.py
+index 7be4e16bc5..317e61960f 100644
+--- a/django/core/exceptions.py
++++ b/django/core/exceptions.py
+@@ -233,6 +233,12 @@ class EmptyResultSet(Exception):
+     pass
+ 
+ 
++class FullResultSet(Exception):
++    """A database query predicate is guaranteed to match all rows."""
++
++    pass
++
++
+ class SynchronousOnlyOperation(Exception):
+     """The user tried to call a sync-only function from an async context."""
+ 
+diff --git a/django/db/backends/mysql/compiler.py b/django/db/backends/mysql/compiler.py
+index a8ab03a55e..12b973d7a4 100644
+--- a/django/db/backends/mysql/compiler.py
++++ b/django/db/backends/mysql/compiler.py
+@@ -1,4 +1,4 @@
+-from django.core.exceptions import FieldError
++from django.core.exceptions import FieldError, FullResultSet
+ from django.db.models.expressions import Col
+ from django.db.models.sql import compiler
+ 
+@@ -39,7 +39,10 @@ class SQLDeleteCompiler(compiler.SQLDeleteCompiler, SQLCompiler):
+         ]
+         from_sql, from_params = self.get_from_clause()
+         result.extend(from_sql)
+-        where_sql, where_params = self.compile(where)
++        try:
++            where_sql, where_params = self.compile(where)
++        except FullResultSet:
++            where_sql, where_params = "", []
+         if where_sql:
+             result.append("WHERE %s" % where_sql)
+         return " ".join(result), tuple(from_params) + tuple(where_params)
+diff --git a/django/db/models/expressions.py b/django/db/models/expressions.py
+index 822968ef56..049c14e2ed 100644
+--- a/django/db/models/expressions.py
++++ b/django/db/models/expressions.py
+@@ -7,7 +7,7 @@ from collections import defaultdict
+ from decimal import Decimal
+ from uuid import UUID
+ 
+-from django.core.exceptions import EmptyResultSet, FieldError
++from django.core.exceptions import EmptyResultSet, FieldError, FullResultSet
+ from django.db import DatabaseError, NotSupportedError, connection
+ from django.db.models import fields
+ from django.db.models.constants import LOOKUP_SEP
+@@ -1388,9 +1388,15 @@ class Case(SQLiteNumericMixin, Expression):
+                 case_sql, case_params = compiler.compile(case)
+             except EmptyResultSet:
+                 continue
++            except FullResultSet:
++                # The condition is always true and subsequent cases are
++                # unreachable, so it can be used as the default.
++                default_sql, default_params = compiler.compile(case.result)
++                break
+             case_parts.append(case_sql)
+             sql_params.extend(case_params)
+-        default_sql, default_params = compiler.compile(self.default)
++        else:
++            default_sql, default_params = compiler.compile(self.default)
+         if not case_parts:
+             return default_sql, default_params
+         case_joiner = case_joiner or self.case_joiner
+diff --git a/django/db/models/query_utils.py b/django/db/models/query_utils.py
+index d566cc1883..e353dcec4a 100644
+--- a/django/db/models/query_utils.py
++++ b/django/db/models/query_utils.py
+@@ -10,7 +10,7 @@ import inspect
+ import logging
+ from collections import namedtuple
+ 
+-from django.core.exceptions import FieldError
++from django.core.exceptions import FieldError, FullResultSet
+ from django.db import DEFAULT_DB_ALIAS, DatabaseError
+ from django.db.models.constants import LOOKUP_SEP
+ from django.utils import tree
+@@ -377,4 +377,7 @@ class FilteredRelation:
+         # Resolve the condition in Join.filtered_relation.
+         query = compiler.query
+         where = query.build_filtered_relation_q(self.condition, reuse=set(self.path))
+-        return compiler.compile(where)
++        try:
++            return compiler.compile(where)
++        except FullResultSet:
++            return "", []
+diff --git a/django/db/models/sql/compiler.py b/django/db/models/sql/compiler.py
+index cfac22a019..a9fbe433bc 100644
+--- a/django/db/models/sql/compiler.py
++++ b/django/db/models/sql/compiler.py
+@@ -4,7 +4,7 @@ import re
+ from functools import partial
+ from itertools import chain
+ 
+-from django.core.exceptions import EmptyResultSet, FieldError
++from django.core.exceptions import EmptyResultSet, FieldError, FullResultSet
+ from django.db import DatabaseError, NotSupportedError
+ from django.db.models.constants import LOOKUP_SEP
+ from django.db.models.expressions import F, OrderBy, RawSQL, Ref, Value
+@@ -155,7 +155,10 @@ class SQLCompiler:
+         expressions = self.collapse_group_by(expressions, having_group_by)
+ 
+         for expr in expressions:
+-            sql, params = self.compile(expr)
++            try:
++                sql, params = self.compile(expr)
++            except FullResultSet:
++                sql, params = "", ()
+             sql, params = expr.select_format(self, sql, params)
+             params_hash = make_hashable(params)
+             if (sql, params_hash) not in seen:
+@@ -299,6 +302,8 @@ class SQLCompiler:
+                     sql, params = "0", ()
+                 else:
+                     sql, params = self.compile(Value(empty_result_set_value))
++            except FullResultSet:
++                sql, params = "1", ()
+             else:
+                 sql, params = col.select_format(self, sql, params)
+             ret.append((col, (sql, params), alias))
+@@ -620,9 +625,16 @@ class SQLCompiler:
+                         raise
+                     # Use a predicate that's always False.
+                     where, w_params = "0 = 1", []
+-                having, h_params = (
+-                    self.compile(self.having) if self.having is not None else ("", [])
+-                )
++                except FullResultSet:
++                    where, w_params = "", []
++                try:
++                    having, h_params = (
++                        self.compile(self.having)
++                        if self.having is not None
++                        else ("", [])
++                    )
++                except FullResultSet:
++                    having, h_params = "", []
+                 result = ["SELECT"]
+                 params = []
+ 
+@@ -1717,7 +1729,10 @@ class SQLDeleteCompiler(SQLCompiler):
+ 
+     def _as_sql(self, query):
+         result = ["DELETE FROM %s" % self.quote_name_unless_alias(query.base_table)]
+-        where, params = self.compile(query.where)
++        try:
++            where, params = self.compile(query.where)
++        except FullResultSet:
++            where, params = "", []
+         if where:
+             result.append("WHERE %s" % where)
+         return " ".join(result), tuple(params)
+@@ -1805,7 +1820,10 @@ class SQLUpdateCompiler(SQLCompiler):
+             "UPDATE %s SET" % qn(table),
+             ", ".join(values),
+         ]
+-        where, params = self.compile(self.query.where)
++        try:
++            where, params = self.compile(self.query.where)
++        except FullResultSet:
++            where, params = "", []
+         if where:
+             result.append("WHERE %s" % where)
+         return " ".join(result), tuple(update_params + params)
+diff --git a/django/db/models/sql/where.py b/django/db/models/sql/where.py
+index 42a4b054a5..0c32fd3b52 100644
+--- a/django/db/models/sql/where.py
++++ b/django/db/models/sql/where.py
+@@ -4,7 +4,7 @@ Code to manage the creation and SQL rendering of 'where' constraints.
+ import operator
+ from functools import reduce
+ 
+-from django.core.exceptions import EmptyResultSet
++from django.core.exceptions import EmptyResultSet, FullResultSet
+ from django.db.models.expressions import Case, When
+ from django.db.models.lookups import Exact
+ from django.utils import tree
+@@ -81,9 +81,9 @@ class WhereNode(tree.Node):
+     def as_sql(self, compiler, connection):
+         """
+         Return the SQL version of the where clause and the value to be
+-        substituted in. Return '', [] if this node matches everything,
+-        None, [] if this node is empty, and raise EmptyResultSet if this
+-        node can't match anything.
++        substituted in. Return '', [] if this node is empty, and raise
++        EmptyResultSet if this node can't match anything. Raise FullResultSet
++        if this node matches everything.
+         """
+         result = []
+         result_params = []
+@@ -112,6 +112,8 @@ class WhereNode(tree.Node):
+                 sql, params = compiler.compile(child)
+             except EmptyResultSet:
+                 empty_needed -= 1
++            except FullResultSet:
++                full_needed -= 1
+             else:
+                 if sql:
+                     result.append(sql)
+@@ -125,14 +127,14 @@ class WhereNode(tree.Node):
+             # counts.
+             if empty_needed == 0:
+                 if self.negated:
+-                    return "", []
++                    raise FullResultSet
+                 else:
+                     raise EmptyResultSet
+             if full_needed == 0:
+                 if self.negated:
+                     raise EmptyResultSet
+                 else:
+-                    return "", []
++                    raise FullResultSet
+         conn = " %s " % self.connector
+         sql_string = conn.join(result)
+         if sql_string:
+2026-10-07 00:29:23,353 - INFO - Grading answer for django__django-15930...
+2026-10-07 00:29:23,354 - INFO - report: {'django__django-15930': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_annotate_with_full_when (expressions_case.tests.CaseExpressionTests)'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_empty_q_object (expressions_case.tests.CaseWhenTests)', 'test_invalid_when_constructor_args (expressions_case.tests.CaseWhenTests)', 'test_only_when_arguments (expressions_case.tests.CaseWhenTests)', 'test_conditional_aggregation_example (expressions_case.tests.CaseDocumentationExamples)', 'test_conditional_update_example (expressions_case.tests.CaseDocumentationExamples)', 'test_filter_example (expressions_case.tests.CaseDocumentationExamples)', 'test_hash (expressions_case.tests.CaseDocumentationExamples)', 'test_lookup_example (expressions_case.tests.CaseDocumentationExamples)', 'test_simple_example (expressions_case.tests.CaseDocumentationExamples)', 'test_aggregate (expressions_case.tests.CaseExpressionTests)', 'test_aggregate_with_expression_as_condition (expressions_case.tests.CaseExpressionTests)', 'test_aggregate_with_expression_as_value (expressions_case.tests.CaseExpressionTests)', 'test_aggregation_empty_cases (expressions_case.tests.CaseExpressionTests)', 'test_annotate (expressions_case.tests.CaseExpressionTests)', 'test_annotate_exclude (expressions_case.tests.CaseExpressionTests)', 'test_annotate_filter_decimal (expressions_case.tests.CaseExpressionTests)', 'test_annotate_values_not_in_order_by (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_aggregation_in_condition (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_aggregation_in_predicate (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_aggregation_in_value (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_annotation_in_condition (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_annotation_in_predicate (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_annotation_in_value (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_empty_when (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_expression_as_condition (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_expression_as_value (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_in_clause (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_join_in_condition (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_join_in_predicate (expressions_case.tests.CaseExpressionTests)', 'test_annotate_with_join_in_value (expressions_case.tests.CaseExpressionTests)', 'test_annotate_without_default (expressions_case.tests.CaseExpressionTests)', 'test_case_reuse (expressions_case.tests.CaseExpressionTests)', 'test_combined_expression (expressions_case.tests.CaseExpressionTests)', 'test_combined_q_object (expressions_case.tests.CaseExpressionTests)', 'test_condition_with_lookups (expressions_case.tests.CaseExpressionTests)', 'test_filter (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_aggregation_in_condition (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_aggregation_in_predicate (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_aggregation_in_value (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_annotation_in_condition (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_annotation_in_predicate (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_annotation_in_value (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_expression_as_condition (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_expression_as_value (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_join_in_condition (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_join_in_predicate (expressions_case.tests.CaseExpressionTests)', 'test_filter_with_join_in_value (expressions_case.tests.CaseExpressionTests)', 'test_filter_without_default (expressions_case.tests.CaseExpressionTests)', 'test_in_subquery (expressions_case.tests.CaseExpressionTests)', 'test_join_promotion (expressions_case.tests.CaseExpressionTests)', 'test_join_promotion_multiple_annotations (expressions_case.tests.CaseExpressionTests)', 'test_lookup_different_fields (expressions_case.tests.CaseExpressionTests)', 'test_lookup_in_condition (expressions_case.tests.CaseExpressionTests)', 'test_m2m_exclude (expressions_case.tests.CaseExpressionTests)', 'test_m2m_reuse (expressions_case.tests.CaseExpressionTests)', 'test_order_by_conditional_explicit (expressions_case.tests.CaseExpressionTests)', 'test_order_by_conditional_implicit (expressions_case.tests.CaseExpressionTests)', 'test_update (expressions_case.tests.CaseExpressionTests)', 'test_update_big_integer (expressions_case.tests.CaseExpressionTests)', 'test_update_binary (expressions_case.tests.CaseExpressionTests)', 'test_update_boolean (expressions_case.tests.CaseExpressionTests)', 'test_update_date (expressions_case.tests.CaseExpressionTests)', 'test_update_date_time (expressions_case.tests.CaseExpressionTests)', 'test_update_decimal (expressions_case.tests.CaseExpressionTests)', 'test_update_duration (expressions_case.tests.CaseExpressionTests)', 'test_update_email (expressions_case.tests.CaseExpressionTests)', 'test_update_file (expressions_case.tests.CaseExpressionTests)', 'test_update_file_path (expressions_case.tests.CaseExpressionTests)', 'test_update_fk (expressions_case.tests.CaseExpressionTests)', 'test_update_float (expressions_case.tests.CaseExpressionTests)', 'test_update_generic_ip_address (expressions_case.tests.CaseExpressionTests)', 'test_update_image (expressions_case.tests.CaseExpressionTests)', 'test_update_null_boolean (expressions_case.tests.CaseExpressionTests)', 'test_update_positive_big_integer (expressions_case.tests.CaseExpressionTests)', 'test_update_positive_integer (expressions_case.tests.CaseExpressionTests)', 'test_update_positive_small_integer (expressions_case.tests.CaseExpressionTests)', 'test_update_slug (expressions_case.tests.CaseExpressionTests)', 'test_update_small_integer (expressions_case.tests.CaseExpressionTests)', 'test_update_string (expressions_case.tests.CaseExpressionTests)', 'test_update_text (expressions_case.tests.CaseExpressionTests)', 'test_update_time (expressions_case.tests.CaseExpressionTests)', 'test_update_url (expressions_case.tests.CaseExpressionTests)', 'test_update_uuid (expressions_case.tests.CaseExpressionTests)', 'test_update_with_expression_as_condition (expressions_case.tests.CaseExpressionTests)', 'test_update_with_expression_as_value (expressions_case.tests.CaseExpressionTests)', 'test_update_with_join_in_condition_raise_field_error (expressions_case.tests.CaseExpressionTests)', 'test_update_with_join_in_predicate_raise_field_error (expressions_case.tests.CaseExpressionTests)', 'test_update_without_default (expressions_case.tests.CaseExpressionTests)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-15930: resolved: True
+2026-10-07 00:29:23,356 - INFO - Attempting to stop container sweb.eval.django__django-15930.django__django-verification...
+2026-10-07 00:29:38,601 - INFO - Container sweb.eval.django__django-15930.django__django-verification stopped successfully.
+2026-10-07 00:29:38,601 - INFO - Attempting to remove container sweb.eval.django__django-15930.django__django-verification...
+2026-10-07 00:29:38,682 - INFO - Container sweb.eval.django__django-15930.django__django-verification removed successfully.

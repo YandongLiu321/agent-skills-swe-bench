@@ -1,0 +1,201 @@
+2026-10-18 09:22:18,829 - INFO - Creating container for sympy__sympy-12419...
+2026-10-18 09:22:18,864 - INFO - Container for sympy__sympy-12419 created: 08a0ce56324d9b468fb46fee88841d9d07bf82c857de3fdb9d125ddb78554bb1
+2026-10-18 09:22:18,948 - INFO - Container for sympy__sympy-12419 started: 08a0ce56324d9b468fb46fee88841d9d07bf82c857de3fdb9d125ddb78554bb1
+2026-10-18 09:22:18,950 - INFO - Intermediate patch for sympy__sympy-12419 written to logs/run_evaluation/recovery-p1-6a45f25ea9da/deepseek__deepseek-v4-flash/sympy__sympy-12419/patch.diff, now applying to container...
+2026-10-18 09:22:19,033 - INFO - >>>>> Applied Patch:
+Checking patch sympy/concrete/summations.py...
+Checking patch sympy/matrices/expressions/matexpr.py...
+Applied patch sympy/concrete/summations.py cleanly.
+Applied patch sympy/matrices/expressions/matexpr.py cleanly.
+
+2026-10-18 09:22:19,184 - INFO - Git diff before:
+diff --git a/sympy/concrete/summations.py b/sympy/concrete/summations.py
+index 372487664..e8e0f7be7 100755
+--- a/sympy/concrete/summations.py
++++ b/sympy/concrete/summations.py
+@@ -177,6 +177,11 @@ def doit(self, **hints):
+         if self.function.is_Matrix:
+             return self.expand().doit()
+ 
++        if len(self.limits) > 1:
++            delta_sum = _eval_sum_kronecker_delta(f, self.limits)
++            if delta_sum is not None:
++                return delta_sum
++
+         for n, limit in enumerate(self.limits):
+             i, a, b = limit
+             dif = b - a
+@@ -888,6 +893,56 @@ def eval_sum(f, limits):
+         return eval_sum_direct(f, (i, a, b))
+ 
+ 
++def _eval_sum_kronecker_delta(f, limits):
++    """Evaluate a sum of a KroneckerDelta over two independent indices.
++
++    A sum such as ``Sum(KroneckerDelta(i, j), (i, a, b), (j, c, d))``
++    counts the number of values in the intersection of the two summation
++    ranges.  This cannot be obtained by summing over one index at a time
++    because the first sum returns a Piecewise whose condition depends on
++    the remaining summation index.
++    """
++    from sympy.functions import KroneckerDelta
++    from sympy.functions.elementary.miscellaneous import Max, Min
++
++    if not isinstance(f, KroneckerDelta):
++        return None
++
++    i, j = f.args
++    if i == j:
++        return None
++
++    limit_by_index = {}
++    for limit in limits:
++        index = limit[0]
++        if index in (i, j):
++            if index in limit_by_index:
++                return None
++            limit_by_index[index] = limit
++
++    if len(limit_by_index) != 2:
++        return None
++
++    i, a, b = limit_by_index[i]
++    j, c, d = limit_by_index[j]
++
++    # Bounds depending on one of the summation indices would require a
++    # more careful treatment of the intersection of the two ranges.
++    for _, lower, upper in limits:
++        if i in lower.free_symbols or i in upper.free_symbols or \
++                j in lower.free_symbols or j in upper.free_symbols:
++            return None
++
++    lower = Max(a, c)
++    upper = Min(b, d)
++    if (upper - lower).is_nonnegative is not True:
++        return None
++
++    other_limits = [limit for limit in limits
++                    if limit[0] not in (i, j)]
++    return Sum(f.subs(j, i), (i, lower, upper), *other_limits).doit()
++
++
+ def eval_sum_direct(expr, limits):
+     from sympy.core import Add
+     (i, a, b) = limits
+diff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py
+index b4d759836..cd6770d69 100755
+--- a/sympy/matrices/expressions/matexpr.py
++++ b/sympy/matrices/expressions/matexpr.py
+@@ -476,10 +476,8 @@ def conjugate(self):
+         return self
+ 
+     def _entry(self, i, j):
+-        if i == j:
+-            return S.One
+-        else:
+-            return S.Zero
++        from sympy import KroneckerDelta
++        return KroneckerDelta(i, j)
+ 
+     def _eval_determinant(self):
+         return S.One
+2026-10-18 09:22:19,187 - INFO - Eval script for sympy__sympy-12419 written to logs/run_evaluation/recovery-p1-6a45f25ea9da/deepseek__deepseek-v4-flash/sympy__sympy-12419/eval.sh; copying to container...
+2026-10-18 09:22:23,245 - INFO - Test runtime: 4.01 seconds
+2026-10-18 09:22:23,250 - INFO - Test output for sympy__sympy-12419 written to logs/run_evaluation/recovery-p1-6a45f25ea9da/deepseek__deepseek-v4-flash/sympy__sympy-12419/test_output.txt
+2026-10-18 09:22:23,283 - INFO - Git diff after:
+diff --git a/sympy/concrete/summations.py b/sympy/concrete/summations.py
+index 372487664..e8e0f7be7 100755
+--- a/sympy/concrete/summations.py
++++ b/sympy/concrete/summations.py
+@@ -177,6 +177,11 @@ def doit(self, **hints):
+         if self.function.is_Matrix:
+             return self.expand().doit()
+ 
++        if len(self.limits) > 1:
++            delta_sum = _eval_sum_kronecker_delta(f, self.limits)
++            if delta_sum is not None:
++                return delta_sum
++
+         for n, limit in enumerate(self.limits):
+             i, a, b = limit
+             dif = b - a
+@@ -888,6 +893,56 @@ def eval_sum(f, limits):
+         return eval_sum_direct(f, (i, a, b))
+ 
+ 
++def _eval_sum_kronecker_delta(f, limits):
++    """Evaluate a sum of a KroneckerDelta over two independent indices.
++
++    A sum such as ``Sum(KroneckerDelta(i, j), (i, a, b), (j, c, d))``
++    counts the number of values in the intersection of the two summation
++    ranges.  This cannot be obtained by summing over one index at a time
++    because the first sum returns a Piecewise whose condition depends on
++    the remaining summation index.
++    """
++    from sympy.functions import KroneckerDelta
++    from sympy.functions.elementary.miscellaneous import Max, Min
++
++    if not isinstance(f, KroneckerDelta):
++        return None
++
++    i, j = f.args
++    if i == j:
++        return None
++
++    limit_by_index = {}
++    for limit in limits:
++        index = limit[0]
++        if index in (i, j):
++            if index in limit_by_index:
++                return None
++            limit_by_index[index] = limit
++
++    if len(limit_by_index) != 2:
++        return None
++
++    i, a, b = limit_by_index[i]
++    j, c, d = limit_by_index[j]
++
++    # Bounds depending on one of the summation indices would require a
++    # more careful treatment of the intersection of the two ranges.
++    for _, lower, upper in limits:
++        if i in lower.free_symbols or i in upper.free_symbols or \
++                j in lower.free_symbols or j in upper.free_symbols:
++            return None
++
++    lower = Max(a, c)
++    upper = Min(b, d)
++    if (upper - lower).is_nonnegative is not True:
++        return None
++
++    other_limits = [limit for limit in limits
++                    if limit[0] not in (i, j)]
++    return Sum(f.subs(j, i), (i, lower, upper), *other_limits).doit()
++
++
+ def eval_sum_direct(expr, limits):
+     from sympy.core import Add
+     (i, a, b) = limits
+diff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py
+index b4d759836..cd6770d69 100755
+--- a/sympy/matrices/expressions/matexpr.py
++++ b/sympy/matrices/expressions/matexpr.py
+@@ -476,10 +476,8 @@ def conjugate(self):
+         return self
+ 
+     def _entry(self, i, j):
+-        if i == j:
+-            return S.One
+-        else:
+-            return S.Zero
++        from sympy import KroneckerDelta
++        return KroneckerDelta(i, j)
+ 
+     def _eval_determinant(self):
+         return S.One
+2026-10-18 09:22:23,284 - INFO - Grading answer for sympy__sympy-12419...
+2026-10-18 09:22:23,288 - INFO - report: {'sympy__sympy-12419': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_Identity'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_shape', 'test_matexpr', 'test_subs', 'test_ZeroMatrix', 'test_ZeroMatrix_doit', 'test_Identity_doit', 'test_addition', 'test_multiplication', 'test_MatPow', 'test_MatrixSymbol', 'test_dense_conversion', 'test_free_symbols', 'test_zero_matmul', 'test_matadd_simplify', 'test_matmul_simplify', 'test_invariants', 'test_indexing', 'test_single_indexing', 'test_MatrixElement_commutative', 'test_MatrixSymbol_determinant', 'test_MatrixElement_diff', 'test_MatrixElement_doit', 'test_identity_powers', 'test_Zero_power', 'test_matrixelement_diff'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sympy__sympy-12419: resolved: True
+2026-10-18 09:22:23,290 - INFO - Attempting to stop container sweb.eval.sympy__sympy-12419.recovery-p1-6a45f25ea9da...
+2026-10-18 09:22:38,471 - INFO - Attempting to remove container sweb.eval.sympy__sympy-12419.recovery-p1-6a45f25ea9da...
+2026-10-18 09:22:38,489 - INFO - Container sweb.eval.sympy__sympy-12419.recovery-p1-6a45f25ea9da removed.

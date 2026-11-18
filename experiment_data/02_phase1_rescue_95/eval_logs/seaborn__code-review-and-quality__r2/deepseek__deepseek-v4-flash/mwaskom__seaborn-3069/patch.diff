@@ -1,0 +1,71 @@
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..6ec8283f 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -1475,7 +1475,7 @@ class Plotter:
+ 
+                 axes_df = self._filter_subplot_data(df, view)
+ 
+-                with pd.option_context("mode.use_inf_as_null", True):
++                with pd.option_context("mode.use_inf_as_na", True):
+                     if keep_na:
+                         # The simpler thing to do would be x.dropna().reindex(x.index).
+                         # But that doesn't work with the way that the subset iteration
+@@ -1632,9 +1632,14 @@ class Plotter:
+             for axis in "xy":
+                 axis_key = sub[axis]
+ 
++                # Apply scale-specific decorations (e.g. categorical axis tweaks)
++                axis_obj = getattr(ax, f"{axis}axis")
++                if axis_key in self._scales:
++                    self._scales[axis_key]._finalize(axis_obj)
++
+                 # Axis limits
+                 if axis_key in p._limits:
+-                    convert_units = getattr(ax, f"{axis}axis").convert_units
++                    convert_units = axis_obj.convert_units
+                     a, b = p._limits[axis_key]
+                     lo = a if a is None else convert_units(a)
+                     hi = b if b is None else convert_units(b)
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..b929929f 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -101,6 +101,10 @@ class Scale:
+     ) -> Scale:
+         raise NotImplementedError()
+ 
++    def _finalize(self, axis: Axis) -> None:
++        """Perform scale-specific axis decorations on a coordinate axis."""
++        pass
++
+     def __call__(self, data: Series) -> ArrayLike:
+ 
+         trans_data: Series | NDArray | list
+@@ -225,8 +229,26 @@ class Nominal(Scale):
+         if prop.legend:
+             new._legend = units_seed, list(stringify(units_seed))
+ 
++        if not isinstance(axis, PseudoAxis):
++            new._finalize(axis)
++
+         return new
+ 
++    def _finalize(self, axis: Axis) -> None:
++
++        # Categorical scales are drawn like the plots produced by the categorical
++        # module: the extent is defined by the categorical tick locations, no grid
++        # is shown, and the axis is inverted when drawn on the y axis
++
++        axis.grid(False)
++
++        locs = axis.get_majorticklocs()
++        if len(locs):
++            lo, hi = min(locs) - .5, max(locs) + .5
++            if axis.axis_name == "y":
++                lo, hi = hi, lo
++            axis.axes.set(**{f"{axis.axis_name}lim": (lo, hi)})
++
+     def tick(self, locator: Locator | None = None):
+         """
+         Configure the selection of ticks for the scale's axis or legend.

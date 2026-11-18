@@ -1,0 +1,112 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..5650fb8b52 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -545,11 +545,107 @@ class Query(BaseExpression):
+ 
+         return dict(zip(outer_query.annotation_select, result))
+ 
++    def _get_referenced_annotations(self):
++        """
++        Return the set of annotation aliases referenced by filters, ordering,
++        grouping, or other annotations.
++        """
++        annotations = self.annotations
++        annotations_by_id = {
++            id(annotation): alias for alias, annotation in annotations.items()
++        }
++        referenced = set()
++
++        def collect(expression):
++            if expression is None:
++                return
++            alias = annotations_by_id.get(id(expression))
++            if alias is not None:
++                referenced.add(alias)
++            if isinstance(expression, Ref) and expression.refs in annotations:
++                referenced.add(expression.refs)
++            if hasattr(expression, "get_source_expressions"):
++                for source_expression in expression.get_source_expressions():
++                    collect(source_expression)
++
++        def collect_ordering(ordering):
++            if isinstance(ordering, str):
++                name = ordering[1:] if ordering.startswith("-") else ordering
++                if name in annotations:
++                    referenced.add(name)
++            else:
++                collect(ordering)
++
++        collect(self.where)
++        for ordering in self.order_by:
++            collect_ordering(ordering)
++        if isinstance(self.group_by, (tuple, list)):
++            for expression in self.group_by:
++                collect(expression)
++        for name in self.distinct_fields:
++            collect_ordering(name)
++
++        # Annotations referenced by other referenced annotations are needed
++        # too, so resolve those references transitively.
++        processed = set()
++        pending = list(referenced)
++        while pending:
++            alias = pending.pop()
++            if alias in processed:
++                continue
++            processed.add(alias)
++            collect(annotations[alias])
++            pending.extend(referenced - processed)
++        return referenced
++
++    def _strip_unused_annotations(self):
++        """
++        Remove annotations that aren't referenced by the query and adjust the
++        alias reference counts so joins used only by them aren't included.
++        """
++        referenced = self._get_referenced_annotations()
++        for alias in list(self.annotations):
++            if alias not in referenced:
++                del self.annotations[alias]
++        self._annotation_select_cache = None
++
++        # Recompute the alias reference counts from the query parts that are
++        # still in use so that unused joins are pruned when compiling.
++        expressions = [self.where, *self.select, *self.annotations.values()]
++        expressions.extend(self.extra.values())
++        if isinstance(self.group_by, (tuple, list)):
++            expressions.extend(self.group_by)
++        for ordering in self.order_by:
++            if not isinstance(ordering, str):
++                expressions.append(ordering)
++        aliases = {self.get_initial_alias()}
++        for col in self._gen_cols(expressions, include_external=True):
++            aliases.add(col.alias)
++        # Keep the joins the referenced aliases depend on.
++        pending = list(aliases)
++        while pending:
++            alias = pending.pop()
++            parent_alias = getattr(self.alias_map.get(alias), "parent_alias", None)
++            if parent_alias and parent_alias not in aliases:
++                aliases.add(parent_alias)
++                pending.append(parent_alias)
++        self.reset_refcounts(
++            {
++                alias: self.alias_refcount[alias]
++                for alias in aliases
++                if alias in self.alias_refcount
++            }
++        )
++
+     def get_count(self, using):
+         """
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        if obj.annotations:
++            # Annotations that aren't referenced by the query don't affect the
++            # result of COUNT() so strip them out to avoid unnecessary work.
++            obj._strip_unused_annotations()
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 

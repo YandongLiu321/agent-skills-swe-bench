@@ -1,0 +1,140 @@
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index b192df4fbf..787133bc2f 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -64,14 +64,51 @@ and two directions (forward and reverse) for a total of six combinations.
+ """
+ 
+ from django.core.exceptions import FieldError
+-from django.db import connections, router, transaction
+-from django.db.models import Q, signals
++from django.db import NotSupportedError, connections, router, transaction
++from django.db.models import Q, Window, signals
++from django.db.models.functions import RowNumber
+ from django.db.models.query import QuerySet
+ from django.db.models.query_utils import DeferredAttribute
+ from django.db.models.utils import resolve_callables
+ from django.utils.functional import cached_property
+ 
+ 
++def _filter_prefetch_queryset(queryset, field_name, instances):
++    queryset._add_hints(instance=instances[0])
++    if not queryset.query.is_sliced:
++        return queryset.filter(**{f"{field_name}__in": instances})
++
++    if not connections[queryset.db].features.supports_over_clause:
++        raise NotSupportedError(
++            "Prefetching from a sliced queryset requires support for "
++            "window functions."
++        )
++    # A sliced queryset is being used, so the slice needs to be applied per
++    # related object rather than globally. Rank the related objects within
++    # each group using a window function and filter on the rank.
++    low_mark, high_mark = queryset.query.low_mark, queryset.query.high_mark
++    order_by = queryset.query.order_by
++    if not order_by and queryset.query.default_ordering:
++        order_by = queryset.query.get_meta().ordering
++    # Clone the queryset and remove the limits, as they are now handled by
++    # filtering on the rank. This also allows filtering the queryset.
++    queryset = queryset.all()
++    queryset.query.clear_limits()
++    queryset = queryset.filter(**{f"{field_name}__in": instances})
++    queryset = queryset.annotate(
++        _prefetch_related_rank=Window(
++            RowNumber(),
++            partition_by=field_name,
++            order_by=order_by,
++        ),
++    )
++    if low_mark:
++        queryset = queryset.filter(_prefetch_related_rank__gt=low_mark)
++    if high_mark is not None:
++        queryset = queryset.filter(_prefetch_related_rank__lte=high_mark)
++    return queryset
++
++
+ class ForeignKeyDeferredAttribute(DeferredAttribute):
+     def __set__(self, instance, value):
+         if instance.__dict__.get(self.field.attname) != value and self.field.is_cached(
+@@ -403,8 +440,9 @@ class ReverseOneToOneDescriptor:
+         rel_obj_attr = self.related.field.get_local_related_value
+         instance_attr = self.related.field.get_foreign_related_value
+         instances_dict = {instance_attr(inst): inst for inst in instances}
+-        query = {"%s__in" % self.related.field.name: instances}
+-        queryset = queryset.filter(**query)
++        queryset = _filter_prefetch_queryset(
++            queryset, self.related.field.name, instances
++        )
+ 
+         # Since we're going to assign directly in the cache,
+         # we must manage the reverse relation cache manually.
+@@ -718,8 +756,7 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             rel_obj_attr = self.field.get_local_related_value
+             instance_attr = self.field.get_foreign_related_value
+             instances_dict = {instance_attr(inst): inst for inst in instances}
+-            query = {"%s__in" % self.field.name: instances}
+-            queryset = queryset.filter(**query)
++            queryset = _filter_prefetch_queryset(queryset, self.field.name, instances)
+ 
+             # Since we just bypassed this class' get_queryset(), we must manage
+             # the reverse relation manually.
+@@ -1051,8 +1088,9 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
+ 
+-            query = {"%s__in" % self.query_field_name: instances}
+-            queryset = queryset._next_is_sticky().filter(**query)
++            queryset = _filter_prefetch_queryset(
++                queryset._next_is_sticky(), self.query_field_name, instances
++            )
+ 
+             # M2M: need to annotate the query in order to get the primary model
+             # that the secondary model was actually related to. We know that
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index be0deb90b0..2e783a020c 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -1438,7 +1438,7 @@ class QuerySet:
+         return self._filter_or_exclude(True, args, kwargs)
+ 
+     def _filter_or_exclude(self, negate, args, kwargs):
+-        if (args or kwargs) and self.query.is_sliced:
++        if (args or kwargs) and self.query.is_sliced and not self._defer_next_filter:
+             raise TypeError("Cannot filter a query once a slice has been taken.")
+         clone = self._chain()
+         if self._defer_next_filter:
+diff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt
+index 223bb452b0..6d83c223e3 100644
+--- a/docs/ref/models/querysets.txt
++++ b/docs/ref/models/querysets.txt
+@@ -1310,6 +1310,15 @@ less ambiguous than storing a filtered result in the related manager's cache:
+     ...     Prefetch('pizzas', queryset=queryset))
+     >>> vegetarian_pizzas = restaurants[0].pizzas.all()
+ 
++The ``queryset`` argument of ``Prefetch`` may be sliced to limit the number
++of related objects fetched for each parent instance. The slice is applied per
++related object, which requires database support for :ref:`window functions
++<window-functions>`:
++
++    >>> restaurants = Restaurant.objects.prefetch_related(
++    ...     Prefetch('pizzas', queryset=Pizza.objects.order_by('name')[:2],
++    ...              to_attr='first_two_pizzas'))
++
+ Custom prefetching also works with single related relations like
+ forward ``ForeignKey`` or ``OneToOneField``. Generally you'll want to use
+ :meth:`select_related()` for these relations, but there are a number of cases
+diff --git a/docs/releases/4.2.txt b/docs/releases/4.2.txt
+index ed00ee1350..341141b9bc 100644
+--- a/docs/releases/4.2.txt
++++ b/docs/releases/4.2.txt
+@@ -193,6 +193,10 @@ Models
+   :ref:`window-functions` with the exception of disjunctive filter lookups
+   against window functions when performing aggregation.
+ 
++* :class:`~django.db.models.Prefetch` now supports sliced querysets on
++  databases that support :ref:`window functions <window-functions>`. The
++  slice is applied per related object.
++
+ Requests and Responses
+ ~~~~~~~~~~~~~~~~~~~~~~
+ 

@@ -1,0 +1,71 @@
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..ed7bae2ef 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -25,7 +25,7 @@ from requests.exceptions import HTTPError
+ from sphinx.application import Sphinx
+ from sphinx.builders import Builder
+ from sphinx.locale import __
+-from sphinx.util import encode_uri, requests, logging
++from sphinx.util import docname_join, encode_uri, requests, logging
+ from sphinx.util.console import (  # type: ignore
+     purple, red, darkgreen, darkgray, turquoise
+ )
+@@ -109,6 +109,40 @@ class CheckExternalLinksBuilder(Builder):
+             thread.start()
+             self.workers.append(thread)
+ 
++    def _is_valid_local_link(self, uri: str, docname: str) -> bool:
++        """Check whether a local (internal) link actually exists.
++
++        A local link is resolved relative to the document which contains
++        it.  It is considered valid if it points at an existing file in the
++        source tree or at a known document.
++        """
++        # strip off the anchor and the query string
++        uri = uri.split('#', 1)[0].split('?', 1)[0]
++        if not uri:
++            return True
++
++        # decode percent-encoded characters before touching the filesystem
++        uri = unquote(uri)
++
++        # resolve the link relative to the current document
++        _, filename = self.env.relfn2path(uri, docname)
++        if path.exists(filename):
++            return True
++
++        # also accept references to source documents by their docname
++        # (for example "other", "other.rst" or "other.html")
++        candidates = [uri]
++        for suffix in self.env.config.source_suffix:
++            if uri.endswith(suffix):
++                candidates.append(uri[:-len(suffix)])
++        if uri.endswith('.html'):
++            candidates.append(uri[:-len('.html')])
++        for candidate in candidates:
++            if docname_join(docname, candidate) in self.env.found_docs:
++                return True
++
++        return False
++
+     def check_thread(self) -> None:
+         kwargs = {
+             'allow_redirects': True,
+@@ -213,7 +247,15 @@ class CheckExternalLinksBuilder(Builder):
+             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+             elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
++                for rex in self.to_ignore:
++                    if rex.match(uri):
++                        return 'ignored', '', 0
++                if self._is_valid_local_link(uri, docname):
++                    return 'local', '', 0
++                else:
++                    info = 'local file not found'
++                    self.broken[uri] = info
++                    return 'broken', info, 0
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:

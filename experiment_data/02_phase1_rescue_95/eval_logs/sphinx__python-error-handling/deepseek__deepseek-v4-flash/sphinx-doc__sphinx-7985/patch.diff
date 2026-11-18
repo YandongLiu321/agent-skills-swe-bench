@@ -1,0 +1,126 @@
+diff --git a/CHANGES b/CHANGES
+index bc932a7d4..96b981540 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -36,6 +36,7 @@ Features added
+   The warnings printed from this functionality can be suppressed by setting
+   :confval:`c_warn_on_allowed_pre_v3`` to ``True``.
+   The functionality is immediately deprecated.
++* #1078: linkcheck: Support checking local links
+ 
+ Bugs fixed
+ ----------
+diff --git a/doc/usage/configuration.rst b/doc/usage/configuration.rst
+index eba6904c4..0f6a38746 100644
+--- a/doc/usage/configuration.rst
++++ b/doc/usage/configuration.rst
+@@ -2391,6 +2391,10 @@ builder, the HTML options also apply where appropriate.
+ Options for the linkcheck builder
+ ---------------------------------
+ 
++The linkcheck builder checks not only external links (``http:`` and ``https:``)
++but also local links.  It reports broken local links (for example a link to a
++non-existent document or file) as errors.
++
+ .. confval:: linkcheck_ignore
+ 
+    A list of regular expressions that match URIs that should not be checked
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..4363380aa 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -9,6 +9,7 @@
+ """
+ 
+ import json
++import posixpath
+ import queue
+ import re
+ import socket
+@@ -89,6 +90,7 @@ class CheckExternalLinksBuilder(Builder):
+                                for x in self.app.config.linkcheck_anchors_ignore]
+         self.auth = [(re.compile(pattern), auth_info) for pattern, auth_info
+                      in self.app.config.linkcheck_auth]
++        self._local_link_suffixes = self._get_local_link_suffixes()
+         self.good = set()       # type: Set[str]
+         self.broken = {}        # type: Dict[str, str]
+         self.redirected = {}    # type: Dict[str, Tuple[str, int]]
+@@ -109,6 +111,48 @@ class CheckExternalLinksBuilder(Builder):
+             thread.start()
+             self.workers.append(thread)
+ 
++    def _get_local_link_suffixes(self) -> Set[str]:
++        """Return suffixes which are used for local links (ex. ``.html``)."""
++        suffixes = {'.html'}  # type: Set[str]
++        source_suffix = self.app.config.source_suffix
++        if isinstance(source_suffix, str):
++            suffixes.add(source_suffix)
++        else:
++            suffixes.update(source_suffix)
++        return suffixes
++
++    def is_local_link_broken(self, uri: str, docname: str) -> bool:
++        """Return True if the local link *uri* refers to a non-existent target."""
++        # split off the anchor
++        if '#' in uri:
++            req_url = uri.split('#', 1)[0]
++        else:
++            req_url = uri
++
++        if not req_url:
++            # a link to an anchor in the same document
++            return False
++
++        # decode escaped characters (ex. %20)
++        req_url = unquote(req_url)
++
++        # resolve the target relative to the current document
++        reldir = posixpath.dirname(docname)
++        target = posixpath.normpath(posixpath.join(reldir, req_url))
++
++        # a link to another document
++        target_docname, target_suffix = posixpath.splitext(target)
++        if target in self.env.found_docs:
++            return False
++        elif target_suffix in self._local_link_suffixes and target_docname in self.env.found_docs:
++            return False
++
++        # a link to a file (ex. a static file in the source directory)
++        if path.exists(path.join(self.app.srcdir, target)):
++            return False
++
++        return True
++
+     def check_thread(self) -> None:
+         kwargs = {
+             'allow_redirects': True,
+@@ -210,19 +254,24 @@ class CheckExternalLinksBuilder(Builder):
+ 
+         def check() -> Tuple[str, str, int]:
+             # check for various conditions without bothering the network
++            for rex in self.to_ignore:
++                if rex.match(uri):
++                    return 'ignored', '', 0
+             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+-            elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+                 return 'broken', self.broken[uri], 0
+             elif uri in self.redirected:
+                 return 'redirected', self.redirected[uri][0], self.redirected[uri][1]
+-            for rex in self.to_ignore:
+-                if rex.match(uri):
+-                    return 'ignored', '', 0
++            elif not uri.startswith(('http:', 'https:')):
++                if self.is_local_link_broken(uri, docname):
++                    info = __('local file not found')
++                    self.broken[uri] = info
++                    return 'broken', info, 0
++                else:
++                    return 'local', '', 0
+ 
+             # need to actually check the URI
+             for _ in range(self.app.config.linkcheck_retries):

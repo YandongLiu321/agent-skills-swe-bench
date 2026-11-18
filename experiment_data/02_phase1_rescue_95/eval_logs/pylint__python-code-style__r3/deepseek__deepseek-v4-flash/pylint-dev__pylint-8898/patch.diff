@@ -1,0 +1,71 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..803ab23b1 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,65 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++_REGEX_OPENING = {"(": ")", "[": "]", "{": "}"}
++
++
++def _split_regexps(value: str) -> Sequence[str]:
++    """Split a comma separated list of regular expressions.
++
++    Contrary to ``pylint.utils.utils._splitstrip``, a comma that is part
++    of a regular expression is not used as a separator. This is the case for
++    commas enclosed in a group, a character class or a repetition
++    (e.g. ``{1,3}``), as well as for commas escaped with a backslash.
++    """
++    regexps: list[str] = []
++    current: list[str] = []
++    # Stack of the closing characters of the groups, character classes and
++    # repetitions currently opened, so that commas inside them are not seen
++    # as separators.
++    expected_closings: list[str] = []
++    escaped = False
++    for char in value:
++        if escaped:
++            current.append(char)
++            escaped = False
++            continue
++        if char == "\\":
++            current.append(char)
++            escaped = True
++            continue
++        if expected_closings and expected_closings[-1] == "]":
++            # Inside a character class only an unescaped ']' has a special
++            # meaning, everything else is a literal.
++            if char == "]":
++                expected_closings.pop()
++            current.append(char)
++            continue
++        if char in _REGEX_OPENING:
++            expected_closings.append(_REGEX_OPENING[char])
++            current.append(char)
++            continue
++        if expected_closings and char == expected_closings[-1]:
++            expected_closings.pop()
++            current.append(char)
++            continue
++        if char == "," and not expected_closings:
++            word = "".join(current).strip()
++            if word:
++                regexps.append(word)
++            current = []
++            continue
++        current.append(char)
++    word = "".join(current).strip()
++    if word:
++        regexps.append(word)
++    return regexps
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regexps(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 

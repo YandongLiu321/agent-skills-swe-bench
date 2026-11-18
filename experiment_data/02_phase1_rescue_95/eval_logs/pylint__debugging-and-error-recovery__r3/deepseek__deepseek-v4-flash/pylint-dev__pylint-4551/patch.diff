@@ -1,0 +1,92 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..06911f58 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -39,6 +39,55 @@ def _astroid_wrapper(func, modname):
+     return None
+ 
+ 
++def _get_annotation(node):
++    """Return the type annotation node attached to an assignment, if any.
++
++    The annotation can be directly attached to the assignment (``x: int``,
++    ``self.x: int``) or it can come from an annotated function argument that
++    is assigned to the name (``self.x = arg`` where ``arg`` is annotated).
++    """
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Assign) and isinstance(parent.value, astroid.Name):
++        frame = node.frame()
++        if not isinstance(frame, astroid.FunctionDef):
++            return None
++        args = frame.args
++        named_annotations = {}
++        for arg, annotation in zip(
++            getattr(args, "posonlyargs", []),
++            getattr(args, "posonlyargs_annotations", []),
++        ):
++            named_annotations[arg.name] = annotation
++        for arg, annotation in zip(args.args, args.annotations):
++            named_annotations[arg.name] = annotation
++        for arg, annotation in zip(args.kwonlyargs, args.kwonlyargs_annotations):
++            named_annotations[arg.name] = annotation
++        if args.vararg is not None:
++            named_annotations[args.vararg] = args.varargannotation
++        if args.kwarg is not None:
++            named_annotations[args.kwarg] = args.kwargannotation
++        return named_annotations.get(parent.value.name)
++    return None
++
++
++def _infer_annotation(node):
++    """Infer the values of the type annotation of an assignment node.
++
++    Return the set of inferred values when an annotation is available and
++    ``None`` otherwise, so that the caller can fall back on the regular
++    inference.
++    """
++    annotation = _get_annotation(node)
++    if annotation is None:
++        return None
++    try:
++        return set(annotation.infer())
++    except astroid.InferenceError:
++        return None
++
++
+ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+     """Return an iterator on interfaces implemented by the given class node."""
+     try:
+@@ -218,7 +267,9 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _infer_annotation(node)
++            if values is None:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -229,12 +280,14 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+ 
+         handle instance_attrs_type
+         """
+-        try:
+-            values = set(node.infer())
+-            current = set(parent.instance_attrs_type[node.attrname])
+-            parent.instance_attrs_type[node.attrname] = list(current | values)
+-        except astroid.InferenceError:
+-            pass
++        values = _infer_annotation(node)
++        if values is None:
++            try:
++                values = set(node.infer())
++            except astroid.InferenceError:
++                return
++        current = set(parent.instance_attrs_type[node.attrname])
++        parent.instance_attrs_type[node.attrname] = list(current | values)
+ 
+     def visit_import(self, node):
+         """visit an astroid.Import node

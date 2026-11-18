@@ -1,0 +1,87 @@
+diff --git a/django/db/migrations/operations/models.py b/django/db/migrations/operations/models.py
+index 982816be3a..d1a6e51bec 100755
+--- a/django/db/migrations/operations/models.py
++++ b/django/db/migrations/operations/models.py
+@@ -320,13 +320,15 @@ class RenameModel(ModelOperation):
+         new_model = to_state.apps.get_model(app_label, self.new_name)
+         if self.allow_migrate_model(schema_editor.connection.alias, new_model):
+             old_model = from_state.apps.get_model(app_label, self.old_name)
+-            # Move the main table
+-            schema_editor.alter_db_table(
+-                new_model,
+-                old_model._meta.db_table,
+-                new_model._meta.db_table,
+-            )
+-            # Alter the fields pointing to us
++            db_table_changed = old_model._meta.db_table != new_model._meta.db_table
++            # Move the main table if its name has changed.
++            if db_table_changed:
++                schema_editor.alter_db_table(
++                    new_model,
++                    old_model._meta.db_table,
++                    new_model._meta.db_table,
++                )
++            # Alter the fields pointing to us.
+             for related_object in old_model._meta.related_objects:
+                 if related_object.related_model == old_model:
+                     model = new_model
+@@ -340,11 +342,20 @@ class RenameModel(ModelOperation):
+                 to_field = to_state.apps.get_model(
+                     *related_key
+                 )._meta.get_field(related_object.field.name)
+-                schema_editor.alter_field(
+-                    model,
+-                    related_object.field,
+-                    to_field,
+-                )
++                # Don't alter the field if only the related model's name
++                # changed. The database table, column, and referenced column
++                # are unchanged in that case.
++                if (
++                    db_table_changed or
++                    related_object.field.many_to_many or
++                    related_object.field.column != to_field.column or
++                    related_object.field.target_field.column != to_field.target_field.column
++                ):
++                    schema_editor.alter_field(
++                        model,
++                        related_object.field,
++                        to_field,
++                    )
+             # Rename M2M fields whose name is based on this model's name.
+             fields = zip(old_model._meta.local_many_to_many, new_model._meta.local_many_to_many)
+             for (old_field, new_field) in fields:
+@@ -354,18 +365,23 @@ class RenameModel(ModelOperation):
+                 # Rename the M2M table that's based on this model's name.
+                 old_m2m_model = old_field.remote_field.through
+                 new_m2m_model = new_field.remote_field.through
+-                schema_editor.alter_db_table(
+-                    new_m2m_model,
+-                    old_m2m_model._meta.db_table,
+-                    new_m2m_model._meta.db_table,
+-                )
++                m2m_db_table_changed = old_m2m_model._meta.db_table != new_m2m_model._meta.db_table
++                if m2m_db_table_changed:
++                    schema_editor.alter_db_table(
++                        new_m2m_model,
++                        old_m2m_model._meta.db_table,
++                        new_m2m_model._meta.db_table,
++                    )
+                 # Rename the column in the M2M table that's based on this
+                 # model's name.
+-                schema_editor.alter_field(
+-                    new_m2m_model,
+-                    old_m2m_model._meta.get_field(old_model._meta.model_name),
+-                    new_m2m_model._meta.get_field(new_model._meta.model_name),
+-                )
++                old_model_field = old_m2m_model._meta.get_field(old_model._meta.model_name)
++                new_model_field = new_m2m_model._meta.get_field(new_model._meta.model_name)
++                if m2m_db_table_changed or old_model_field.column != new_model_field.column:
++                    schema_editor.alter_field(
++                        new_m2m_model,
++                        old_model_field,
++                        new_model_field,
++                    )
+ 
+     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+         self.new_name_lower, self.old_name_lower = self.old_name_lower, self.new_name_lower

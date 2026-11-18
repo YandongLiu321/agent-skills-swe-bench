@@ -1,0 +1,45 @@
+diff --git a/lib/matplotlib/figure.py b/lib/matplotlib/figure.py
+index b4c38368bf..f68c472e0a 100755
+--- a/lib/matplotlib/figure.py
++++ b/lib/matplotlib/figure.py
+@@ -201,6 +201,31 @@ class FigureBase(Artist):
+         self.suppressComposite = None
+         self.set(**kwargs)
+ 
++    def __getstate__(self):
++        state = super().__getstate__()
++
++        # The label groupers only hold weak references to the Axes, which
++        # cannot be pickled; replace them with the actual groups of Axes and
++        # rebuild the groupers in `__setstate__`.
++        state['_align_label_groups'] = {
++            axis_name: list(grouper)
++            for axis_name, grouper in self._align_label_groups.items()}
++        return state
++
++    def __setstate__(self, state):
++        # Restore the label alignment groupers, which were stored as concrete
++        # groups of Axes since their weak references cannot be pickled.
++        align_label_groups = state.pop("_align_label_groups",
++                                       {"x": [], "y": []})
++        state["_align_label_groups"] = {
++            axis_name: cbook.Grouper() for axis_name in align_label_groups}
++
++        self.__dict__ = state
++
++        for axis_name, groups in align_label_groups.items():
++            for group in groups:
++                self._align_label_groups[axis_name].join(*group)
++
+     def _get_draw_artists(self, renderer):
+         """Also runs apply_aspect"""
+         artists = self.get_children()
+@@ -3185,7 +3210,7 @@ None}, default: None
+                 f"This figure was saved with matplotlib version {version} and "
+                 f"is unlikely to function correctly.")
+ 
+-        self.__dict__ = state
++        super().__setstate__(state)
+ 
+         # re-initialise some of the unstored state information
+         FigureCanvasBase(self)  # Set self.canvas.

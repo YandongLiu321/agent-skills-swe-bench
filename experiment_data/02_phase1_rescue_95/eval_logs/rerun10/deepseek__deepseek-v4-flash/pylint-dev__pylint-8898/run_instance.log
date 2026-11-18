@@ -1,0 +1,164 @@
+2026-09-30 22:43:30,971 - INFO - Creating container for pylint-dev__pylint-8898...
+2026-09-30 22:43:31,044 - INFO - Container for pylint-dev__pylint-8898 created: e9e725d09bf9ed806b00696d18f574b85337d85b4e2e33aa1b56dee2ac6181ba
+2026-09-30 22:43:31,187 - INFO - Container for pylint-dev__pylint-8898 started: e9e725d09bf9ed806b00696d18f574b85337d85b4e2e33aa1b56dee2ac6181ba
+2026-09-30 22:43:31,189 - INFO - Intermediate patch for pylint-dev__pylint-8898 written to logs\run_evaluation\rerun10\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\patch.diff, now applying to container...
+2026-09-30 22:43:31,303 - INFO - >>>>> Applied Patch:
+Checking patch pylint/utils/utils.py...
+Applied patch pylint/utils/utils.py cleanly.
+
+2026-09-30 22:43:31,674 - INFO - Git diff before:
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..5c50e1212 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,6 +213,10 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A separator can be escaped with a backslash or protected by quoting the
++    value, so that regular expressions containing the separator (for instance
++    a quantifier such as ``a{1,3}``) are not split apart.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+@@ -229,7 +233,55 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    fields: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    escaped = False
++    at_field_start = True
++    for character in string:
++        if escaped:
++            current.append(character)
++            escaped = False
++            at_field_start = False
++        elif quote is not None:
++            current.append(character)
++            if character == quote:
++                quote = None
++        elif character == "\\":
++            current.append(character)
++            escaped = True
++        elif character in "\"'" and at_field_start:
++            current.append(character)
++            quote = character
++        elif character == sep:
++            fields.append("".join(current))
++            current = []
++            at_field_start = True
++        elif character.isspace() and at_field_start:
++            current.append(character)
++        else:
++            current.append(character)
++            at_field_start = False
++    fields.append("".join(current))
++
++    result: list[str] = []
++    for field in fields:
++        field = field.strip()
++        # A separator escaped with a backslash is part of the value.
++        field = field.replace(f"\\{sep}", sep)
++        # Quotes are used to protect a separator inside a value. Only remove
++        # them when they actually did so, so that values such as ``''`` (used
++        # to represent an empty string) are preserved.
++        if (
++            len(field) >= 2
++            and field[0] == field[-1]
++            and field[0] in "\"'"
++            and sep in field
++        ):
++            field = field[1:-1]
++        if field:
++            result.append(field)
++    return result
+ 
+ 
+ def _unquote(string: str) -> str:
+2026-09-30 22:43:31,676 - INFO - Eval script for pylint-dev__pylint-8898 written to logs\run_evaluation\rerun10\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\eval.sh; copying to container...
+2026-09-30 22:43:40,596 - INFO - Test runtime: 8.85 seconds
+2026-09-30 22:43:40,597 - INFO - Test output for pylint-dev__pylint-8898 written to logs\run_evaluation\rerun10\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\test_output.txt
+2026-09-30 22:43:40,648 - INFO - Git diff after:
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..5c50e1212 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,6 +213,10 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A separator can be escaped with a backslash or protected by quoting the
++    value, so that regular expressions containing the separator (for instance
++    a quantifier such as ``a{1,3}``) are not split apart.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+@@ -229,7 +233,55 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    fields: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    escaped = False
++    at_field_start = True
++    for character in string:
++        if escaped:
++            current.append(character)
++            escaped = False
++            at_field_start = False
++        elif quote is not None:
++            current.append(character)
++            if character == quote:
++                quote = None
++        elif character == "\\":
++            current.append(character)
++            escaped = True
++        elif character in "\"'" and at_field_start:
++            current.append(character)
++            quote = character
++        elif character == sep:
++            fields.append("".join(current))
++            current = []
++            at_field_start = True
++        elif character.isspace() and at_field_start:
++            current.append(character)
++        else:
++            current.append(character)
++            at_field_start = False
++    fields.append("".join(current))
++
++    result: list[str] = []
++    for field in fields:
++        field = field.strip()
++        # A separator escaped with a backslash is part of the value.
++        field = field.replace(f"\\{sep}", sep)
++        # Quotes are used to protect a separator inside a value. Only remove
++        # them when they actually did so, so that values such as ``''`` (used
++        # to represent an empty string) are preserved.
++        if (
++            len(field) >= 2
++            and field[0] == field[-1]
++            and field[0] in "\"'"
++            and sep in field
++        ):
++            field = field[1:-1]
++        if field:
++            result.append(field)
++    return result
+ 
+ 
+ def _unquote(string: str) -> str:
+2026-09-30 22:43:40,650 - INFO - Grading answer for pylint-dev__pylint-8898...
+2026-09-30 22:43:40,651 - INFO - report: {'pylint-dev__pylint-8898': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/config/test_config.py::test_csv_regex_error']}, 'PASS_TO_PASS': {'success': ['tests/config/test_config.py::test_can_read_toml_env_variable', 'tests/config/test_config.py::test_unknown_message_id', 'tests/config/test_config.py::test_unknown_option_name', 'tests/config/test_config.py::test_unknown_short_option_name', 'tests/config/test_config.py::test_unknown_confidence', 'tests/config/test_config.py::test_empty_confidence', 'tests/config/test_config.py::test_unknown_yes_no', 'tests/config/test_config.py::test_unknown_py_version', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo-expected0]', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,bar-expected1]', 'tests/config/test_config.py::test_regex_error', 'tests/config/test_config.py::test_short_verbose', 'tests/config/test_config.py::test_argument_separator', 'tests/config/test_config.py::test_clear_cache_post_run', 'tests/config/test_config.py::test_enable_all_disable_all_mutually_exclusive', 'tests/config/test_config.py::test_disable_before_enable_all_takes_effect', 'tests/config/test_config.py::test_enable_before_disable_all_takes_effect'], 'failure': ['tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,']}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-8898: resolved: False
+2026-09-30 22:43:40,653 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-8898.rerun10...
+2026-09-30 22:43:55,961 - INFO - Container sweb.eval.pylint-dev__pylint-8898.rerun10 stopped successfully.
+2026-09-30 22:43:55,961 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-8898.rerun10...
+2026-09-30 22:43:56,063 - INFO - Container sweb.eval.pylint-dev__pylint-8898.rerun10 removed successfully.

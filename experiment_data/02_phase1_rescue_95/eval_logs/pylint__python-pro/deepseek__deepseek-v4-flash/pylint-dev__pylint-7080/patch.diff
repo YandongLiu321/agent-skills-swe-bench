@@ -1,0 +1,43 @@
+diff --git a/pylint/lint/pylinter.py b/pylint/lint/pylinter.py
+index e2bbf061..f143ee10 100755
+--- a/pylint/lint/pylinter.py
++++ b/pylint/lint/pylinter.py
+@@ -588,6 +588,10 @@ class PyLinter(
+         Returns iterator of paths to discovered modules and packages.
+         """
+         for something in files_or_modules:
++            # Normalize the path so that a trailing separator cannot produce
++            # mixed path separators on Windows while walking the tree. This is
++            # required for ``ignore-paths`` regexes to be matched consistently.
++            something = os.path.normpath(something)
+             if os.path.isdir(something) and not os.path.isfile(
+                 os.path.join(something, "__init__.py")
+             ):
+@@ -602,6 +606,14 @@ class PyLinter(
+                         self.config.ignore,
+                         self.config.ignore_patterns,
+                         self.config.ignore_paths,
++                    ) or _is_ignored_file(
++                        # Add a trailing separator so that patterns matching
++                        # the directory's contents (e.g. ``^src/gen/.*$``) are
++                        # also matched against the directory itself.
++                        root + os.sep,
++                        self.config.ignore,
++                        self.config.ignore_patterns,
++                        self.config.ignore_paths,
+                     ):
+                         skip_subtrees.append(root)
+                         continue
+@@ -614,6 +626,12 @@ class PyLinter(
+                             os.path.join(root, file)
+                             for file in files
+                             if file.endswith(".py")
++                            and not _is_ignored_file(
++                                os.path.join(root, file),
++                                self.config.ignore,
++                                self.config.ignore_patterns,
++                                self.config.ignore_paths,
++                            )
+                         )
+             else:
+                 yield something

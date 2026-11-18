@@ -1,0 +1,72 @@
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..5c50e1212 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,6 +213,10 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A separator can be escaped with a backslash or protected by quoting the
++    value, so that regular expressions containing the separator (for instance
++    a quantifier such as ``a{1,3}``) are not split apart.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+@@ -229,7 +233,55 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    fields: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    escaped = False
++    at_field_start = True
++    for character in string:
++        if escaped:
++            current.append(character)
++            escaped = False
++            at_field_start = False
++        elif quote is not None:
++            current.append(character)
++            if character == quote:
++                quote = None
++        elif character == "\\":
++            current.append(character)
++            escaped = True
++        elif character in "\"'" and at_field_start:
++            current.append(character)
++            quote = character
++        elif character == sep:
++            fields.append("".join(current))
++            current = []
++            at_field_start = True
++        elif character.isspace() and at_field_start:
++            current.append(character)
++        else:
++            current.append(character)
++            at_field_start = False
++    fields.append("".join(current))
++
++    result: list[str] = []
++    for field in fields:
++        field = field.strip()
++        # A separator escaped with a backslash is part of the value.
++        field = field.replace(f"\\{sep}", sep)
++        # Quotes are used to protect a separator inside a value. Only remove
++        # them when they actually did so, so that values such as ``''`` (used
++        # to represent an empty string) are preserved.
++        if (
++            len(field) >= 2
++            and field[0] == field[-1]
++            and field[0] in "\"'"
++            and sep in field
++        ):
++            field = field[1:-1]
++        if field:
++            result.append(field)
++    return result
+ 
+ 
+ def _unquote(string: str) -> str:

@@ -1,0 +1,61 @@
+diff --git a/pylint/lint/pylinter.py b/pylint/lint/pylinter.py
+index e2bbf061..d66080ae 100755
+--- a/pylint/lint/pylinter.py
++++ b/pylint/lint/pylinter.py
+@@ -593,31 +593,48 @@ class PyLinter(
+             ):
+                 skip_subtrees: list[str] = []
+                 for root, _, files in os.walk(something):
+-                    if any(root.startswith(s) for s in skip_subtrees):
++                    norm_root = os.path.normpath(root)
++                    abs_root = os.path.abspath(norm_root)
++                    if any(
++                        abs_root == subtree or abs_root.startswith(subtree + os.sep)
++                        for subtree in skip_subtrees
++                    ):
+                         # Skip subtree of already discovered package.
+                         continue
+ 
+-                    if _is_ignored_file(
+-                        root,
+-                        self.config.ignore,
+-                        self.config.ignore_patterns,
+-                        self.config.ignore_paths,
++                    # A directory can be ignored because of its name (``ignore``
++                    # or ``ignore-patterns``) or because of its path
++                    # (``ignore-paths``). The latter is checked with and without a
++                    # trailing separator so that patterns such as
++                    # ``^path/to/directory/.*$`` also match the directory itself.
++                    if self._is_ignored_file(norm_root) or self._is_ignored_file(
++                        norm_root + os.sep
+                     ):
+-                        skip_subtrees.append(root)
++                        skip_subtrees.append(abs_root)
+                         continue
+ 
+                     if "__init__.py" in files:
+-                        skip_subtrees.append(root)
++                        skip_subtrees.append(abs_root)
+                         yield root
+                     else:
+                         yield from (
+                             os.path.join(root, file)
+                             for file in files
+                             if file.endswith(".py")
++                            and not self._is_ignored_file(os.path.join(root, file))
+                         )
+             else:
+                 yield something
+ 
++    def _is_ignored_file(self, file_path: str) -> bool:
++        """Return whether the given path is matched by an ignore option."""
++        return _is_ignored_file(
++            file_path,
++            self.config.ignore,
++            self.config.ignore_patterns,
++            self.config.ignore_paths,
++        )
++
+     def check(self, files_or_modules: Sequence[str] | str) -> None:
+         """Main checking entry: check a list of files or modules from their name.
+ 

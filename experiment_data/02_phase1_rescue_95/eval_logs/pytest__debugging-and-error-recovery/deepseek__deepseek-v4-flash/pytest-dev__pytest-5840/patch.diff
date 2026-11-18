@@ -1,0 +1,65 @@
+diff --git a/src/_pytest/config/__init__.py b/src/_pytest/config/__init__.py
+index 3a0eca546..5d79289de 100644
+--- a/src/_pytest/config/__init__.py
++++ b/src/_pytest/config/__init__.py
+@@ -406,7 +406,14 @@ class PytestPluginManager(PluginManager):
+         else:
+             directory = path
+ 
+-        directory = unique_path(directory)
++        # Use the real path (which preserves the case) to locate and import
++        # the conftest.py files, but ``unique_path`` (which lowercases on
++        # case-insensitive file systems such as Windows) as the cache key.
++        # Python's import system is case-sensitive for module names even on
++        # case-insensitive file systems, so the casing of the path used to
++        # derive the module name must be preserved.
++        directory = directory.realpath()
++        unique_directory = unique_path(directory)
+ 
+         # XXX these days we may rather want to use config.rootdir
+         # and allow users to opt into looking into the rootdir parent
+@@ -419,7 +426,7 @@ class PytestPluginManager(PluginManager):
+             if conftestpath.isfile():
+                 mod = self._importconftest(conftestpath)
+                 clist.append(mod)
+-        self._dirpath2confmods[directory] = clist
++        self._dirpath2confmods[unique_directory] = clist
+         return clist
+ 
+     def _rget_with_confmod(self, name, path):
+@@ -432,13 +439,19 @@ class PytestPluginManager(PluginManager):
+         raise KeyError(name)
+ 
+     def _importconftest(self, conftestpath):
+-        # Use realpath to avoid loading the same conftest twice
+-        # with build systems that create build directories containing
+-        # symlinks to actual files.
+-        conftestpath = unique_path(conftestpath)
++        # Use unique_path as the cache key so that the same conftest is not
++        # loaded twice when reached through different path casings or
++        # symlinks (see also the build directory comment below).
++        unique_conftestpath = unique_path(conftestpath)
+         try:
+-            return self._conftestpath2mod[conftestpath]
++            return self._conftestpath2mod[unique_conftestpath]
+         except KeyError:
++            # Use realpath to avoid loading the same conftest twice
++            # with build systems that create build directories containing
++            # symlinks to actual files.  Contrary to unique_path, realpath
++            # preserves the case of the path, which is important because the
++            # module name derived from the path is case-sensitive on Windows.
++            conftestpath = conftestpath.realpath()
+             pkgpath = conftestpath.pypkgpath()
+             if pkgpath is None:
+                 _ensure_removed_sysmodule(conftestpath.purebasename)
+@@ -454,8 +467,8 @@ class PytestPluginManager(PluginManager):
+                 raise ConftestImportFailure(conftestpath, sys.exc_info())
+ 
+             self._conftest_plugins.add(mod)
+-            self._conftestpath2mod[conftestpath] = mod
+-            dirpath = conftestpath.dirpath()
++            self._conftestpath2mod[unique_conftestpath] = mod
++            dirpath = unique_conftestpath.dirpath()
+             if dirpath in self._dirpath2confmods:
+                 for path, mods in self._dirpath2confmods.items():
+                     if path and path.relto(dirpath) or path == dirpath:

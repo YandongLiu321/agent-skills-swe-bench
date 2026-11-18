@@ -1,0 +1,140 @@
+2026-10-07 04:25:41,031 - INFO - Creating container for pylint-dev__pylint-8898...
+2026-10-07 04:25:41,088 - INFO - Container for pylint-dev__pylint-8898 created: 5e8711bff7fe5b74f6c292b1eb0d6477c3cd08897c9c0e6703fae298cd9871c8
+2026-10-07 04:25:41,220 - INFO - Container for pylint-dev__pylint-8898 started: 5e8711bff7fe5b74f6c292b1eb0d6477c3cd08897c9c0e6703fae298cd9871c8
+2026-10-07 04:25:41,221 - INFO - Intermediate patch for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-code-style\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\patch.diff, now applying to container...
+2026-10-07 04:25:41,321 - INFO - >>>>> Applied Patch:
+Checking patch pylint/config/argument.py...
+Applied patch pylint/config/argument.py cleanly.
+
+2026-10-07 04:25:41,886 - INFO - Git diff before:
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..030eedde2 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,55 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++def _split_regexes(value: str | Sequence[str]) -> list[str]:
++    """Split a comma separated list of regular expressions.
++
++    Unlike a naive split on commas, commas that are part of a regular
++    expression (i.e. inside a character class, a group or a repetition) are not
++    treated as separators. A comma can also be escaped with a backslash in order
++    to be part of a regular expression.
++    """
++    if not isinstance(value, str):
++        return [str(regex).strip() for regex in value]
++
++    regexes: list[str] = []
++    current: list[str] = []
++    depth = 0
++    in_character_class = False
++    escaped = False
++    for char in value:
++        if escaped:
++            current.append(char)
++            escaped = False
++        elif char == "\\":
++            current.append(char)
++            escaped = True
++        elif in_character_class:
++            current.append(char)
++            if char == "]":
++                in_character_class = False
++        elif char == "[":
++            in_character_class = True
++            current.append(char)
++        else:
++            if char in "({":
++                depth += 1
++            elif char in ")}" and depth > 0:
++                depth -= 1
++            elif char == "," and depth == 0:
++                regexes.append("".join(current).strip())
++                current = []
++                continue
++            current.append(char)
++
++    regexes.append("".join(current).strip())
++    return [regex for regex in regexes if regex]
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regexes(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+2026-10-07 04:25:41,887 - INFO - Eval script for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-code-style\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\eval.sh; copying to container...
+2026-10-07 04:25:47,788 - INFO - Test runtime: 5.86 seconds
+2026-10-07 04:25:47,789 - INFO - Test output for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-code-style\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\test_output.txt
+2026-10-07 04:25:47,824 - INFO - Git diff after:
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..030eedde2 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,55 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++def _split_regexes(value: str | Sequence[str]) -> list[str]:
++    """Split a comma separated list of regular expressions.
++
++    Unlike a naive split on commas, commas that are part of a regular
++    expression (i.e. inside a character class, a group or a repetition) are not
++    treated as separators. A comma can also be escaped with a backslash in order
++    to be part of a regular expression.
++    """
++    if not isinstance(value, str):
++        return [str(regex).strip() for regex in value]
++
++    regexes: list[str] = []
++    current: list[str] = []
++    depth = 0
++    in_character_class = False
++    escaped = False
++    for char in value:
++        if escaped:
++            current.append(char)
++            escaped = False
++        elif char == "\\":
++            current.append(char)
++            escaped = True
++        elif in_character_class:
++            current.append(char)
++            if char == "]":
++                in_character_class = False
++        elif char == "[":
++            in_character_class = True
++            current.append(char)
++        else:
++            if char in "({":
++                depth += 1
++            elif char in ")}" and depth > 0:
++                depth -= 1
++            elif char == "," and depth == 0:
++                regexes.append("".join(current).strip())
++                current = []
++                continue
++            current.append(char)
++
++    regexes.append("".join(current).strip())
++    return [regex for regex in regexes if regex]
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regexes(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+2026-10-07 04:25:47,824 - INFO - Grading answer for pylint-dev__pylint-8898...
+2026-10-07 04:25:47,825 - INFO - report: {'pylint-dev__pylint-8898': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/config/test_config.py::test_csv_regex_error']}, 'PASS_TO_PASS': {'success': ['tests/config/test_config.py::test_can_read_toml_env_variable', 'tests/config/test_config.py::test_unknown_message_id', 'tests/config/test_config.py::test_unknown_option_name', 'tests/config/test_config.py::test_unknown_short_option_name', 'tests/config/test_config.py::test_unknown_confidence', 'tests/config/test_config.py::test_empty_confidence', 'tests/config/test_config.py::test_unknown_yes_no', 'tests/config/test_config.py::test_unknown_py_version', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo-expected0]', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,bar-expected1]', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,', 'tests/config/test_config.py::test_regex_error', 'tests/config/test_config.py::test_short_verbose', 'tests/config/test_config.py::test_argument_separator', 'tests/config/test_config.py::test_clear_cache_post_run', 'tests/config/test_config.py::test_enable_all_disable_all_mutually_exclusive', 'tests/config/test_config.py::test_disable_before_enable_all_takes_effect', 'tests/config/test_config.py::test_enable_before_disable_all_takes_effect'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-8898: resolved: False
+2026-10-07 04:25:47,825 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-8898.pylint__python-code-style...
+2026-10-07 04:26:03,090 - INFO - Container sweb.eval.pylint-dev__pylint-8898.pylint__python-code-style stopped successfully.
+2026-10-07 04:26:03,090 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-8898.pylint__python-code-style...
+2026-10-07 04:26:03,172 - INFO - Container sweb.eval.pylint-dev__pylint-8898.pylint__python-code-style removed successfully.

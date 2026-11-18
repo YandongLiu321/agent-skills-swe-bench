@@ -1,0 +1,24 @@
+diff --git a/django/core/servers/basehttp.py b/django/core/servers/basehttp.py
+index fef5532e58..b2b69ae1c1 100644
+--- a/django/core/servers/basehttp.py
++++ b/django/core/servers/basehttp.py
+@@ -143,6 +143,19 @@ class ServerHandler(simple_server.ServerHandler):
+         if self.headers.get("Connection") == "close":
+             self.request_handler.close_connection = True
+ 
++    def write(self, data):
++        # RFC 9110 Section 9.3.2 requires that the response body be omitted for
++        # HEAD requests. The headers are still sent (on the first write) with
++        # the same content length handling as for any other request.
++        if self.environ["REQUEST_METHOD"] == "HEAD":
++            if not self.headers_sent:
++                self.bytes_sent = len(data)
++                self.send_headers()
++            else:
++                self.bytes_sent += len(data)
++        else:
++            super().write(data)
++
+     def close(self):
+         self.get_stdin().read()
+         super().close()

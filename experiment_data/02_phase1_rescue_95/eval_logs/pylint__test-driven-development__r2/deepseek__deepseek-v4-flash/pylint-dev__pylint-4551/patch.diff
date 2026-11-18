@@ -1,0 +1,91 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..240031ae 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -76,6 +76,55 @@ class IdGeneratorMixIn:
+         return self.id_count
+ 
+ 
++def _get_argument_annotations(arguments):
++    """Return a mapping from argument name to its annotation node.
++
++    Handles positional, positional-only, keyword-only, variadic and
++    keyword arguments.
++    """
++    annotations = {}
++    for arg, annotation in zip(arguments.args, arguments.annotations):
++        if annotation is not None:
++            annotations[arg.name] = annotation
++    for arg, annotation in zip(
++        arguments.posonlyargs, arguments.posonlyargs_annotations
++    ):
++        if annotation is not None:
++            annotations[arg.name] = annotation
++    for arg, annotation in zip(
++        arguments.kwonlyargs, arguments.kwonlyargs_annotations
++    ):
++        if annotation is not None:
++            annotations[arg.name] = annotation
++    if arguments.vararg and arguments.varargannotation is not None:
++        annotations[arguments.vararg] = arguments.varargannotation
++    if arguments.kwarg and arguments.kwargannotation is not None:
++        annotations[arguments.kwarg] = arguments.kwargannotation
++    return annotations
++
++
++def _get_annotation(node):
++    """Return the type annotation associated with an assignment node.
++
++    The annotation may either be defined directly on an annotated assignment
++    (``self.attr: str = ...`` or ``attr: str``) or on the argument of a
++    function from which the value is assigned (``self.attr = arg`` where
++    ``arg`` is annotated). ``None`` is returned when no annotation is found.
++    """
++    assign = node.parent
++    # Annotated assignment: ``self.attr: str`` or ``attr: str``
++    if isinstance(assign, astroid.AnnAssign) and assign.target is node:
++        return assign.annotation
++    # Assignment from an annotated function argument: ``self.attr = arg``
++    if isinstance(assign, astroid.Assign):
++        value = assign.value
++        if isinstance(value, astroid.Name):
++            frame = value.frame()
++            if isinstance(frame, (astroid.FunctionDef, astroid.AsyncFunctionDef)):
++                return _get_argument_annotations(frame.args).get(value.name)
++    return None
++
++
+ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+     """Walk on the project tree and resolve relationships.
+ 
+@@ -219,6 +268,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+ 
+             current = frame.locals_type[node.name]
+             values = set(node.infer())
++            annotation = _get_annotation(node)
++            # Type annotations are used when the value cannot be inferred,
++            # for instance when an annotated variable is left unassigned.
++            if annotation is not None and values <= {astroid.Uninferable}:
++                values = set(annotation.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -229,6 +283,18 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+ 
+         handle instance_attrs_type
+         """
++        annotation = _get_annotation(node)
++        if annotation is not None:
++            try:
++                values = set(annotation.infer())
++            except astroid.InferenceError:
++                values = set()
++            # The annotation takes precedence over the inferred value: it
++            # allows resolving attributes whose value cannot be inferred,
++            # for instance when the default value is ``None``.
++            if values - {astroid.Uninferable}:
++                parent.instance_attrs_type[node.attrname] = list(values)
++                return
+         try:
+             values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])

@@ -1,0 +1,38 @@
+diff --git a/astropy/io/fits/diff.py b/astropy/io/fits/diff.py
+index 100cdf1b8..f1e3bfd3a 100644
+--- a/astropy/io/fits/diff.py
++++ b/astropy/io/fits/diff.py
+@@ -1341,6 +1341,16 @@ class TableDataDiff(_BaseDiff):
+ 
+         super().__init__(a, b)
+ 
++    def _vla_equal(self, a, b):
++        """Compare two variable-length array values for equality."""
++        a = np.asarray(a)
++        b = np.asarray(b)
++        if a.shape != b.shape:
++            return False
++        if np.issubdtype(a.dtype, np.inexact):
++            return np.allclose(a, b, rtol=self.rtol, atol=self.atol, equal_nan=True)
++        return np.array_equal(a, b)
++
+     def _diff(self):
+         # Much of the code for comparing columns is similar to the code for
+         # comparing headers--consider refactoring
+@@ -1449,14 +1459,12 @@ class TableDataDiff(_BaseDiff):
+                 arrb.dtype, np.floating
+             ):
+                 diffs = where_not_allclose(arra, arrb, rtol=self.rtol, atol=self.atol)
+-            elif "P" in col.format:
++            elif "P" in col.format or "Q" in col.format:
+                 diffs = (
+                     [
+                         idx
+                         for idx in range(len(arra))
+-                        if not np.allclose(
+-                            arra[idx], arrb[idx], rtol=self.rtol, atol=self.atol
+-                        )
++                        if not self._vla_equal(arra[idx], arrb[idx])
+                     ],
+                 )
+             else:

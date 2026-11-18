@@ -1,0 +1,83 @@
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..0beeb271 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1475,7 +1475,7 @@ class Plotter:
+ 
+                 axes_df = self._filter_subplot_data(df, view)
+ 
+-                with pd.option_context("mode.use_inf_as_null", True):
++                with pd.option_context("mode.use_inf_as_na", True):
+                     if keep_na:
+                         # The simpler thing to do would be x.dropna().reindex(x.index).
+                         # But that doesn't work with the way that the subset iteration
+@@ -1631,10 +1631,12 @@ class Plotter:
+             ax = sub["ax"]
+             for axis in "xy":
+                 axis_key = sub[axis]
++                axis_obj = getattr(ax, f"{axis}axis")
++                scale = self._scales.get(axis_key)
+ 
+                 # Axis limits
+                 if axis_key in p._limits:
+-                    convert_units = getattr(ax, f"{axis}axis").convert_units
++                    convert_units = axis_obj.convert_units
+                     a, b = p._limits[axis_key]
+                     lo = a if a is None else convert_units(a)
+                     hi = b if b is None else convert_units(b)
+@@ -1643,6 +1645,20 @@ class Plotter:
+                     if isinstance(b, str):
+                         hi = cast(float, hi) + 0.5
+                     ax.set(**{f"{axis}lim": (lo, hi)})
++                elif isinstance(scale, Nominal):
++                    # Nominal scales simulate the behavior of categorical axes,
++                    # drawing the scale to +/- 0.5 from the first/last tick and
++                    # inverting the axis when it is the y axis.
++                    n = len(axis_obj.get_ticklocs())
++                    if n > 0:
++                        if axis == "x":
++                            ax.set_xlim(-.5, n - .5)
++                        else:
++                            ax.set_ylim(n - .5, -.5)
++
++                if isinstance(scale, Nominal):
++                    # Categorical axes do not show gridlines
++                    axis_obj.grid(False)
+ 
+         engine_default = None if p._target is not None else "tight"
+         layout_engine = p._layout_spec.get("engine", engine_default)
+diff --git a/seaborn/_oldcore.py b/seaborn/_oldcore.py
+index 192af381..9f521a47 100644
+--- a/seaborn/_oldcore.py
++++ b/seaborn/_oldcore.py
+@@ -1116,7 +1116,7 @@ class VectorPlotter:
+                 parts = []
+                 grouped = self.plot_data[var].groupby(self.converters[var], sort=False)
+                 for converter, orig in grouped:
+-                    with pd.option_context('mode.use_inf_as_null', True):
++                    with pd.option_context('mode.use_inf_as_na', True):
+                         orig = orig.dropna()
+                         if var in self.var_levels:
+                             # TODO this should happen in some centralized location
+diff --git a/seaborn/categorical.py b/seaborn/categorical.py
+index 3394c9c7..cbdc6fb1 100644
+--- a/seaborn/categorical.py
++++ b/seaborn/categorical.py
+@@ -1790,7 +1790,7 @@ class _LVPlotter(_CategoricalPlotter):
+         vals = np.asarray(vals)
+         # Remove infinite values while handling a 'object' dtype
+         # that can come from pd.Float64Dtype() input
+-        with pd.option_context('mode.use_inf_as_null', True):
++        with pd.option_context('mode.use_inf_as_na', True):
+             vals = vals[~pd.isnull(vals)]
+         n = len(vals)
+         p = self.outlier_prop

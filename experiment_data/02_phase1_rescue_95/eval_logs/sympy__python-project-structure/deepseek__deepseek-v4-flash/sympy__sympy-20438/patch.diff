@@ -1,0 +1,73 @@
+diff --git a/sympy/core/relational.py b/sympy/core/relational.py
+index e2e0b7fbcc..8c0aaf94e3 100644
+--- a/sympy/core/relational.py
++++ b/sympy/core/relational.py
+@@ -305,6 +305,8 @@ def _eval_simplify(self, **kwargs):
+         r = self
+         r = r.func(*[i.simplify(**kwargs) for i in r.args])
+         if r.is_Relational:
++            if not isinstance(r.lhs, Expr) or not isinstance(r.rhs, Expr):
++                return r
+             dif = r.lhs - r.rhs
+             # replace dif with a valid Number that will
+             # allow a definitive comparison with 0
+diff --git a/sympy/sets/handlers/issubset.py b/sympy/sets/handlers/issubset.py
+index fdca06025a..dfaa623f83 100644
+--- a/sympy/sets/handlers/issubset.py
++++ b/sympy/sets/handlers/issubset.py
+@@ -1,7 +1,7 @@
+ from sympy import S, Symbol
+ from sympy.core.logic import fuzzy_and, fuzzy_bool, fuzzy_not, fuzzy_or
+ from sympy.core.relational import Eq
+-from sympy.sets.sets import FiniteSet, Interval, Set, Union
++from sympy.sets.sets import FiniteSet, Interval, ProductSet, Set, Union
+ from sympy.sets.fancysets import Complexes, Reals, Range, Rationals
+ from sympy.multipledispatch import dispatch
+ 
+@@ -12,6 +12,20 @@
+ def is_subset_sets(a, b): # noqa:F811
+     return None
+ 
++@dispatch(ProductSet, ProductSet)  # type: ignore # noqa:F811
++def is_subset_sets(a, b): # noqa:F811
++    if len(a.sets) != len(b.sets):
++        if fuzzy_not(a.is_empty):
++            return False
++        return None
++    if fuzzy_not(a.is_empty):
++        return fuzzy_and(s.is_subset(t) for s, t in zip(a.sets, b.sets))
++
++@dispatch(ProductSet, FiniteSet)  # type: ignore # noqa:F811
++def is_subset_sets(a, b): # noqa:F811
++    if a.is_finite_set:
++        return fuzzy_and(b.contains(e) for e in a)
++
+ @dispatch(Interval, Interval)  # type: ignore # noqa:F811
+ def is_subset_sets(a, b): # noqa:F811
+     # This is correct but can be made more comprehensive...
+diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py
+index 3c4aa86e36..ae72942e44 100644
+--- a/sympy/sets/sets.py
++++ b/sympy/sets/sets.py
+@@ -859,6 +859,21 @@ def _measure(self):
+             measure *= s.measure
+         return measure
+ 
++    def _eval_is_subset(self, other):
++        if self.is_finite_set:
++            if other.is_finite_set:
++                try:
++                    if len(self) > len(other):
++                        return False
++                except (TypeError, ValueError):
++                    pass
++            return fuzzy_and(other.contains(e) for e in self)
++
++    def _eval_rewrite_as_FiniteSet(self, *args, **kwargs):
++        if self.is_finite_set and self.is_iterable:
++            return FiniteSet(*self)
++        return None
++
+     def __len__(self):
+         return reduce(lambda a, b: a*b, (len(s) for s in self.args))
+ 

@@ -1,0 +1,172 @@
+2026-10-06 23:46:46,616 - INFO - Creating container for django__django-14792...
+2026-10-06 23:46:46,665 - INFO - Container for django__django-14792 created: 0ffaa944a76fa27b63d41edf15a9a254651c59c261bef9686e971bd44be7e918
+2026-10-06 23:46:46,813 - INFO - Container for django__django-14792 started: 0ffaa944a76fa27b63d41edf15a9a254651c59c261bef9686e971bd44be7e918
+2026-10-06 23:46:46,814 - INFO - Intermediate patch for django__django-14792 written to logs\run_evaluation\django__django-verification\deepseek__deepseek-v4-flash\django__django-14792\patch.diff, now applying to container...
+2026-10-06 23:46:46,908 - INFO - >>>>> Applied Patch:
+Checking patch django/db/backends/mysql/operations.py...
+Checking patch django/db/backends/oracle/operations.py...
+Checking patch django/db/backends/postgresql/operations.py...
+Checking patch django/db/backends/sqlite3/base.py...
+Applied patch django/db/backends/mysql/operations.py cleanly.
+Applied patch django/db/backends/oracle/operations.py cleanly.
+Applied patch django/db/backends/postgresql/operations.py cleanly.
+Applied patch django/db/backends/sqlite3/base.py cleanly.
+
+2026-10-06 23:46:47,882 - INFO - Git diff before:
+diff --git a/django/db/backends/mysql/operations.py b/django/db/backends/mysql/operations.py
+index 89730cee29..2be2dc3e4e 100644
+--- a/django/db/backends/mysql/operations.py
++++ b/django/db/backends/mysql/operations.py
+@@ -76,6 +76,9 @@ class DatabaseOperations(BaseDatabaseOperations):
+             return "DATE(%s)" % (field_name)
+ 
+     def _prepare_tzname_delta(self, tzname):
++        if not tzname.startswith(('UTC+', 'UTC-', '+', '-')):
++            # Named time zones, e.g. 'Etc/GMT+10', must be used as is.
++            return tzname
+         if '+' in tzname:
+             return tzname[tzname.find('+'):]
+         elif '-' in tzname:
+diff --git a/django/db/backends/oracle/operations.py b/django/db/backends/oracle/operations.py
+index 4cfc7da070..96fab736d3 100644
+--- a/django/db/backends/oracle/operations.py
++++ b/django/db/backends/oracle/operations.py
+@@ -108,6 +108,9 @@ END;
+     _tzname_re = _lazy_re_compile(r'^[\w/:+-]+$')
+ 
+     def _prepare_tzname_delta(self, tzname):
++        if not tzname.startswith(('UTC+', 'UTC-', '+', '-')):
++            # Named time zones, e.g. 'Etc/GMT+10', must be used as is.
++            return tzname
+         if '+' in tzname:
+             return tzname[tzname.find('+'):]
+         elif '-' in tzname:
+diff --git a/django/db/backends/postgresql/operations.py b/django/db/backends/postgresql/operations.py
+index 8d19872bea..d50fb4781e 100644
+--- a/django/db/backends/postgresql/operations.py
++++ b/django/db/backends/postgresql/operations.py
+@@ -44,6 +44,10 @@ class DatabaseOperations(BaseDatabaseOperations):
+         return "DATE_TRUNC('%s', %s)" % (lookup_type, field_name)
+ 
+     def _prepare_tzname_delta(self, tzname):
++        if not tzname.startswith(('UTC+', 'UTC-', '+', '-')):
++            # Named time zones, e.g. 'Etc/GMT+10', are understood by
++            # PostgreSQL and must not have their sign reversed.
++            return tzname
+         if '+' in tzname:
+             return tzname.replace('+', '-')
+         elif '-' in tzname:
+diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py
+index a64190f0d0..472230f8c6 100644
+--- a/django/db/backends/sqlite3/base.py
++++ b/django/db/backends/sqlite3/base.py
+@@ -433,14 +433,18 @@ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if conn_tzname:
+         dt = dt.replace(tzinfo=pytz.timezone(conn_tzname))
+     if tzname is not None and tzname != conn_tzname:
+-        sign_index = tzname.find('+') + tzname.find('-') + 1
+-        if sign_index > -1:
+-            sign = tzname[sign_index]
+-            tzname, offset = tzname.split(sign)
+-            if offset:
+-                hours, minutes = offset.split(':')
+-                offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
+-                dt += offset_delta if sign == '+' else -offset_delta
++        # A leading 'UTC+'/'UTC-' or '+', '-' marks a fixed-offset time zone
++        # whose offset must be split out. Named time zones, e.g.
++        # 'Etc/GMT+10', may contain a sign and must be used as is.
++        if tzname.startswith(('UTC+', 'UTC-', '+', '-')):
++            sign_index = tzname.find('+') + tzname.find('-') + 1
++            if sign_index > -1:
++                sign = tzname[sign_index]
++                tzname, offset = tzname.split(sign)
++                if offset:
++                    hours, minutes = offset.split(':')
++                    offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
++                    dt += offset_delta if sign == '+' else -offset_delta
+         dt = timezone.localtime(dt, pytz.timezone(tzname))
+     return dt
+2026-10-06 23:46:47,882 - INFO - Eval script for django__django-14792 written to logs\run_evaluation\django__django-verification\deepseek__deepseek-v4-flash\django__django-14792\eval.sh; copying to container...
+2026-10-06 23:46:53,901 - INFO - Test runtime: 5.98 seconds
+2026-10-06 23:46:53,902 - INFO - Test output for django__django-14792 written to logs\run_evaluation\django__django-verification\deepseek__deepseek-v4-flash\django__django-14792\test_output.txt
+2026-10-06 23:46:53,941 - INFO - Git diff after:
+diff --git a/django/db/backends/mysql/operations.py b/django/db/backends/mysql/operations.py
+index 89730cee29..2be2dc3e4e 100644
+--- a/django/db/backends/mysql/operations.py
++++ b/django/db/backends/mysql/operations.py
+@@ -76,6 +76,9 @@ class DatabaseOperations(BaseDatabaseOperations):
+             return "DATE(%s)" % (field_name)
+ 
+     def _prepare_tzname_delta(self, tzname):
++        if not tzname.startswith(('UTC+', 'UTC-', '+', '-')):
++            # Named time zones, e.g. 'Etc/GMT+10', must be used as is.
++            return tzname
+         if '+' in tzname:
+             return tzname[tzname.find('+'):]
+         elif '-' in tzname:
+diff --git a/django/db/backends/oracle/operations.py b/django/db/backends/oracle/operations.py
+index 4cfc7da070..96fab736d3 100644
+--- a/django/db/backends/oracle/operations.py
++++ b/django/db/backends/oracle/operations.py
+@@ -108,6 +108,9 @@ END;
+     _tzname_re = _lazy_re_compile(r'^[\w/:+-]+$')
+ 
+     def _prepare_tzname_delta(self, tzname):
++        if not tzname.startswith(('UTC+', 'UTC-', '+', '-')):
++            # Named time zones, e.g. 'Etc/GMT+10', must be used as is.
++            return tzname
+         if '+' in tzname:
+             return tzname[tzname.find('+'):]
+         elif '-' in tzname:
+diff --git a/django/db/backends/postgresql/operations.py b/django/db/backends/postgresql/operations.py
+index 8d19872bea..d50fb4781e 100644
+--- a/django/db/backends/postgresql/operations.py
++++ b/django/db/backends/postgresql/operations.py
+@@ -44,6 +44,10 @@ class DatabaseOperations(BaseDatabaseOperations):
+         return "DATE_TRUNC('%s', %s)" % (lookup_type, field_name)
+ 
+     def _prepare_tzname_delta(self, tzname):
++        if not tzname.startswith(('UTC+', 'UTC-', '+', '-')):
++            # Named time zones, e.g. 'Etc/GMT+10', are understood by
++            # PostgreSQL and must not have their sign reversed.
++            return tzname
+         if '+' in tzname:
+             return tzname.replace('+', '-')
+         elif '-' in tzname:
+diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py
+index a64190f0d0..472230f8c6 100644
+--- a/django/db/backends/sqlite3/base.py
++++ b/django/db/backends/sqlite3/base.py
+@@ -433,14 +433,18 @@ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if conn_tzname:
+         dt = dt.replace(tzinfo=pytz.timezone(conn_tzname))
+     if tzname is not None and tzname != conn_tzname:
+-        sign_index = tzname.find('+') + tzname.find('-') + 1
+-        if sign_index > -1:
+-            sign = tzname[sign_index]
+-            tzname, offset = tzname.split(sign)
+-            if offset:
+-                hours, minutes = offset.split(':')
+-                offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
+-                dt += offset_delta if sign == '+' else -offset_delta
++        # A leading 'UTC+'/'UTC-' or '+', '-' marks a fixed-offset time zone
++        # whose offset must be split out. Named time zones, e.g.
++        # 'Etc/GMT+10', may contain a sign and must be used as is.
++        if tzname.startswith(('UTC+', 'UTC-', '+', '-')):
++            sign_index = tzname.find('+') + tzname.find('-') + 1
++            if sign_index > -1:
++                sign = tzname[sign_index]
++                tzname, offset = tzname.split(sign)
++                if offset:
++                    hours, minutes = offset.split(':')
++                    offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
++                    dt += offset_delta if sign == '+' else -offset_delta
+         dt = timezone.localtime(dt, pytz.timezone(tzname))
+     return dt
+2026-10-06 23:46:53,942 - INFO - Grading answer for django__django-14792...
+2026-10-06 23:46:53,942 - INFO - report: {'django__django-14792': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['The _get_timezone_name() helper must return the offset for fixed offset', 'test_is_aware (utils_tests.test_timezone.TimezoneTests)']}, 'PASS_TO_PASS': {'success': ['test_activate_invalid_timezone (utils_tests.test_timezone.TimezoneTests)', 'test_fixedoffset_negative_timedelta (utils_tests.test_timezone.TimezoneTests)', 'test_fixedoffset_timedelta (utils_tests.test_timezone.TimezoneTests)', 'test_get_default_timezone (utils_tests.test_timezone.TimezoneTests)', 'test_get_default_timezone_utc (utils_tests.test_timezone.TimezoneTests)', 'test_is_naive (utils_tests.test_timezone.TimezoneTests)', 'test_localdate (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware2 (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_no_tz (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_pytz_ambiguous (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_pytz_non_existent (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_zoneinfo_ambiguous (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_zoneinfo_non_existent (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_no_tz (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_pytz (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_zoneinfo (utils_tests.test_timezone.TimezoneTests)', 'test_now (utils_tests.test_timezone.TimezoneTests)', 'test_override (utils_tests.test_timezone.TimezoneTests)', 'test_override_decorator (utils_tests.test_timezone.TimezoneTests)', 'test_override_fixed_offset (utils_tests.test_timezone.TimezoneTests)', 'test_override_string_tz (utils_tests.test_timezone.TimezoneTests)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-14792: resolved: False
+2026-10-06 23:46:53,944 - INFO - Attempting to stop container sweb.eval.django__django-14792.django__django-verification...
+2026-10-06 23:47:09,205 - INFO - Container sweb.eval.django__django-14792.django__django-verification stopped successfully.
+2026-10-06 23:47:09,205 - INFO - Attempting to remove container sweb.eval.django__django-14792.django__django-verification...
+2026-10-06 23:47:09,286 - INFO - Container sweb.eval.django__django-14792.django__django-verification removed successfully.

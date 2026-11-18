@@ -1,0 +1,64 @@
+diff --git a/sympy/core/relational.py b/sympy/core/relational.py
+index e2e0b7fbcc..6d18f76ee9 100644
+--- a/sympy/core/relational.py
++++ b/sympy/core/relational.py
+@@ -305,6 +305,8 @@ def _eval_simplify(self, **kwargs):
+         r = self
+         r = r.func(*[i.simplify(**kwargs) for i in r.args])
+         if r.is_Relational:
++            if not isinstance(r.lhs, Expr) or not isinstance(r.rhs, Expr):
++                return r
+             dif = r.lhs - r.rhs
+             # replace dif with a valid Number that will
+             # allow a definitive comparison with 0
+@@ -562,6 +564,8 @@ def _eval_simplify(self, **kwargs):
+         e = super()._eval_simplify(**kwargs)
+         if not isinstance(e, Equality):
+             return e
++        if not all(isinstance(i, Expr) for i in e.args):
++            return e
+         free = self.free_symbols
+         if len(free) == 1:
+             try:
+diff --git a/sympy/sets/handlers/comparison.py b/sympy/sets/handlers/comparison.py
+index 6f7a19fccf..ff482135e8 100644
+--- a/sympy/sets/handlers/comparison.py
++++ b/sympy/sets/handlers/comparison.py
+@@ -49,6 +49,14 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return tfn[fuzzy_and(map(fuzzy_bool, eqs))]
+ 
+ 
++@dispatch(ProductSet, FiniteSet) # type:ignore
++def _eval_is_eq(lhs, rhs): # noqa: F811
++    if lhs.is_finite_set is False:
++        return False
++    if lhs.is_finite_set is True:
++        return tfn[fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])]
++
++
+ @dispatch(Set, Basic) # type:ignore
+ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return False
+diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py
+index 3c4aa86e36..06709d87ab 100644
+--- a/sympy/sets/sets.py
++++ b/sympy/sets/sets.py
+@@ -843,6 +843,18 @@ def __iter__(self):
+         """
+         return iproduct(*self.sets)
+ 
++    def _eval_rewrite_as_FiniteSet(self, *args, **kwargs):
++        if self.is_finite_set:
++            return FiniteSet(*self)
++
++    def _eval_is_subset(self, other):
++        if other.is_ProductSet:
++            if len(self.sets) != len(other.sets):
++                return False
++            return fuzzy_and(s.is_subset(o) for s, o in zip(self.sets, other.sets))
++        if self.is_finite_set:
++            return fuzzy_and(other._contains(e) for e in self)
++
+     @property
+     def is_empty(self):
+         return fuzzy_or(s.is_empty for s in self.sets)

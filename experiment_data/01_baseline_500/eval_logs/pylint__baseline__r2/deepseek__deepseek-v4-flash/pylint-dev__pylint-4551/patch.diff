@@ -1,0 +1,93 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..e00e8ebc 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -60,6 +60,70 @@ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+         raise astroid.exceptions.InferenceError()
+ 
+ 
++def _get_argument_annotation(node):
++    """Return the annotation node of a function argument, or ``None``."""
++    arguments = node.parent
++    if not isinstance(arguments, astroid.Arguments):
++        return None
++    for arg_nodes, annotations in (
++        (arguments.posonlyargs, arguments.posonlyargs_annotations),
++        (arguments.args, arguments.annotations),
++        (arguments.kwonlyargs, arguments.kwonlyargs_annotations),
++    ):
++        for index, arg_node in enumerate(arg_nodes):
++            if arg_node is node and index < len(annotations):
++                return annotations[index]
++    return None
++
++
++def _get_definition_annotation(node):
++    """Return the annotation of a name definition, or ``None``."""
++    annotation = _get_argument_annotation(node)
++    if annotation is not None:
++        return annotation
++    if isinstance(node.parent, astroid.AnnAssign):
++        return node.parent.annotation
++    return None
++
++
++def _get_annotation(node):
++    """Return the annotation attached to an assignment node, or ``None``.
++
++    The annotation is looked up on the node itself (``AnnAssign``), on the
++    value that is assigned to it (a function argument or an annotated local
++    variable) and finally on the node when it is a function argument.
++    """
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Arguments):
++        return _get_argument_annotation(node)
++    if isinstance(parent, astroid.Assign) and isinstance(parent.value, astroid.Name):
++        for definition in parent.value.lookup(parent.value.name)[1]:
++            annotation = _get_definition_annotation(definition)
++            if annotation is not None:
++                return annotation
++    return None
++
++
++def _infer_types(node):
++    """Infer the types of an assignment node.
++
++    An explicit annotation always takes precedence over the inferred value so
++    that, for instance, ``a: str = None`` is typed as ``str`` and not as
++    ``NoneType``.
++    """
++    annotation = _get_annotation(node)
++    if annotation is not None:
++        try:
++            values = set(annotation.infer())
++        except astroid.InferenceError:
++            values = set()
++        if values and values != {astroid.Uninferable}:
++            return values
++    return set(node.infer())
++
++
+ class IdGeneratorMixIn:
+     """Mixin adding the ability to generate integer uid."""
+ 
+@@ -218,7 +282,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _infer_types(node)
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +294,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _infer_types(node)
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:

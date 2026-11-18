@@ -1,0 +1,134 @@
+2026-10-06 23:45:03,743 - INFO - Creating container for django__django-14792...
+2026-10-06 23:45:03,794 - INFO - Container for django__django-14792 created: 454648198bc37e3ad5779e245637de32c93789de4de176e952c408e0c1d7b8f9
+2026-10-06 23:45:03,933 - INFO - Container for django__django-14792 started: 454648198bc37e3ad5779e245637de32c93789de4de176e952c408e0c1d7b8f9
+2026-10-06 23:45:03,934 - INFO - Intermediate patch for django__django-14792 written to logs\run_evaluation\django__django-tdd\deepseek__deepseek-v4-flash\django__django-14792\patch.diff, now applying to container...
+2026-10-06 23:45:04,017 - INFO - >>>>> Applied Patch:
+Checking patch django/db/backends/sqlite3/base.py...
+Checking patch django/utils/timezone.py...
+Applied patch django/db/backends/sqlite3/base.py cleanly.
+Applied patch django/utils/timezone.py cleanly.
+
+2026-10-06 23:45:05,206 - INFO - Git diff before:
+diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py
+index a64190f0d0..a3b247c247 100644
+--- a/django/db/backends/sqlite3/base.py
++++ b/django/db/backends/sqlite3/base.py
+@@ -433,15 +433,25 @@ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if conn_tzname:
+         dt = dt.replace(tzinfo=pytz.timezone(conn_tzname))
+     if tzname is not None and tzname != conn_tzname:
+-        sign_index = tzname.find('+') + tzname.find('-') + 1
+-        if sign_index > -1:
+-            sign = tzname[sign_index]
+-            tzname, offset = tzname.split(sign)
+-            if offset:
+-                hours, minutes = offset.split(':')
+-                offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
+-                dt += offset_delta if sign == '+' else -offset_delta
+-        dt = timezone.localtime(dt, pytz.timezone(tzname))
++        try:
++            tz = pytz.timezone(tzname)
++        except pytz.UnknownTimeZoneError:
++            # The time zone is an offset, e.g. '+10' or 'UTC+05:00'.
++            sign_index = tzname.find('+') + tzname.find('-') + 1
++            if sign_index > -1:
++                sign = tzname[sign_index]
++                tzname, offset = tzname.split(sign)
++                if offset:
++                    if ':' in offset:
++                        hours, minutes = offset.split(':')
++                    elif len(offset) > 2:
++                        hours, minutes = offset[:-2], offset[-2:]
++                    else:
++                        hours, minutes = offset, '0'
++                    offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
++                    dt += offset_delta if sign == '+' else -offset_delta
++            tz = pytz.timezone(tzname or 'UTC')
++        dt = timezone.localtime(dt, tz)
+     return dt
+ 
+ 
+diff --git a/django/utils/timezone.py b/django/utils/timezone.py
+index bb2b6b9594..0f5d012c59 100644
+--- a/django/utils/timezone.py
++++ b/django/utils/timezone.py
+@@ -72,8 +72,11 @@ def get_current_timezone_name():
+ 
+ 
+ def _get_timezone_name(timezone):
+-    """Return the name of ``timezone``."""
+-    return str(timezone)
++    """
++    Return the offset for fixed offset timezones, or the name of timezone if
++    not set.
++    """
++    return timezone.tzname(None) or str(timezone)
+ 
+ # Timezone selection functions.
+2026-10-06 23:45:05,207 - INFO - Eval script for django__django-14792 written to logs\run_evaluation\django__django-tdd\deepseek__deepseek-v4-flash\django__django-14792\eval.sh; copying to container...
+2026-10-06 23:45:10,996 - INFO - Test runtime: 5.75 seconds
+2026-10-06 23:45:10,997 - INFO - Test output for django__django-14792 written to logs\run_evaluation\django__django-tdd\deepseek__deepseek-v4-flash\django__django-14792\test_output.txt
+2026-10-06 23:45:11,034 - INFO - Git diff after:
+diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py
+index a64190f0d0..a3b247c247 100644
+--- a/django/db/backends/sqlite3/base.py
++++ b/django/db/backends/sqlite3/base.py
+@@ -433,15 +433,25 @@ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if conn_tzname:
+         dt = dt.replace(tzinfo=pytz.timezone(conn_tzname))
+     if tzname is not None and tzname != conn_tzname:
+-        sign_index = tzname.find('+') + tzname.find('-') + 1
+-        if sign_index > -1:
+-            sign = tzname[sign_index]
+-            tzname, offset = tzname.split(sign)
+-            if offset:
+-                hours, minutes = offset.split(':')
+-                offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
+-                dt += offset_delta if sign == '+' else -offset_delta
+-        dt = timezone.localtime(dt, pytz.timezone(tzname))
++        try:
++            tz = pytz.timezone(tzname)
++        except pytz.UnknownTimeZoneError:
++            # The time zone is an offset, e.g. '+10' or 'UTC+05:00'.
++            sign_index = tzname.find('+') + tzname.find('-') + 1
++            if sign_index > -1:
++                sign = tzname[sign_index]
++                tzname, offset = tzname.split(sign)
++                if offset:
++                    if ':' in offset:
++                        hours, minutes = offset.split(':')
++                    elif len(offset) > 2:
++                        hours, minutes = offset[:-2], offset[-2:]
++                    else:
++                        hours, minutes = offset, '0'
++                    offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
++                    dt += offset_delta if sign == '+' else -offset_delta
++            tz = pytz.timezone(tzname or 'UTC')
++        dt = timezone.localtime(dt, tz)
+     return dt
+ 
+ 
+diff --git a/django/utils/timezone.py b/django/utils/timezone.py
+index bb2b6b9594..0f5d012c59 100644
+--- a/django/utils/timezone.py
++++ b/django/utils/timezone.py
+@@ -72,8 +72,11 @@ def get_current_timezone_name():
+ 
+ 
+ def _get_timezone_name(timezone):
+-    """Return the name of ``timezone``."""
+-    return str(timezone)
++    """
++    Return the offset for fixed offset timezones, or the name of timezone if
++    not set.
++    """
++    return timezone.tzname(None) or str(timezone)
+ 
+ # Timezone selection functions.
+2026-10-06 23:45:11,034 - INFO - Grading answer for django__django-14792...
+2026-10-06 23:45:11,034 - INFO - report: {'django__django-14792': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['The _get_timezone_name() helper must return the offset for fixed offset', 'test_is_aware (utils_tests.test_timezone.TimezoneTests)'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_activate_invalid_timezone (utils_tests.test_timezone.TimezoneTests)', 'test_fixedoffset_negative_timedelta (utils_tests.test_timezone.TimezoneTests)', 'test_fixedoffset_timedelta (utils_tests.test_timezone.TimezoneTests)', 'test_get_default_timezone (utils_tests.test_timezone.TimezoneTests)', 'test_get_default_timezone_utc (utils_tests.test_timezone.TimezoneTests)', 'test_is_naive (utils_tests.test_timezone.TimezoneTests)', 'test_localdate (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware2 (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_no_tz (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_pytz_ambiguous (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_pytz_non_existent (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_zoneinfo_ambiguous (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_zoneinfo_non_existent (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_no_tz (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_pytz (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_zoneinfo (utils_tests.test_timezone.TimezoneTests)', 'test_now (utils_tests.test_timezone.TimezoneTests)', 'test_override (utils_tests.test_timezone.TimezoneTests)', 'test_override_decorator (utils_tests.test_timezone.TimezoneTests)', 'test_override_fixed_offset (utils_tests.test_timezone.TimezoneTests)', 'test_override_string_tz (utils_tests.test_timezone.TimezoneTests)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-14792: resolved: True
+2026-10-06 23:45:11,036 - INFO - Attempting to stop container sweb.eval.django__django-14792.django__django-tdd...
+2026-10-06 23:45:26,319 - INFO - Container sweb.eval.django__django-14792.django__django-tdd stopped successfully.
+2026-10-06 23:45:26,319 - INFO - Attempting to remove container sweb.eval.django__django-14792.django__django-tdd...
+2026-10-06 23:45:26,417 - INFO - Container sweb.eval.django__django-14792.django__django-tdd removed successfully.

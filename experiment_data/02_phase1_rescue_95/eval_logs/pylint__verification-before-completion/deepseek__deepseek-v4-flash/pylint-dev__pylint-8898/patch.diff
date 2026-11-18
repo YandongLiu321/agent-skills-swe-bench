@@ -1,0 +1,74 @@
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..17e79559e 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,12 +213,18 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A separator that is escaped (``\\,``) or that appears inside a regular
++    expression construct (a character class, a group or a quantifier such as
++    ``{1,3}``) is not treated as a separator.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+     >>> _splitstrip('a,\nb,\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip('(foo{1,3}),bar')
++    ['(foo{1,3})', 'bar']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -229,7 +235,49 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    fields: list[str] = []
++    current: list[str] = []
++    depth = 0
++    in_character_class = False
++    character_class_start = False
++    escaped = False
++    for char in string:
++        if escaped:
++            current.append(char)
++            escaped = False
++            continue
++        if in_character_class:
++            if char == "\\":
++                current.append(char)
++                escaped = True
++            elif char == "]" and not character_class_start:
++                in_character_class = False
++                current.append(char)
++            else:
++                if char != "^" or not character_class_start:
++                    character_class_start = False
++                current.append(char)
++            continue
++        if char == "\\":
++            current.append(char)
++            escaped = True
++            continue
++        if char == "[":
++            in_character_class = True
++            character_class_start = True
++            current.append(char)
++            continue
++        if char in "({":
++            depth += 1
++        elif char in ")}":
++            depth = max(0, depth - 1)
++        if char == sep and depth == 0:
++            fields.append("".join(current))
++            current = []
++        else:
++            current.append(char)
++    fields.append("".join(current))
++    return [field.strip() for field in fields if field.strip()]
+ 
+ 
+ def _unquote(string: str) -> str:

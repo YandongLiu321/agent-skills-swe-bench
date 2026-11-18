@@ -1,0 +1,29 @@
+diff --git a/django/core/servers/basehttp.py b/django/core/servers/basehttp.py
+index fef5532e58..53a6908d8e 100644
+--- a/django/core/servers/basehttp.py
++++ b/django/core/servers/basehttp.py
+@@ -143,6 +143,24 @@ class ServerHandler(simple_server.ServerHandler):
+         if self.headers.get("Connection") == "close":
+             self.request_handler.close_connection = True
+ 
++    def write(self, data):
++        """'write()' callable as specified by PEP 3333.
++
++        A response to a HEAD request must not include a body, so only the
++        headers (and the Content-Length the body would have had) are sent.
++        """
++        if self.environ.get("REQUEST_METHOD") == "HEAD":
++            if not self.status:
++                raise AssertionError("write() before start_response()")
++            if not self.headers_sent:
++                # Before the first output, send the stored headers.
++                self.bytes_sent = len(data)  # make sure we know content-length
++                self.send_headers()
++            else:
++                self.bytes_sent += len(data)
++            return
++        super().write(data)
++
+     def close(self):
+         self.get_stdin().read()
+         super().close()

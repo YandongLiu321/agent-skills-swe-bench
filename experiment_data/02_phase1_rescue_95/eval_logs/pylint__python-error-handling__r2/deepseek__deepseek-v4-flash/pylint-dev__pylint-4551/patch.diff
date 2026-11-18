@@ -1,0 +1,214 @@
+diff --git a/pylint/pyreverse/diagrams.py b/pylint/pyreverse/diagrams.py
+index bf9f67af..f7836fda 100644
+--- a/pylint/pyreverse/diagrams.py
++++ b/pylint/pyreverse/diagrams.py
+@@ -16,7 +16,12 @@
+ import astroid
+ 
+ from pylint.checkers.utils import decorated_with_property
+-from pylint.pyreverse.utils import FilterMixIn, is_interface
++from pylint.pyreverse.utils import (
++    FilterMixIn,
++    get_annotation,
++    get_annotation_name,
++    is_interface,
++)
+ 
+ 
+ class Figure:
+@@ -76,6 +81,17 @@ class ClassDiagram(Figure, FilterMixIn):
+                 return rel
+         raise KeyError(relation_type)
+ 
++    @staticmethod
++    def get_annotation(node, node_name):
++        """return the type annotation for the given attribute, if any"""
++        for assign_node in list(node.instance_attrs.get(node_name, ())) + list(
++            node.locals.get(node_name, ())
++        ):
++            annotation = get_annotation(assign_node)
++            if annotation is not None:
++                return get_annotation_name(annotation)
++        return None
++
+     def get_attrs(self, node):
+         """return visible attributes, possibly with class name"""
+         attrs = []
+@@ -91,9 +107,13 @@ class ClassDiagram(Figure, FilterMixIn):
+         ):
+             if not self.show_attr(node_name):
+                 continue
+-            names = self.class_names(associated_nodes)
+-            if names:
+-                node_name = "{} : {}".format(node_name, ", ".join(names))
++            annotation = self.get_annotation(node, node_name)
++            if annotation is not None:
++                node_name = "{} : {}".format(node_name, annotation)
++            else:
++                names = self.class_names(associated_nodes)
++                if names:
++                    node_name = "{} : {}".format(node_name, ", ".join(names))
+             attrs.append(node_name)
+         return sorted(attrs)
+ 
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..726b9cfe 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -218,7 +218,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            annotation = utils.get_annotation(node)
++            if annotation is not None:
++                values = set(utils.infer_annotation(annotation, node))
++            else:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +234,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            annotation = utils.get_annotation(node)
++            if annotation is not None:
++                values = set(utils.infer_annotation(annotation, node))
++            else:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..088c15a9 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -46,6 +48,117 @@ def insert_default_options():
+ 
+ 
+ # astroid utilities ###########################################################
++def get_argument_annotation(function, name):
++    """Return the annotation of the given argument name, if any.
++
++    Both PEP 484 annotations and type comments are supported.
++    """
++    arguments = function.args
++    if not isinstance(arguments, astroid.Arguments):
++        return None
++
++    for arg, annotation in zip(
++        arguments.posonlyargs, arguments.posonlyargs_annotations
++    ):
++        if arg.name == name:
++            return annotation
++    for arg, annotation in zip(arguments.args, arguments.annotations):
++        if arg.name == name:
++            return annotation
++    for arg, annotation in zip(
++        arguments.kwonlyargs, arguments.kwonlyargs_annotations
++    ):
++        if arg.name == name:
++            return annotation
++    if arguments.vararg == name:
++        return arguments.varargannotation
++    if arguments.kwarg == name:
++        return arguments.kwargannotation
++
++    # Type comments are stored on the function and not on the arguments node.
++    # For methods the ``self`` / ``cls`` argument is not part of the type
++    # comment, so it needs to be skipped.
++    type_comment_args = getattr(function, "type_comment_args", None) or ()
++    positional_args = list(arguments.args)
++    if function.type == "method" and positional_args:
++        positional_args = positional_args[1:]
++    for arg, annotation in zip(positional_args, type_comment_args):
++        if arg.name == name:
++            return annotation
++    type_comment_kwonlyargs = (
++        getattr(function, "type_comment_kwonlyargs", None) or ()
++    )
++    for arg, annotation in zip(arguments.kwonlyargs, type_comment_kwonlyargs):
++        if arg.name == name:
++            return annotation
++    return None
++
++
++def get_annotation(node):
++    """Return the annotation associated with an assign node, if any.
++
++    ``node`` is usually an :class:`astroid.nodes.AssignName` or
++    :class:`astroid.nodes.AssignAttr` instance, but an assignment node
++    itself is accepted as well.
++    """
++    if isinstance(node, astroid.AnnAssign):
++        return node.annotation
++    if isinstance(node, astroid.Assign) and node.type_annotation:
++        return node.type_annotation
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Assign) and parent.type_annotation:
++        return parent.type_annotation
++    if isinstance(parent, astroid.Arguments):
++        frame = node.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            return get_argument_annotation(frame, node.name)
++    if isinstance(parent, astroid.Assign) and isinstance(parent.value, astroid.Name):
++        frame = node.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            return get_argument_annotation(frame, parent.value.name)
++    return None
++
++
++def infer_annotation(annotation, node):
++    """Infer the value of an annotation node.
++
++    String annotations (for example forward references) are resolved against
++    the module scope when possible.  Generic annotations are unwrapped so that
++    ``Optional[Foo]`` is associated with ``Foo`` and not with ``Optional``.
++    """
++    if isinstance(annotation, astroid.Const) and isinstance(annotation.value, str):
++        try:
++            inferred = list(node.root().igetattr(annotation.value))
++        except (astroid.InferenceError, astroid.NotFoundError, AttributeError):
++            inferred = []
++        if inferred:
++            return inferred
++    if isinstance(annotation, astroid.Subscript):
++        return infer_annotation(annotation.slice, node)
++    if isinstance(annotation, (astroid.Tuple, astroid.List, astroid.Set)):
++        inferred = []
++        for element in annotation.elts:
++            inferred.extend(infer_annotation(element, node))
++        return inferred
++    if isinstance(annotation, astroid.BinOp):
++        return infer_annotation(annotation.left, node) + infer_annotation(
++            annotation.right, node
++        )
++    try:
++        return list(annotation.infer())
++    except astroid.InferenceError:
++        return []
++
++
++def get_annotation_name(annotation):
++    """Return the string representation of an annotation node."""
++    if isinstance(annotation, astroid.Const) and isinstance(annotation.value, str):
++        return annotation.value
++    return annotation.as_string()
++
++
+ SPECIAL = re.compile(r"^__([^\W_]_*)+__$")
+ PRIVATE = re.compile(r"^__(_*[^\W_])+_?$")
+ PROTECTED = re.compile(r"^_\w*$")

@@ -1,0 +1,155 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..0564fde4 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -21,6 +21,7 @@ import traceback
+ import astroid
+ 
+ from pylint.pyreverse import utils
++from pylint.pyreverse.utils import get_annotation, infer_annotation
+ 
+ 
+ def _iface_hdlr(_):
+@@ -217,8 +218,14 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                 else:
+                     self.visit_module(frame)
+ 
++            annotation = get_annotation(node)
++            if annotation is not None:
++                values = infer_annotation(annotation)
++                if not values:
++                    values = {annotation}
++            else:
++                values = set(node.infer())
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -229,8 +236,14 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+ 
+         handle instance_attrs_type
+         """
++        annotation = get_annotation(node)
+         try:
+-            values = set(node.infer())
++            if annotation is not None:
++                values = infer_annotation(annotation)
++                if not values:
++                    values = {annotation}
++            else:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..f67e4293 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -93,6 +95,54 @@ def is_exception(node):
+     return node.type == "exception"
+ 
+ 
++def _get_argument_annotation(arguments, name):
++    """Return the annotation of an argument, if it has one."""
++    for arg, annotation in zip(
++        arguments.posonlyargs, arguments.posonlyargs_annotations
++    ):
++        if arg.name == name:
++            return annotation
++    for arg, annotation in zip(arguments.args, arguments.annotations):
++        if arg.name == name:
++            return annotation
++    for arg, annotation in zip(arguments.kwonlyargs, arguments.kwonlyargs_annotations):
++        if arg.name == name:
++            return annotation
++    if arguments.vararg == name:
++        return arguments.varargannotation
++    if arguments.kwarg == name:
++        return arguments.kwargannotation
++    return None
++
++
++def get_annotation(node):
++    """Return the type annotation associated with an assignment node.
++
++    The annotation can either be directly attached to an assignment target
++    (``AnnAssign``) or come from a function argument which is assigned to
++    the target (``self.attr = arg``).
++    """
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Assign) and isinstance(parent.value, astroid.Name):
++        frame = parent.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            return _get_argument_annotation(frame.args, parent.value.name)
++    if isinstance(parent, astroid.Arguments):
++        return _get_argument_annotation(parent, node.name)
++    return None
++
++
++def infer_annotation(annotation):
++    """Infer the type(s) denoted by an annotation node."""
++    try:
++        inferred = set(annotation.infer())
++    except astroid.InferenceError:
++        return set()
++    return {node for node in inferred if node is not astroid.Uninferable}
++
++
+ # Helpers #####################################################################
+ 
+ _CONSTRUCTOR = 1
+diff --git a/pylint/pyreverse/writer.py b/pylint/pyreverse/writer.py
+index 0d80bb9c..4950b5b4 100644
+--- a/pylint/pyreverse/writer.py
++++ b/pylint/pyreverse/writer.py
+@@ -123,6 +123,21 @@ class DotWriter(DiagramWriter):
+         """get project title"""
+         return obj.title
+ 
++    @staticmethod
++    def _get_method_args(func):
++        """get method arguments, including type annotations"""
++        args = []
++        annotations = func.args.annotations
++        for index, arg in enumerate(func.args.args):
++            if arg.name == "self":
++                continue
++            annotation = annotations[index] if index < len(annotations) else None
++            if annotation is not None:
++                args.append(f"{arg.name} : {annotation.as_string()}")
++            else:
++                args.append(arg.name)
++        return args
++
+     def get_values(self, obj):
+         """get label and shape for classes.
+ 
+@@ -134,11 +149,11 @@ class DotWriter(DiagramWriter):
+         if not self.config.only_classnames:
+             label = r"{}|{}\l|".format(label, r"\l".join(obj.attrs))
+             for func in obj.methods:
+-                if func.args.args:
+-                    args = [arg.name for arg in func.args.args if arg.name != "self"]
+-                else:
+-                    args = []
+-                label = r"{}{}({})\l".format(label, func.name, ", ".join(args))
++                args = self._get_method_args(func)
++                returns = f" : {func.returns.as_string()}" if func.returns else ""
++                label = r"{}{}({}){}\l".format(
++                    label, func.name, ", ".join(args), returns
++                )
+             label = "{%s}" % label
+         if is_exception(obj.node):
+             return dict(fontcolor="red", label=label, shape="record")

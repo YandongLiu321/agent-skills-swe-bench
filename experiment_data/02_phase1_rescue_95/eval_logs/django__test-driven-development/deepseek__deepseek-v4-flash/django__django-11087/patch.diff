@@ -1,0 +1,63 @@
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..989689f53b 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -60,6 +60,22 @@ def get_candidate_relations_to_delete(opts):
+     )
+ 
+ 
++def get_required_fields_to_delete(model):
++    """
++    Return the names of the fields required when fetching instances of
++    ``model`` for deletion.
++
++    Only the primary key is needed to perform the deletion and to follow the
++    cascades, but relation fields are also kept so that
++    pre_delete/post_delete signal handlers can access them without triggering
++    extra queries.
++    """
++    return [
++        field.name for field in model._meta.concrete_fields
++        if field.primary_key or field.is_relation
++    ]
++
++
+ class Collector:
+     def __init__(self, using):
+         self.using = using
+@@ -232,9 +248,10 @@ class Collector:
+         """
+         Get a QuerySet of objects related to `objs` via the relation `related`.
+         """
+-        return related.related_model._base_manager.using(self.using).filter(
++        related_model = related.related_model
++        return related_model._base_manager.using(self.using).filter(
+             **{"%s__in" % related.field.name: objs}
+-        )
++        ).only(*get_required_fields_to_delete(related_model))
+ 
+     def instances_with_model(self):
+         for model, instances in self.data.items():
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index 84236107f3..75040d8192 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -17,7 +17,7 @@ from django.db import (
+ )
+ from django.db.models import DateField, DateTimeField, sql
+ from django.db.models.constants import LOOKUP_SEP
+-from django.db.models.deletion import Collector
++from django.db.models.deletion import Collector, get_required_fields_to_delete
+ from django.db.models.expressions import Case, Expression, F, Value, When
+ from django.db.models.fields import AutoField
+ from django.db.models.functions import Cast, Trunc
+@@ -695,6 +695,9 @@ class QuerySet:
+         del_query.query.select_related = False
+         del_query.query.clear_ordering(force_empty=True)
+ 
++        # Only fetch the fields required for the deletion.
++        del_query = del_query.only(*get_required_fields_to_delete(del_query.model))
++
+         collector = Collector(using=del_query.db)
+         collector.collect(del_query)
+         deleted, _rows_count = collector.delete()

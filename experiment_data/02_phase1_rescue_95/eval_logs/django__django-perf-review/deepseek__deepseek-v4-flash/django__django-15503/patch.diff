@@ -1,0 +1,56 @@
+diff --git a/django/db/models/fields/json.py b/django/db/models/fields/json.py
+index fdca700c9d..36557f0af7 100644
+--- a/django/db/models/fields/json.py
++++ b/django/db/models/fields/json.py
+@@ -129,13 +129,13 @@ class JSONField(CheckFieldDefaultMixin, Field):
+ def compile_json_path(key_transforms, include_root=True):
+     path = ["$"] if include_root else []
+     for key_transform in key_transforms:
+-        try:
+-            num = int(key_transform)
+-        except ValueError:  # non-integer
++        if isinstance(key_transform, int):
++            # Numeric keys are interpreted as array indexes.
++            path.append("[%s]" % key_transform)
++        else:
++            # Other keys are interpreted as object keys.
+             path.append(".")
+             path.append(json.dumps(key_transform))
+-        else:
+-            path.append("[%s]" % num)
+     return "".join(path)
+ 
+ 
+@@ -307,7 +307,10 @@ class KeyTransform(Transform):
+ 
+     def __init__(self, key_name, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+-        self.key_name = str(key_name)
++        try:
++            self.key_name = int(key_name)
++        except (TypeError, ValueError):
++            self.key_name = str(key_name)
+ 
+     def preprocess_lhs(self, compiler, connection):
+         key_transforms = [self.key_name]
+@@ -318,7 +321,10 @@ class KeyTransform(Transform):
+         lhs, params = compiler.compile(previous)
+         if connection.vendor == "oracle":
+             # Escape string-formatting.
+-            key_transforms = [key.replace("%", "%%") for key in key_transforms]
++            key_transforms = [
++                str(key).replace("%", "%%") if not isinstance(key, int) else key
++                for key in key_transforms
++            ]
+         return lhs, params, key_transforms
+ 
+     def as_mysql(self, compiler, connection):
+@@ -338,7 +344,7 @@ class KeyTransform(Transform):
+         lhs, params, key_transforms = self.preprocess_lhs(compiler, connection)
+         if len(key_transforms) > 1:
+             sql = "(%s %s %%s)" % (lhs, self.postgres_nested_operator)
+-            return sql, tuple(params) + (key_transforms,)
++            return sql, tuple(params) + ([str(key) for key in key_transforms],)
+         try:
+             lookup = int(self.key_name)
+         except ValueError:

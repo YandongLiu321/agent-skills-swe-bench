@@ -1,0 +1,78 @@
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..a0df5fa6 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1475,7 +1475,7 @@ class Plotter:
+ 
+                 axes_df = self._filter_subplot_data(df, view)
+ 
+-                with pd.option_context("mode.use_inf_as_null", True):
++                with pd.option_context("mode.use_inf_as_na", True):
+                     if keep_na:
+                         # The simpler thing to do would be x.dropna().reindex(x.index).
+                         # But that doesn't work with the way that the subset iteration
+@@ -1644,6 +1644,21 @@ class Plotter:
+                         hi = cast(float, hi) + 0.5
+                     ax.set(**{f"{axis}lim": (lo, hi)})
+ 
++                # Nominal scales are drawn the same way as the categorical axes
++                # in the figure-level functions. This differs from the default
++                # matplotlib behavior in three ways:
++                # 1. The axis spans +/- 0.5 around the first/last categorical tick
++                #    (rather than using the normal margin logic)
++                # 2. The grid is not drawn (even when the theme would otherwise
++                #    turn it on)
++                # 3. The axis is inverted when the categories are on the y axis
++                scale = self._scales.get(axis_key)
++                if isinstance(scale, Nominal):
++                    axis_obj = getattr(ax, f"{axis}axis")
++                    axis_obj.grid(False)
++                    if axis_key not in p._limits:
++                        scale._make_categorical_axis(axis_obj)
++
+         engine_default = None if p._target is not None else "tight"
+         layout_engine = p._layout_spec.get("engine", engine_default)
+         set_layout_engine(self._figure, layout_engine)
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..b768861b 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -199,6 +199,9 @@ class Nominal(Scale):
+         # (i.e. if we have [1, 2.5], do we want [1.0, 2.5]? Unclear)
+         axis.update_units(stringify(np.array(units_seed)))
+ 
++        if isinstance(axis, Axis):
++            new._make_categorical_axis(axis)
++
+         # TODO define this more centrally
+         def convert_units(x):
+             # TODO only do this with explicit order?
+@@ -227,6 +230,19 @@ class Nominal(Scale):
+ 
+         return new
+ 
++    def _make_categorical_axis(self, axis: Axis) -> None:
++        """Adjust a matplotlib axis so that a nominal scale is drawn categorically."""
++        n = len(axis.get_ticklocs())
++        if not n:
++            return
++        if axis.axis_name == "x":
++            axis.grid(False)
++            axis.axes.set_xlim(-.5, n - .5, auto=None)
++        else:
++            axis.grid(False)
++            # Note limits that correspond to a previously-inverted y axis
++            axis.axes.set_ylim(n - .5, -.5, auto=None)
++
+     def tick(self, locator: Locator | None = None):
+         """
+         Configure the selection of ticks for the scale's axis or legend.

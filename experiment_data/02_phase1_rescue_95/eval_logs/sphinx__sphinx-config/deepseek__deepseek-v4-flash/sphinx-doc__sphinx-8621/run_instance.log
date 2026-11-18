@@ -1,0 +1,166 @@
+2026-10-07 02:05:10,825 - INFO - Creating container for sphinx-doc__sphinx-8621...
+2026-10-07 02:05:10,873 - INFO - Container for sphinx-doc__sphinx-8621 created: 11e77a8ef9a0ad8bab9810d7138ad87b4acf9c23c7760025105ca808338fdb51
+2026-10-07 02:05:10,996 - INFO - Container for sphinx-doc__sphinx-8621 started: 11e77a8ef9a0ad8bab9810d7138ad87b4acf9c23c7760025105ca808338fdb51
+2026-10-07 02:05:10,997 - INFO - Intermediate patch for sphinx-doc__sphinx-8621 written to logs\run_evaluation\sphinx__sphinx-config\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-8621\patch.diff, now applying to container...
+2026-10-07 02:05:11,090 - INFO - >>>>> Applied Patch:
+Checking patch sphinx/builders/html/transforms.py...
+Applied patch sphinx/builders/html/transforms.py cleanly.
+
+2026-10-07 02:05:11,506 - INFO - Git diff before:
+diff --git a/sphinx/builders/html/transforms.py b/sphinx/builders/html/transforms.py
+index c91da57e9..26d36bbbe 100644
+--- a/sphinx/builders/html/transforms.py
++++ b/sphinx/builders/html/transforms.py
+@@ -9,7 +9,7 @@
+ """
+ 
+ import re
+-from typing import Any, Dict
++from typing import Any, Dict, List, Tuple
+ 
+ from docutils import nodes
+ 
+@@ -37,26 +37,46 @@ class KeyboardTransform(SphinxPostTransform):
+     """
+     default_priority = 400
+     builders = ('html',)
+-    pattern = re.compile(r'(-|\+|\^|\s+)')
++
++    # a run of whitespace, a compound-key separator, or a keystroke
++    pattern = re.compile(r'\s+|[-+^]|[^-+^\s]+')
+ 
+     def run(self, **kwargs: Any) -> None:
+         matcher = NodeMatcher(nodes.literal, classes=["kbd"])
+         for node in self.document.traverse(matcher):  # type: nodes.literal
+-            parts = self.pattern.split(node[-1].astext())
+-            if len(parts) == 1:
++            tokens = self.split_keys(node[-1].astext())
++            if not any(kind == 'sep' for kind, _ in tokens):
++                # a single keystroke; no need to add a nested <kbd> element
+                 continue
+ 
+             node.pop()
+-            while parts:
+-                key = parts.pop(0)
+-                node += nodes.literal('', key, classes=["kbd"])
+-
+-                try:
+-                    # key separator (ex. -, +, ^)
+-                    sep = parts.pop(0)
+-                    node += nodes.Text(sep)
+-                except IndexError:
+-                    pass
++            for kind, value in tokens:
++                if kind == 'key':
++                    node += nodes.literal('', value, classes=["kbd"])
++                else:
++                    node += nodes.Text(value)
++
++    def split_keys(self, text: str) -> List[Tuple[str, str]]:
++        """Split *text* into keys and separators.
++
++        The compound-key separators (``-``, ``+`` and ``^``) are also valid
++        keystrokes.  They are recognized as separators only when they appear
++        between two keystrokes; otherwise they are kept as keystrokes.
++        """
++        result = []  # type: List[Tuple[str, str]]
++        tokens = self.pattern.findall(text)
++        for i, token in enumerate(tokens):
++            if token.isspace():
++                result.append(('sep', token))
++            elif token in '-+^' and i < len(tokens) - 1 and \
++                    result and result[-1][0] == 'key':
++                # compound-key separator (ex. -, +, ^)
++                result.append(('sep', token))
++            else:
++                # a keystroke (including a standalone -, + or ^ key)
++                result.append(('key', token))
++
++        return result
+ 
+ 
+ def setup(app: Sphinx) -> Dict[str, Any]:
+2026-10-07 02:05:11,507 - INFO - Eval script for sphinx-doc__sphinx-8621 written to logs\run_evaluation\sphinx__sphinx-config\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-8621\eval.sh; copying to container...
+2026-10-07 02:05:15,488 - INFO - Test runtime: 3.94 seconds
+2026-10-07 02:05:15,490 - INFO - Test output for sphinx-doc__sphinx-8621 written to logs\run_evaluation\sphinx__sphinx-config\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-8621\test_output.txt
+2026-10-07 02:05:15,526 - INFO - Git diff after:
+diff --git a/sphinx/builders/html/transforms.py b/sphinx/builders/html/transforms.py
+index c91da57e9..26d36bbbe 100644
+--- a/sphinx/builders/html/transforms.py
++++ b/sphinx/builders/html/transforms.py
+@@ -9,7 +9,7 @@
+ """
+ 
+ import re
+-from typing import Any, Dict
++from typing import Any, Dict, List, Tuple
+ 
+ from docutils import nodes
+ 
+@@ -37,26 +37,46 @@ class KeyboardTransform(SphinxPostTransform):
+     """
+     default_priority = 400
+     builders = ('html',)
+-    pattern = re.compile(r'(-|\+|\^|\s+)')
++
++    # a run of whitespace, a compound-key separator, or a keystroke
++    pattern = re.compile(r'\s+|[-+^]|[^-+^\s]+')
+ 
+     def run(self, **kwargs: Any) -> None:
+         matcher = NodeMatcher(nodes.literal, classes=["kbd"])
+         for node in self.document.traverse(matcher):  # type: nodes.literal
+-            parts = self.pattern.split(node[-1].astext())
+-            if len(parts) == 1:
++            tokens = self.split_keys(node[-1].astext())
++            if not any(kind == 'sep' for kind, _ in tokens):
++                # a single keystroke; no need to add a nested <kbd> element
+                 continue
+ 
+             node.pop()
+-            while parts:
+-                key = parts.pop(0)
+-                node += nodes.literal('', key, classes=["kbd"])
+-
+-                try:
+-                    # key separator (ex. -, +, ^)
+-                    sep = parts.pop(0)
+-                    node += nodes.Text(sep)
+-                except IndexError:
+-                    pass
++            for kind, value in tokens:
++                if kind == 'key':
++                    node += nodes.literal('', value, classes=["kbd"])
++                else:
++                    node += nodes.Text(value)
++
++    def split_keys(self, text: str) -> List[Tuple[str, str]]:
++        """Split *text* into keys and separators.
++
++        The compound-key separators (``-``, ``+`` and ``^``) are also valid
++        keystrokes.  They are recognized as separators only when they appear
++        between two keystrokes; otherwise they are kept as keystrokes.
++        """
++        result = []  # type: List[Tuple[str, str]]
++        tokens = self.pattern.findall(text)
++        for i, token in enumerate(tokens):
++            if token.isspace():
++                result.append(('sep', token))
++            elif token in '-+^' and i < len(tokens) - 1 and \
++                    result and result[-1][0] == 'key':
++                # compound-key separator (ex. -, +, ^)
++                result.append(('sep', token))
++            else:
++                # a keystroke (including a standalone -, + or ^ key)
++                result.append(('key', token))
++
++        return result
+ 
+ 
+ def setup(app: Sphinx) -> Dict[str, Any]:
+2026-10-07 02:05:15,526 - INFO - Grading answer for sphinx-doc__sphinx-8621...
+2026-10-07 02:05:15,535 - INFO - report: {'sphinx-doc__sphinx-8621': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_markup.py::test_inline[verify-:kbd:`Alt+^`-<p><kbd', 'tests/test_markup.py::test_inline[verify-:kbd:`-`-<p><kbd'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/test_markup.py::test_inline[verify-:rfc:`2324`-<p><span', 'tests/test_markup.py::test_inline[verify-:rfc:`2324#id1`-<p><span', 'tests/test_markup.py::test_inline[verify_re-``code', 'tests/test_markup.py::test_inline[verify-:menuselection:`a', 'tests/test_markup.py::test_inline[verify-:menuselection:`&Foo', 'tests/test_markup.py::test_inline[verify-:guilabel:`&Foo', 'tests/test_markup.py::test_inline[verify-:guilabel:`Foo`-<p><span', 'tests/test_markup.py::test_inline[verify-:kbd:`space`-<p><kbd', 'tests/test_markup.py::test_inline[verify-:kbd:`Control+X`-<p><kbd', 'tests/test_markup.py::test_inline[verify-:kbd:`M-x', 'tests/test_markup.py::test_inline[verify_re-:option:`--with-option`-<p><code(', 'tests/test_markup.py::test_inline[verify-"John"-<p>\\u201cJohn\\u201d</p>-\\u201cJohn\\u201d]', 'tests/test_markup.py::test_inline[verify-``"John"``-<p><code', 'tests/test_markup.py::test_inline[verify-:manpage:`mp(1)`-<p><em', 'tests/test_markup.py::test_inline[verify-\\u0393\\\\\\\\\\u221e$-None-\\u0393\\\\textbackslash{}\\\\(\\\\infty\\\\)\\\\$]', 'tests/test_markup.py::test_inline[verify-::\\n\\n', 'tests/test_markup.py::test_inline[verify_re-`test', 'tests/test_markup.py::test_inline[verify-term\\n', 'tests/test_markup.py::test_inline[verify-term', 'tests/test_markup.py::test_inline[verify-..', 'tests/test_markup.py::test_inline_docutils16[verify-4', 'tests/test_markup.py::test_inline_for_unicode_latex_engine[verify-::\\n\\n', 'tests/test_markup.py::test_samp_role', 'tests/test_markup.py::test_download_role', 'tests/test_markup.py::test_XRefRole', 'tests/test_markup.py::test_rst_prolog', 'tests/test_markup.py::test_keep_warnings_is_True', 'tests/test_markup.py::test_keep_warnings_is_False', 'tests/test_markup.py::test_compact_refonly_bullet_list', 'tests/test_markup.py::test_default_role1', 'tests/test_markup.py::test_default_role2'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-8621: resolved: True
+2026-10-07 02:05:15,536 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-8621.sphinx__sphinx-config...
+2026-10-07 02:05:30,800 - INFO - Container sweb.eval.sphinx-doc__sphinx-8621.sphinx__sphinx-config stopped successfully.
+2026-10-07 02:05:30,800 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-8621.sphinx__sphinx-config...
+2026-10-07 02:05:30,877 - INFO - Container sweb.eval.sphinx-doc__sphinx-8621.sphinx__sphinx-config removed successfully.

@@ -1,0 +1,346 @@
+2026-10-07 00:18:21,779 - INFO - Creating container for django__django-15957...
+2026-10-07 00:18:21,826 - INFO - Container for django__django-15957 created: 3150564bf786fe402246a8c36078f382f424b4cd4fdd063ffd98e8a04d7e7823
+2026-10-07 00:18:21,940 - INFO - Container for django__django-15957 started: 3150564bf786fe402246a8c36078f382f424b4cd4fdd063ffd98e8a04d7e7823
+2026-10-07 00:18:21,941 - INFO - Intermediate patch for django__django-15957 written to logs\run_evaluation\django__debugging-and-error-recovery\deepseek__deepseek-v4-flash\django__django-15957\patch.diff, now applying to container...
+2026-10-07 00:18:22,025 - INFO - >>>>> Applied Patch:
+Checking patch django/contrib/contenttypes/fields.py...
+Checking patch django/db/models/fields/related_descriptors.py...
+Applied patch django/contrib/contenttypes/fields.py cleanly.
+Applied patch django/db/models/fields/related_descriptors.py cleanly.
+
+2026-10-07 00:18:23,321 - INFO - Git diff before:
+diff --git a/django/contrib/contenttypes/fields.py b/django/contrib/contenttypes/fields.py
+index 5b327b6ae4..8b0ba6f8d7 100644
+--- a/django/contrib/contenttypes/fields.py
++++ b/django/contrib/contenttypes/fields.py
+@@ -13,6 +13,7 @@ from django.db.models.fields.related import (
+     ReverseManyToOneDescriptor,
+     lazy_related_operation,
+ )
++from django.db.models.fields.related_descriptors import _filter_prefetch_queryset
+ from django.db.models.query_utils import PathInfo
+ from django.db.models.sql import AND
+ from django.db.models.sql.where import WhereNode
+@@ -605,7 +606,20 @@ def create_generic_related_manager(superclass, rel):
+             Filter the queryset for the instance this manager is bound to.
+             """
+             db = self._db or router.db_for_read(self.model, instance=self.instance)
+-            return queryset.using(db).filter(**self.core_filters)
++            queryset = queryset.using(db)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset.filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++                return queryset
++            return queryset.filter(**self.core_filters)
+ 
+         def _remove_prefetched_objects(self):
+             try:
+@@ -645,7 +659,7 @@ def create_generic_related_manager(superclass, rel):
+             object_id_converter = instances[0]._meta.pk.to_python
+             content_type_id_field_name = "%s_id" % self.content_type_field_name
+             return (
+-                queryset.filter(query),
++                _filter_prefetch_queryset(queryset, query, self.object_id_field_name),
+                 lambda relobj: (
+                     object_id_converter(getattr(relobj, self.object_id_field_name)),
+                     getattr(relobj, content_type_id_field_name),
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index b192df4fbf..0d63981797 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -65,7 +65,8 @@ and two directions (forward and reverse) for a total of six combinations.
+ 
+ from django.core.exceptions import FieldError
+ from django.db import connections, router, transaction
+-from django.db.models import Q, signals
++from django.db.models import Q, Window, signals
++from django.db.models.functions import RowNumber
+ from django.db.models.query import QuerySet
+ from django.db.models.query_utils import DeferredAttribute
+ from django.db.models.utils import resolve_callables
+@@ -609,6 +610,38 @@ class ReverseManyToOneDescriptor:
+         )
+ 
+ 
++def _filter_prefetch_queryset(queryset, predicate, partition_by):
++    if not queryset.query.is_sliced:
++        return queryset.filter(predicate)
++    # The queryset is sliced. A slice cannot be applied after the filter that
++    # restricts the queryset to the related objects, so retrieve the related
++    # objects per parent object using a window function that numbers the rows
++    # independently for each parent and then keep only the rows covered by the
++    # slice.
++    low_mark = queryset.query.low_mark
++    high_mark = queryset.query.high_mark
++    ordering = queryset.query.order_by
++    if not ordering and queryset.query.default_ordering:
++        ordering = queryset.model._meta.ordering
++    if not ordering:
++        ordering = ("pk",)
++    queryset = queryset._chain()
++    queryset.query.clear_limits()
++    queryset = queryset.filter(predicate)
++    queryset = queryset.annotate(
++        _prefetch_related_row_number=Window(
++            RowNumber(),
++            partition_by=partition_by,
++            order_by=ordering,
++        )
++    )
++    if low_mark:
++        queryset = queryset.filter(_prefetch_related_row_number__gt=low_mark)
++    if high_mark is not None:
++        queryset = queryset.filter(_prefetch_related_row_number__lte=high_mark)
++    return queryset
++
++
+ def create_reverse_many_to_one_manager(superclass, rel):
+     """
+     Create a manager for the reverse side of a many-to-one relation.
+@@ -662,8 +695,20 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             queryset._add_hints(instance=self.instance)
+             if self._db:
+                 queryset = queryset.using(self._db)
+-            queryset._defer_next_filter = True
+-            queryset = queryset.filter(**self.core_filters)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset.filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++            else:
++                queryset._defer_next_filter = True
++                queryset = queryset.filter(**self.core_filters)
+             for field in self.field.foreign_related_fields:
+                 val = getattr(self.instance, field.attname)
+                 if val is None or (val == "" and empty_strings_as_null):
+@@ -718,8 +763,8 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             rel_obj_attr = self.field.get_local_related_value
+             instance_attr = self.field.get_foreign_related_value
+             instances_dict = {instance_attr(inst): inst for inst in instances}
+-            query = {"%s__in" % self.field.name: instances}
+-            queryset = queryset.filter(**query)
++            predicate = Q(**{f"{self.field.name}__in": instances})
++            queryset = _filter_prefetch_queryset(queryset, predicate, self.field.name)
+ 
+             # Since we just bypassed this class' get_queryset(), we must manage
+             # the reverse relation manually.
+@@ -1028,6 +1073,18 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=self.instance)
+             if self._db:
+                 queryset = queryset.using(self._db)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset._next_is_sticky().filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++                return queryset
+             queryset._defer_next_filter = True
+             return queryset._next_is_sticky().filter(**self.core_filters)
+ 
+@@ -1051,8 +1108,10 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
+ 
+-            query = {"%s__in" % self.query_field_name: instances}
+-            queryset = queryset._next_is_sticky().filter(**query)
++            predicate = Q(**{f"{self.query_field_name}__in": instances})
++            queryset = _filter_prefetch_queryset(
++                queryset._next_is_sticky(), predicate, self.query_field_name
++            )
+ 
+             # M2M: need to annotate the query in order to get the primary model
+             # that the secondary model was actually related to. We know that
+2026-10-07 00:18:23,322 - INFO - Eval script for django__django-15957 written to logs\run_evaluation\django__debugging-and-error-recovery\deepseek__deepseek-v4-flash\django__django-15957\eval.sh; copying to container...
+2026-10-07 00:18:30,625 - INFO - Test runtime: 7.26 seconds
+2026-10-07 00:18:30,626 - INFO - Test output for django__django-15957 written to logs\run_evaluation\django__debugging-and-error-recovery\deepseek__deepseek-v4-flash\django__django-15957\test_output.txt
+2026-10-07 00:18:30,729 - INFO - Git diff after:
+diff --git a/django/contrib/contenttypes/fields.py b/django/contrib/contenttypes/fields.py
+index 5b327b6ae4..8b0ba6f8d7 100644
+--- a/django/contrib/contenttypes/fields.py
++++ b/django/contrib/contenttypes/fields.py
+@@ -13,6 +13,7 @@ from django.db.models.fields.related import (
+     ReverseManyToOneDescriptor,
+     lazy_related_operation,
+ )
++from django.db.models.fields.related_descriptors import _filter_prefetch_queryset
+ from django.db.models.query_utils import PathInfo
+ from django.db.models.sql import AND
+ from django.db.models.sql.where import WhereNode
+@@ -605,7 +606,20 @@ def create_generic_related_manager(superclass, rel):
+             Filter the queryset for the instance this manager is bound to.
+             """
+             db = self._db or router.db_for_read(self.model, instance=self.instance)
+-            return queryset.using(db).filter(**self.core_filters)
++            queryset = queryset.using(db)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset.filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++                return queryset
++            return queryset.filter(**self.core_filters)
+ 
+         def _remove_prefetched_objects(self):
+             try:
+@@ -645,7 +659,7 @@ def create_generic_related_manager(superclass, rel):
+             object_id_converter = instances[0]._meta.pk.to_python
+             content_type_id_field_name = "%s_id" % self.content_type_field_name
+             return (
+-                queryset.filter(query),
++                _filter_prefetch_queryset(queryset, query, self.object_id_field_name),
+                 lambda relobj: (
+                     object_id_converter(getattr(relobj, self.object_id_field_name)),
+                     getattr(relobj, content_type_id_field_name),
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index b192df4fbf..0d63981797 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -65,7 +65,8 @@ and two directions (forward and reverse) for a total of six combinations.
+ 
+ from django.core.exceptions import FieldError
+ from django.db import connections, router, transaction
+-from django.db.models import Q, signals
++from django.db.models import Q, Window, signals
++from django.db.models.functions import RowNumber
+ from django.db.models.query import QuerySet
+ from django.db.models.query_utils import DeferredAttribute
+ from django.db.models.utils import resolve_callables
+@@ -609,6 +610,38 @@ class ReverseManyToOneDescriptor:
+         )
+ 
+ 
++def _filter_prefetch_queryset(queryset, predicate, partition_by):
++    if not queryset.query.is_sliced:
++        return queryset.filter(predicate)
++    # The queryset is sliced. A slice cannot be applied after the filter that
++    # restricts the queryset to the related objects, so retrieve the related
++    # objects per parent object using a window function that numbers the rows
++    # independently for each parent and then keep only the rows covered by the
++    # slice.
++    low_mark = queryset.query.low_mark
++    high_mark = queryset.query.high_mark
++    ordering = queryset.query.order_by
++    if not ordering and queryset.query.default_ordering:
++        ordering = queryset.model._meta.ordering
++    if not ordering:
++        ordering = ("pk",)
++    queryset = queryset._chain()
++    queryset.query.clear_limits()
++    queryset = queryset.filter(predicate)
++    queryset = queryset.annotate(
++        _prefetch_related_row_number=Window(
++            RowNumber(),
++            partition_by=partition_by,
++            order_by=ordering,
++        )
++    )
++    if low_mark:
++        queryset = queryset.filter(_prefetch_related_row_number__gt=low_mark)
++    if high_mark is not None:
++        queryset = queryset.filter(_prefetch_related_row_number__lte=high_mark)
++    return queryset
++
++
+ def create_reverse_many_to_one_manager(superclass, rel):
+     """
+     Create a manager for the reverse side of a many-to-one relation.
+@@ -662,8 +695,20 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             queryset._add_hints(instance=self.instance)
+             if self._db:
+                 queryset = queryset.using(self._db)
+-            queryset._defer_next_filter = True
+-            queryset = queryset.filter(**self.core_filters)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset.filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++            else:
++                queryset._defer_next_filter = True
++                queryset = queryset.filter(**self.core_filters)
+             for field in self.field.foreign_related_fields:
+                 val = getattr(self.instance, field.attname)
+                 if val is None or (val == "" and empty_strings_as_null):
+@@ -718,8 +763,8 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             rel_obj_attr = self.field.get_local_related_value
+             instance_attr = self.field.get_foreign_related_value
+             instances_dict = {instance_attr(inst): inst for inst in instances}
+-            query = {"%s__in" % self.field.name: instances}
+-            queryset = queryset.filter(**query)
++            predicate = Q(**{f"{self.field.name}__in": instances})
++            queryset = _filter_prefetch_queryset(queryset, predicate, self.field.name)
+ 
+             # Since we just bypassed this class' get_queryset(), we must manage
+             # the reverse relation manually.
+@@ -1028,6 +1073,18 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=self.instance)
+             if self._db:
+                 queryset = queryset.using(self._db)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset._next_is_sticky().filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++                return queryset
+             queryset._defer_next_filter = True
+             return queryset._next_is_sticky().filter(**self.core_filters)
+ 
+@@ -1051,8 +1108,10 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
+ 
+-            query = {"%s__in" % self.query_field_name: instances}
+-            queryset = queryset._next_is_sticky().filter(**query)
++            predicate = Q(**{f"{self.query_field_name}__in": instances})
++            queryset = _filter_prefetch_queryset(
++                queryset._next_is_sticky(), predicate, self.query_field_name
++            )
+ 
+             # M2M: need to annotate the query in order to get the primary model
+             # that the secondary model was actually related to. We know that
+2026-10-07 00:18:30,729 - INFO - Grading answer for django__django-15957...
+2026-10-07 00:18:30,731 - INFO - report: {'django__django-15957': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_foreignkey_reverse (prefetch_related.tests.PrefetchLimitTests)', 'test_m2m_forward (prefetch_related.tests.PrefetchLimitTests)', 'test_m2m_reverse (prefetch_related.tests.PrefetchLimitTests)'], 'failure': ['test_reverse_ordering (prefetch_related.tests.PrefetchLimitTests)']}, 'PASS_TO_PASS': {'success': ['The prefetched relationship is used rather than populating the reverse', 'test_bug (prefetch_related.tests.Ticket19607Tests)', 'When intermediary results are prefetched without a destination', 'In-bulk does correctly prefetch objects by not using .iterator()', 'test_prefetch_nullable (prefetch_related.tests.NullableTest)', 'test_traverse_nullable (prefetch_related.tests.NullableTest)', 'test_bug (prefetch_related.tests.Ticket21410Tests)', 'test_bug (prefetch_related.tests.Ticket21760Tests)', 'test_m2m_then_m2m (prefetch_related.tests.DefaultManagerTests)', 'test_order (prefetch_related.tests.LookupOrderingTest)', 'test_foreignkey (prefetch_related.tests.ForeignKeyToFieldTest)', 'test_m2m (prefetch_related.tests.ForeignKeyToFieldTest)', 'test_m2m_manager_reused (prefetch_related.tests.ForeignKeyToFieldTest)', 'test_basic (prefetch_related.tests.RawQuerySetTests)', 'test_clear (prefetch_related.tests.RawQuerySetTests)', 'test_prefetch_before_raw (prefetch_related.tests.RawQuerySetTests)', 'test_using_is_honored_custom_qs (prefetch_related.tests.MultiDbTests)', 'test_using_is_honored_fkey (prefetch_related.tests.MultiDbTests)', 'test_using_is_honored_inheritance (prefetch_related.tests.MultiDbTests)', 'test_using_is_honored_m2m (prefetch_related.tests.MultiDbTests)', 'test_child_link_prefetch (prefetch_related.tests.MultiTableInheritanceTest)', 'test_foreignkey (prefetch_related.tests.MultiTableInheritanceTest)', 'test_foreignkey_to_inherited (prefetch_related.tests.MultiTableInheritanceTest)', 'test_m2m_to_inheriting_model (prefetch_related.tests.MultiTableInheritanceTest)', 'test_parent_link_prefetch (prefetch_related.tests.MultiTableInheritanceTest)', 'test_add_clears_prefetched_objects (prefetch_related.tests.DirectPrefetchedObjectCacheReuseTests)', "Nested prefetch_related() shouldn't trigger duplicate queries for the same", 'test_detect_is_fetched_with_to_attr (prefetch_related.tests.DirectPrefetchedObjectCacheReuseTests)', 'test_prefetch_reverse_foreign_key (prefetch_related.tests.DirectPrefetchedObjectCacheReuseTests)', 'test_remove_clears_prefetched_objects (prefetch_related.tests.DirectPrefetchedObjectCacheReuseTests)', 'test_charfield_GFK (prefetch_related.tests.GenericRelationTests)', 'test_custom_queryset (prefetch_related.tests.GenericRelationTests)', 'test_deleted_GFK (prefetch_related.tests.GenericRelationTests)', 'test_generic_relation (prefetch_related.tests.GenericRelationTests)', 'test_nullable_GFK (prefetch_related.tests.GenericRelationTests)', 'test_prefetch_GFK (prefetch_related.tests.GenericRelationTests)', 'test_prefetch_GFK_fk_pk (prefetch_related.tests.GenericRelationTests)', 'test_prefetch_GFK_nonint_pk (prefetch_related.tests.GenericRelationTests)', 'test_prefetch_GFK_uuid_pk (prefetch_related.tests.GenericRelationTests)', "A 'content_object' can be traversed with prefetch_related() and", 'test_bool (prefetch_related.tests.PrefetchRelatedTests)', 'test_clear (prefetch_related.tests.PrefetchRelatedTests)', 'test_count (prefetch_related.tests.PrefetchRelatedTests)', 'test_exists (prefetch_related.tests.PrefetchRelatedTests)', 'Related filtering of prefetched querysets is deferred on m2m and', 'A m2m relation can be followed after a relation like ForeignKey that', 'test_foreignkey_forward (prefetch_related.tests.PrefetchRelatedTests)', 'test_foreignkey_reverse (prefetch_related.tests.PrefetchRelatedTests)', 'test_forward_m2m_to_attr_conflict (prefetch_related.tests.PrefetchRelatedTests)', 'Objects retrieved with .get() get the prefetch behavior.', 'Regression test for #20242 - QuerySet "in" didn\'t work the first time', 'test_invalid_final_lookup (prefetch_related.tests.PrefetchRelatedTests)', 'test_len (prefetch_related.tests.PrefetchRelatedTests)', 'test_m2m_forward (prefetch_related.tests.PrefetchRelatedTests)', 'test_m2m_prefetching_iterator_with_chunks (prefetch_related.tests.PrefetchRelatedTests)', 'test_m2m_prefetching_iterator_without_chunks (prefetch_related.tests.PrefetchRelatedTests)', 'test_m2m_prefetching_iterator_without_chunks_warning (prefetch_related.tests.PrefetchRelatedTests)', 'test_m2m_reverse (prefetch_related.tests.PrefetchRelatedTests)', 'A m2m can be followed through another m2m.', 'test_m2m_then_m2m_object_ids (prefetch_related.tests.PrefetchRelatedTests)', 'test_m2m_then_reverse_fk_object_ids (prefetch_related.tests.PrefetchRelatedTests)', 'test_m2m_then_reverse_one_to_one_object_ids (prefetch_related.tests.PrefetchRelatedTests)', 'test_named_values_list (prefetch_related.tests.PrefetchRelatedTests)', 'test_onetoone_reverse_no_match (prefetch_related.tests.PrefetchRelatedTests)', 'A model (Bio) with a OneToOneField primary key (author) that references', 'test_overriding_prefetch (prefetch_related.tests.PrefetchRelatedTests)', 'test_prefetch_eq (prefetch_related.tests.PrefetchRelatedTests)', 'test_reverse_m2m_to_attr_conflict (prefetch_related.tests.PrefetchRelatedTests)', 'A m2m relation can be followed after going through the select_related', 'test_survives_clone (prefetch_related.tests.PrefetchRelatedTests)', 'test_ambiguous (prefetch_related.tests.CustomPrefetchTests)', 'test_custom_qs (prefetch_related.tests.CustomPrefetchTests)', 'Related filtering of prefetched querysets is deferred until necessary.', 'test_generic_rel (prefetch_related.tests.CustomPrefetchTests)', 'test_m2m (prefetch_related.tests.CustomPrefetchTests)', 'test_m2m_through_fk (prefetch_related.tests.CustomPrefetchTests)', 'test_m2m_through_gfk (prefetch_related.tests.CustomPrefetchTests)', 'test_nested_prefetch_related_are_not_overwritten (prefetch_related.tests.CustomPrefetchTests)', 'Nested prefetches whose name clashes with descriptor names', 'test_o2m_through_m2m (prefetch_related.tests.CustomPrefetchTests)', 'test_raw_queryset (prefetch_related.tests.CustomPrefetchTests)', 'test_reverse_m2m (prefetch_related.tests.CustomPrefetchTests)', 'test_to_attr_cached_property (prefetch_related.tests.CustomPrefetchTests)', 'test_to_attr_doesnt_cache_through_attr_as_list (prefetch_related.tests.CustomPrefetchTests)', 'test_traverse_multiple_items_property (prefetch_related.tests.CustomPrefetchTests)', 'test_traverse_qs (prefetch_related.tests.CustomPrefetchTests)', 'test_traverse_single_item_property (prefetch_related.tests.CustomPrefetchTests)', 'test_values_queryset (prefetch_related.tests.CustomPrefetchTests)'], 'failure': ['test_attribute_error (prefetch_related.tests.PrefetchRelatedTests)']}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-15957: resolved: False
+2026-10-07 00:18:30,732 - INFO - Attempting to stop container sweb.eval.django__django-15957.django__debugging-and-error-recovery...
+2026-10-07 00:18:45,976 - INFO - Container sweb.eval.django__django-15957.django__debugging-and-error-recovery stopped successfully.
+2026-10-07 00:18:45,976 - INFO - Attempting to remove container sweb.eval.django__django-15957.django__debugging-and-error-recovery...
+2026-10-07 00:18:46,061 - INFO - Container sweb.eval.django__django-15957.django__debugging-and-error-recovery removed successfully.

@@ -1,0 +1,180 @@
+2026-10-06 22:47:23,561 - INFO - Creating container for django__django-11087...
+2026-10-06 22:47:23,633 - INFO - Container for django__django-11087 created: da32bf695becc708c73cf21241da47ccc9f3423b2029378de230a2888ca7a796
+2026-10-06 22:47:23,759 - INFO - Container for django__django-11087 started: da32bf695becc708c73cf21241da47ccc9f3423b2029378de230a2888ca7a796
+2026-10-06 22:47:23,760 - INFO - Intermediate patch for django__django-11087 written to logs\run_evaluation\django__django-patterns\deepseek__deepseek-v4-flash\django__django-11087\patch.diff, now applying to container...
+2026-10-06 22:47:23,847 - INFO - >>>>> Applied Patch:
+Checking patch django/contrib/admin/utils.py...
+Checking patch django/db/models/deletion.py...
+Checking patch django/db/models/query.py...
+Applied patch django/contrib/admin/utils.py cleanly.
+Applied patch django/db/models/deletion.py cleanly.
+Applied patch django/db/models/query.py cleanly.
+
+2026-10-06 22:47:24,839 - INFO - Git diff before:
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
+index dd6b108ff3..a2012e59df 100644
+--- a/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -184,6 +184,8 @@ class NestedObjects(Collector):
+ 
+     def related_objects(self, related, objs):
+         qs = super().related_objects(related, objs)
++        if not self._has_signal_listeners(qs.model):
++            qs = qs.only('pk', related.field.name)
+         return qs.select_related(related.field.name)
+ 
+     def _nested(self, obj, seen, format_callback):
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..e7396d8381 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -116,6 +116,13 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def _has_signal_listeners(self, model):
++        return (
++            signals.pre_delete.has_listeners(model) or
++            signals.post_delete.has_listeners(model) or
++            signals.m2m_changed.has_listeners(model)
++        )
++
+     def can_fast_delete(self, objs, from_field=None):
+         """
+         Determine if the objects in the given queryset-like or single object
+@@ -135,9 +142,7 @@ class Collector:
+             model = objs.model
+         else:
+             return False
+-        if (signals.pre_delete.has_listeners(model) or
+-                signals.post_delete.has_listeners(model) or
+-                signals.m2m_changed.has_listeners(model)):
++        if self._has_signal_listeners(model):
+             return False
+         # The use of from_field comes from the need to avoid cascade back to
+         # parent when parent delete is cascading to child.
+@@ -188,6 +193,9 @@ class Collector:
+         if self.can_fast_delete(objs):
+             self.fast_deletes.append(objs)
+             return
++        if (hasattr(objs, 'only') and objs._result_cache is None and
++                not self._has_signal_listeners(objs.model)):
++            objs = objs.only('pk')
+         new_objs = self.add(objs, source, nullable,
+                             reverse_dependency=reverse_dependency)
+         if not new_objs:
+@@ -232,9 +240,12 @@ class Collector:
+         """
+         Get a QuerySet of objects related to `objs` via the relation `related`.
+         """
+-        return related.related_model._base_manager.using(self.using).filter(
++        qs = related.related_model._base_manager.using(self.using).filter(
+             **{"%s__in" % related.field.name: objs}
+         )
++        if not self._has_signal_listeners(qs.model):
++            qs = qs.only('pk')
++        return qs
+ 
+     def instances_with_model(self):
+         for model, instances in self.data.items():
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index 84236107f3..6a87535e36 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -696,6 +696,8 @@ class QuerySet:
+         del_query.query.clear_ordering(force_empty=True)
+ 
+         collector = Collector(using=del_query.db)
++        if not collector._has_signal_listeners(del_query.model):
++            del_query = del_query.only('pk')
+         collector.collect(del_query)
+         deleted, _rows_count = collector.delete()
+2026-10-06 22:47:24,840 - INFO - Eval script for django__django-11087 written to logs\run_evaluation\django__django-patterns\deepseek__deepseek-v4-flash\django__django-11087\eval.sh; copying to container...
+2026-10-06 22:47:29,329 - INFO - Test runtime: 4.45 seconds
+2026-10-06 22:47:29,330 - INFO - Test output for django__django-11087 written to logs\run_evaluation\django__django-patterns\deepseek__deepseek-v4-flash\django__django-11087\test_output.txt
+2026-10-06 22:47:29,371 - INFO - Git diff after:
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
+index dd6b108ff3..a2012e59df 100644
+--- a/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -184,6 +184,8 @@ class NestedObjects(Collector):
+ 
+     def related_objects(self, related, objs):
+         qs = super().related_objects(related, objs)
++        if not self._has_signal_listeners(qs.model):
++            qs = qs.only('pk', related.field.name)
+         return qs.select_related(related.field.name)
+ 
+     def _nested(self, obj, seen, format_callback):
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..e7396d8381 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -116,6 +116,13 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def _has_signal_listeners(self, model):
++        return (
++            signals.pre_delete.has_listeners(model) or
++            signals.post_delete.has_listeners(model) or
++            signals.m2m_changed.has_listeners(model)
++        )
++
+     def can_fast_delete(self, objs, from_field=None):
+         """
+         Determine if the objects in the given queryset-like or single object
+@@ -135,9 +142,7 @@ class Collector:
+             model = objs.model
+         else:
+             return False
+-        if (signals.pre_delete.has_listeners(model) or
+-                signals.post_delete.has_listeners(model) or
+-                signals.m2m_changed.has_listeners(model)):
++        if self._has_signal_listeners(model):
+             return False
+         # The use of from_field comes from the need to avoid cascade back to
+         # parent when parent delete is cascading to child.
+@@ -188,6 +193,9 @@ class Collector:
+         if self.can_fast_delete(objs):
+             self.fast_deletes.append(objs)
+             return
++        if (hasattr(objs, 'only') and objs._result_cache is None and
++                not self._has_signal_listeners(objs.model)):
++            objs = objs.only('pk')
+         new_objs = self.add(objs, source, nullable,
+                             reverse_dependency=reverse_dependency)
+         if not new_objs:
+@@ -232,9 +240,12 @@ class Collector:
+         """
+         Get a QuerySet of objects related to `objs` via the relation `related`.
+         """
+-        return related.related_model._base_manager.using(self.using).filter(
++        qs = related.related_model._base_manager.using(self.using).filter(
+             **{"%s__in" % related.field.name: objs}
+         )
++        if not self._has_signal_listeners(qs.model):
++            qs = qs.only('pk')
++        return qs
+ 
+     def instances_with_model(self):
+         for model, instances in self.data.items():
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index 84236107f3..6a87535e36 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -696,6 +696,8 @@ class QuerySet:
+         del_query.query.clear_ordering(force_empty=True)
+ 
+         collector = Collector(using=del_query.db)
++        if not collector._has_signal_listeners(del_query.model):
++            del_query = del_query.only('pk')
+         collector.collect(del_query)
+         deleted, _rows_count = collector.delete()
+2026-10-06 22:47:29,372 - INFO - Grading answer for django__django-11087...
+2026-10-06 22:47:29,372 - INFO - report: {'django__django-11087': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['test_only_referenced_fields_selected (delete.tests.DeletionTests)']}, 'PASS_TO_PASS': {'success': ['test_fast_delete_empty_no_update_can_self_select (delete.tests.FastDeleteTests)', 'test_fast_delete_fk (delete.tests.FastDeleteTests)', 'test_fast_delete_inheritance (delete.tests.FastDeleteTests)', 'test_fast_delete_instance_set_pk_none (delete.tests.FastDeleteTests)', 'test_fast_delete_joined_qs (delete.tests.FastDeleteTests)', 'test_fast_delete_large_batch (delete.tests.FastDeleteTests)', 'test_fast_delete_m2m (delete.tests.FastDeleteTests)', 'test_fast_delete_qs (delete.tests.FastDeleteTests)', 'test_fast_delete_revm2m (delete.tests.FastDeleteTests)', 'test_auto (delete.tests.OnDeleteTests)', 'test_auto_nullable (delete.tests.OnDeleteTests)', 'test_cascade (delete.tests.OnDeleteTests)', 'test_cascade_from_child (delete.tests.OnDeleteTests)', 'test_cascade_from_parent (delete.tests.OnDeleteTests)', 'test_cascade_nullable (delete.tests.OnDeleteTests)', 'test_do_nothing (delete.tests.OnDeleteTests)', 'test_do_nothing_qscount (delete.tests.OnDeleteTests)', 'test_inheritance_cascade_down (delete.tests.OnDeleteTests)', 'test_inheritance_cascade_up (delete.tests.OnDeleteTests)', 'test_o2o_setnull (delete.tests.OnDeleteTests)', 'test_protect (delete.tests.OnDeleteTests)', 'test_setdefault (delete.tests.OnDeleteTests)', 'test_setdefault_none (delete.tests.OnDeleteTests)', 'test_setnull (delete.tests.OnDeleteTests)', 'test_setnull_from_child (delete.tests.OnDeleteTests)', 'test_setnull_from_parent (delete.tests.OnDeleteTests)', 'test_setvalue (delete.tests.OnDeleteTests)', 'test_bulk (delete.tests.DeletionTests)', 'test_can_defer_constraint_checks (delete.tests.DeletionTests)', 'test_delete_with_keeping_parents (delete.tests.DeletionTests)', 'test_delete_with_keeping_parents_relationships (delete.tests.DeletionTests)', 'test_deletion_order (delete.tests.DeletionTests)', 'test_hidden_related (delete.tests.DeletionTests)', 'test_instance_update (delete.tests.DeletionTests)', 'test_large_delete (delete.tests.DeletionTests)', 'test_large_delete_related (delete.tests.DeletionTests)', 'test_m2m (delete.tests.DeletionTests)', 'test_model_delete_returns_num_rows (delete.tests.DeletionTests)', 'test_proxied_model_duplicate_queries (delete.tests.DeletionTests)', 'test_queryset_delete_returns_num_rows (delete.tests.DeletionTests)', 'test_relational_post_delete_signals_happen_before_parent_object (delete.tests.DeletionTests)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-11087: resolved: False
+2026-10-06 22:47:29,375 - INFO - Attempting to stop container sweb.eval.django__django-11087.django__django-patterns...
+2026-10-06 22:47:44,729 - INFO - Container sweb.eval.django__django-11087.django__django-patterns stopped successfully.
+2026-10-06 22:47:44,729 - INFO - Attempting to remove container sweb.eval.django__django-11087.django__django-patterns...
+2026-10-06 22:47:44,826 - INFO - Container sweb.eval.django__django-11087.django__django-patterns removed successfully.

@@ -1,0 +1,129 @@
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..19618fda3 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -9,6 +9,7 @@
+ """
+ 
+ import json
++import posixpath
+ import queue
+ import re
+ import socket
+@@ -25,7 +26,7 @@ from requests.exceptions import HTTPError
+ from sphinx.application import Sphinx
+ from sphinx.builders import Builder
+ from sphinx.locale import __
+-from sphinx.util import encode_uri, requests, logging
++from sphinx.util import docname_join, encode_uri, requests, logging
+ from sphinx.util.console import (  # type: ignore
+     purple, red, darkgreen, darkgray, turquoise
+ )
+@@ -212,8 +213,6 @@ class CheckExternalLinksBuilder(Builder):
+             # check for various conditions without bothering the network
+             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+-            elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+@@ -224,11 +223,15 @@ class CheckExternalLinksBuilder(Builder):
+                 if rex.match(uri):
+                     return 'ignored', '', 0
+ 
+-            # need to actually check the URI
+-            for _ in range(self.app.config.linkcheck_retries):
+-                status, info, code = check_uri()
+-                if status != "broken":
+-                    break
++            if not uri.startswith(('http:', 'https:')):
++                # local link
++                status, info, code = self.check_local(docname, uri)
++            else:
++                # need to actually check the URI
++                for _ in range(self.app.config.linkcheck_retries):
++                    status, info, code = check_uri()
++                    if status != "broken":
++                        break
+ 
+             if status == "working":
+                 self.good.add(uri)
+@@ -246,6 +249,77 @@ class CheckExternalLinksBuilder(Builder):
+             status, info, code = check()
+             self.rqueue.put((uri, docname, lineno, status, info, code))
+ 
++    def check_local(self, docname: str, uri: str) -> Tuple[str, str, int]:
++        """Check a local (internal) link.
++
++        The link is resolved relative to the document which contains it.  It
++        is considered valid if it points to a known document or to an existing
++        file in the source directory.  If the link has an anchor, its existence
++        is also verified for documents (unless anchor checking is disabled).
++        """
++        # split off anchor
++        if '#' in uri:
++            target, anchor = uri.split('#', 1)
++        else:
++            target = uri
++            anchor = None
++
++        target = unquote(target)
++
++        # resolve the target document name relative to the current document
++        todocname = None
++        if target:
++            candidate = docname_join(docname, target)
++            if candidate in self.env.found_docs:
++                todocname = candidate
++            else:
++                # the link may point to a document with an explicit suffix
++                base, ext = path.splitext(candidate)
++                if ext and base in self.env.found_docs:
++                    todocname = base
++        else:
++            todocname = docname
++
++        if todocname is not None:
++            if anchor and self.app.config.linkcheck_anchors:
++                anchor = unquote(anchor)
++                for rex in self.anchors_ignore:
++                    if rex.match(anchor):
++                        break
++                else:
++                    doctree = self.env.get_doctree(todocname)
++                    if anchor not in doctree.ids:
++                        return 'broken', __("Anchor '%s' not found") % anchor, 0
++
++            return 'working', '', 0
++
++        # the link may point to a non-document file in the source directory
++        if self.local_file_exists(docname, target):
++            return 'working', '', 0
++
++        return 'broken', __("'%s' does not exist") % uri, 0
++
++    def local_file_exists(self, docname: str, target: str) -> bool:
++        """Check whether *target* points to a file relative to *docname*."""
++        if not target:
++            return False
++
++        if target.startswith('/'):
++            relpath = target[1:]
++        else:
++            relpath = posixpath.normpath(posixpath.join(posixpath.dirname(docname),
++                                                         target))
++
++        filename = path.join(self.srcdir, *relpath.split('/'))
++        if path.isfile(filename):
++            return True
++
++        for suffix in self.config.source_suffix:
++            if path.isfile(filename + suffix):
++                return True
++
++        return False
++
+     def process_result(self, result: Tuple[str, str, int, str, str, int]) -> None:
+         uri, docname, lineno, status, info, code = result
+ 

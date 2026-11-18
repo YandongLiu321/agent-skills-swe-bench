@@ -1,0 +1,140 @@
+2026-10-07 02:01:02,765 - INFO - Creating container for sphinx-doc__sphinx-7985...
+2026-10-07 02:01:02,812 - INFO - Container for sphinx-doc__sphinx-7985 created: 3c83a97c976ea259e990a447c58b545e76dbb6f2babd5ff75f152cb68f4e76e4
+2026-10-07 02:01:02,937 - INFO - Container for sphinx-doc__sphinx-7985 started: 3c83a97c976ea259e990a447c58b545e76dbb6f2babd5ff75f152cb68f4e76e4
+2026-10-07 02:01:02,938 - INFO - Intermediate patch for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__python-anti-patterns\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\patch.diff, now applying to container...
+2026-10-07 02:01:03,020 - INFO - >>>>> Applied Patch:
+Checking patch CHANGES...
+Checking patch sphinx/builders/linkcheck.py...
+Applied patch CHANGES cleanly.
+Applied patch sphinx/builders/linkcheck.py cleanly.
+
+2026-10-07 02:01:03,187 - INFO - Git diff before:
+diff --git a/CHANGES b/CHANGES
+index bc932a7d4..7af591708 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -27,6 +27,7 @@ Features added
+ * #7902: html theme: Add a new option :confval:`globaltoc_maxdepth` to control
+   the behavior of globaltoc in sidebar
+ * #7840: i18n: Optimize the dependencies check on bootstrap
++* #5208: linkcheck: Support checks for local links
+ * #7052: add ``:noindexentry:`` to the Python, C, C++, and Javascript domains.
+   Update the documentation to better reflect the relationship between this option
+   and the ``:noindex:`` option.
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..d4621c01d 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -208,12 +208,41 @@ class CheckExternalLinksBuilder(Builder):
+                 else:
+                     return 'redirected', new_url, 0
+ 
++        def check_local() -> Tuple[str, str, int]:
++            # split off anchor
++            req_url = uri.split('#', 1)[0]
++            if len(req_url) == 0:
++                return 'unchecked', '', 0
++
++            # a local link is resolved relative to the source directory of the
++            # document that contains it
++            try:
++                filename = self.env.relfn2path(req_url, docname)[1]
++            except Exception:
++                return 'broken', 'local file not found: %s' % req_url, 0
++
++            if path.exists(filename):
++                return 'local', '', 0
++
++            # a link to a document may omit the source suffix
++            for suffix in self.app.config.source_suffix:
++                if path.exists(filename + suffix):
++                    return 'local', '', 0
++
++            return 'broken', 'local file not found: %s' % req_url, 0
++
+         def check() -> Tuple[str, str, int]:
+             # check for various conditions without bothering the network
+             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+             elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
++                if uri.startswith('data:'):
++                    return 'working', '', 0
++                else:
++                    status, info, code = check_local()
++                    if status == 'broken':
++                        self.broken[uri] = info
++                    return status, info, code
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+2026-10-07 02:01:03,188 - INFO - Eval script for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__python-anti-patterns\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\eval.sh; copying to container...
+2026-10-07 02:01:09,283 - INFO - Test runtime: 6.05 seconds
+2026-10-07 02:01:09,283 - INFO - Test output for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__python-anti-patterns\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\test_output.txt
+2026-10-07 02:01:09,321 - INFO - Git diff after:
+diff --git a/CHANGES b/CHANGES
+index bc932a7d4..7af591708 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -27,6 +27,7 @@ Features added
+ * #7902: html theme: Add a new option :confval:`globaltoc_maxdepth` to control
+   the behavior of globaltoc in sidebar
+ * #7840: i18n: Optimize the dependencies check on bootstrap
++* #5208: linkcheck: Support checks for local links
+ * #7052: add ``:noindexentry:`` to the Python, C, C++, and Javascript domains.
+   Update the documentation to better reflect the relationship between this option
+   and the ``:noindex:`` option.
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..d4621c01d 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -208,12 +208,41 @@ class CheckExternalLinksBuilder(Builder):
+                 else:
+                     return 'redirected', new_url, 0
+ 
++        def check_local() -> Tuple[str, str, int]:
++            # split off anchor
++            req_url = uri.split('#', 1)[0]
++            if len(req_url) == 0:
++                return 'unchecked', '', 0
++
++            # a local link is resolved relative to the source directory of the
++            # document that contains it
++            try:
++                filename = self.env.relfn2path(req_url, docname)[1]
++            except Exception:
++                return 'broken', 'local file not found: %s' % req_url, 0
++
++            if path.exists(filename):
++                return 'local', '', 0
++
++            # a link to a document may omit the source suffix
++            for suffix in self.app.config.source_suffix:
++                if path.exists(filename + suffix):
++                    return 'local', '', 0
++
++            return 'broken', 'local file not found: %s' % req_url, 0
++
+         def check() -> Tuple[str, str, int]:
+             # check for various conditions without bothering the network
+             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+             elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
++                if uri.startswith('data:'):
++                    return 'working', '', 0
++                else:
++                    status, info, code = check_local()
++                    if status == 'broken':
++                        self.broken[uri] = info
++                    return status, info, code
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+2026-10-07 02:01:09,322 - INFO - Grading answer for sphinx-doc__sphinx-7985...
+2026-10-07 02:01:09,325 - INFO - report: {'sphinx-doc__sphinx-7985': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/test_build_linkcheck.py::test_defaults', 'tests/test_build_linkcheck.py::test_anchors_ignored']}, 'PASS_TO_PASS': {'success': ['tests/test_build_linkcheck.py::test_defaults_json', 'tests/test_build_linkcheck.py::test_auth', 'tests/test_build_linkcheck.py::test_linkcheck_request_headers'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-7985: resolved: False
+2026-10-07 02:01:09,326 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-7985.sphinx__python-anti-patterns...
+2026-10-07 02:01:24,620 - INFO - Container sweb.eval.sphinx-doc__sphinx-7985.sphinx__python-anti-patterns stopped successfully.
+2026-10-07 02:01:24,620 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-7985.sphinx__python-anti-patterns...
+2026-10-07 02:01:24,697 - INFO - Container sweb.eval.sphinx-doc__sphinx-7985.sphinx__python-anti-patterns removed successfully.

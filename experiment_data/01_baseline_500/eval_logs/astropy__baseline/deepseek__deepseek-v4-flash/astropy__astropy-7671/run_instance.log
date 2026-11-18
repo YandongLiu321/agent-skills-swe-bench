@@ -1,0 +1,190 @@
+2026-10-04 14:25:33,746 - INFO - Creating container for astropy__astropy-7671...
+2026-10-04 14:25:33,819 - INFO - Container for astropy__astropy-7671 created: 800faa355f6ae84d326b33d1cc6c1574a8ea05cc73fddf143415e0c708159ef4
+2026-10-04 14:25:33,974 - INFO - Container for astropy__astropy-7671 started: 800faa355f6ae84d326b33d1cc6c1574a8ea05cc73fddf143415e0c708159ef4
+2026-10-04 14:25:33,975 - INFO - Intermediate patch for astropy__astropy-7671 written to logs\run_evaluation\astropy__baseline\deepseek__deepseek-v4-flash\astropy__astropy-7671\patch.diff, now applying to container...
+2026-10-04 14:25:34,099 - INFO - >>>>> Applied Patch:
+Checking patch astropy/utils/introspection.py...
+Applied patch astropy/utils/introspection.py cleanly.
+
+2026-10-04 14:25:34,855 - INFO - Git diff before:
+diff --git a/astropy/utils/introspection.py b/astropy/utils/introspection.py
+index 3e784f9fc..ad8b26a1c 100644
+--- a/astropy/utils/introspection.py
++++ b/astropy/utils/introspection.py
+@@ -4,6 +4,7 @@
+ 
+ 
+ import inspect
++import re
+ import types
+ import importlib
+ from distutils.version import LooseVersion
+@@ -88,6 +89,57 @@ def resolve_name(name, *additional_parts):
+     return ret
+ 
+ 
++_NUMERIC_VERSION_RE = re.compile(r'^[0-9]+(?:\.[0-9]+)*$')
++
++
++def _loose_version(version):
++    """Create a `~distutils.version.LooseVersion` from *version*.
++
++    This strips any non-numeric part from the version string, which is needed
++    because `~distutils.version.LooseVersion` raises a `TypeError` when such
++    parts are compared with numeric components.  Trailing zeros are stripped
++    so that, e.g., ``'1.2'`` and ``'1.2.0'`` compare as equal.
++    """
++    match = re.match(r'^[0-9]+(?:\.[0-9]+)*', version)
++    version = match.group(0) if match else '0'
++    parts = version.split('.')
++    while len(parts) > 1 and parts[-1] == '0':
++        parts.pop()
++    return LooseVersion('.'.join(parts))
++
++
++def _parse_versions(have_version, version):
++    """Parse version strings into comparable objects.
++
++    For plain numeric versions, `~distutils.version.LooseVersion` is used
++    directly.  Otherwise, `packaging.version.parse` or
++    `pkg_resources.parse_version` is used if available, as these handle
++    suffixes such as ``dev`` or ``rc`` correctly.
++    """
++    have_version = str(have_version)
++    version = str(version)
++
++    if (_NUMERIC_VERSION_RE.match(have_version) and
++            _NUMERIC_VERSION_RE.match(version)):
++        return _loose_version(have_version), _loose_version(version)
++
++    try:
++        from packaging.version import parse as parse_version
++    except ImportError:
++        try:
++            from pkg_resources import parse_version
++        except ImportError:
++            parse_version = None
++
++    if parse_version is not None:
++        try:
++            return parse_version(have_version), parse_version(version)
++        except Exception:
++            pass
++
++    return _loose_version(have_version), _loose_version(version)
++
++
+ def minversion(module, version, inclusive=True, version_path='__version__'):
+     """
+     Returns `True` if the specified Python module satisfies a minimum version
+@@ -139,10 +191,12 @@ def minversion(module, version, inclusive=True, version_path='__version__'):
+     else:
+         have_version = resolve_name(module.__name__, version_path)
+ 
++    have_version, version = _parse_versions(have_version, version)
++
+     if inclusive:
+-        return LooseVersion(have_version) >= LooseVersion(version)
++        return have_version >= version
+     else:
+-        return LooseVersion(have_version) > LooseVersion(version)
++        return have_version > version
+ 
+ 
+ def find_current_module(depth=1, finddiff=False):
+2026-10-04 14:25:34,856 - INFO - Eval script for astropy__astropy-7671 written to logs\run_evaluation\astropy__baseline\deepseek__deepseek-v4-flash\astropy__astropy-7671\eval.sh; copying to container...
+2026-10-04 14:25:38,620 - INFO - Test runtime: 3.71 seconds
+2026-10-04 14:25:38,621 - INFO - Test output for astropy__astropy-7671 written to logs\run_evaluation\astropy__baseline\deepseek__deepseek-v4-flash\astropy__astropy-7671\test_output.txt
+2026-10-04 14:25:38,667 - INFO - Git diff after:
+diff --git a/astropy/utils/introspection.py b/astropy/utils/introspection.py
+index 3e784f9fc..ad8b26a1c 100644
+--- a/astropy/utils/introspection.py
++++ b/astropy/utils/introspection.py
+@@ -4,6 +4,7 @@
+ 
+ 
+ import inspect
++import re
+ import types
+ import importlib
+ from distutils.version import LooseVersion
+@@ -88,6 +89,57 @@ def resolve_name(name, *additional_parts):
+     return ret
+ 
+ 
++_NUMERIC_VERSION_RE = re.compile(r'^[0-9]+(?:\.[0-9]+)*$')
++
++
++def _loose_version(version):
++    """Create a `~distutils.version.LooseVersion` from *version*.
++
++    This strips any non-numeric part from the version string, which is needed
++    because `~distutils.version.LooseVersion` raises a `TypeError` when such
++    parts are compared with numeric components.  Trailing zeros are stripped
++    so that, e.g., ``'1.2'`` and ``'1.2.0'`` compare as equal.
++    """
++    match = re.match(r'^[0-9]+(?:\.[0-9]+)*', version)
++    version = match.group(0) if match else '0'
++    parts = version.split('.')
++    while len(parts) > 1 and parts[-1] == '0':
++        parts.pop()
++    return LooseVersion('.'.join(parts))
++
++
++def _parse_versions(have_version, version):
++    """Parse version strings into comparable objects.
++
++    For plain numeric versions, `~distutils.version.LooseVersion` is used
++    directly.  Otherwise, `packaging.version.parse` or
++    `pkg_resources.parse_version` is used if available, as these handle
++    suffixes such as ``dev`` or ``rc`` correctly.
++    """
++    have_version = str(have_version)
++    version = str(version)
++
++    if (_NUMERIC_VERSION_RE.match(have_version) and
++            _NUMERIC_VERSION_RE.match(version)):
++        return _loose_version(have_version), _loose_version(version)
++
++    try:
++        from packaging.version import parse as parse_version
++    except ImportError:
++        try:
++            from pkg_resources import parse_version
++        except ImportError:
++            parse_version = None
++
++    if parse_version is not None:
++        try:
++            return parse_version(have_version), parse_version(version)
++        except Exception:
++            pass
++
++    return _loose_version(have_version), _loose_version(version)
++
++
+ def minversion(module, version, inclusive=True, version_path='__version__'):
+     """
+     Returns `True` if the specified Python module satisfies a minimum version
+@@ -139,10 +191,12 @@ def minversion(module, version, inclusive=True, version_path='__version__'):
+     else:
+         have_version = resolve_name(module.__name__, version_path)
+ 
++    have_version, version = _parse_versions(have_version, version)
++
+     if inclusive:
+-        return LooseVersion(have_version) >= LooseVersion(version)
++        return have_version >= version
+     else:
+-        return LooseVersion(have_version) > LooseVersion(version)
++        return have_version > version
+ 
+ 
+ def find_current_module(depth=1, finddiff=False):
+2026-10-04 14:25:38,667 - INFO - Grading answer for astropy__astropy-7671...
+2026-10-04 14:25:38,668 - INFO - report: {'astropy__astropy-7671': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['astropy/utils/tests/test_introspection.py::test_minversion'], 'failure': []}, 'PASS_TO_PASS': {'success': ['astropy/utils/tests/test_introspection.py::test_pkg_finder', 'astropy/utils/tests/test_introspection.py::test_find_current_mod', 'astropy/utils/tests/test_introspection.py::test_find_mod_objs'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for astropy__astropy-7671: resolved: True
+2026-10-04 14:25:38,669 - INFO - Attempting to stop container sweb.eval.astropy__astropy-7671.astropy__baseline...
+2026-10-04 14:25:53,940 - INFO - Container sweb.eval.astropy__astropy-7671.astropy__baseline stopped successfully.
+2026-10-04 14:25:53,940 - INFO - Attempting to remove container sweb.eval.astropy__astropy-7671.astropy__baseline...
+2026-10-04 14:25:54,042 - INFO - Container sweb.eval.astropy__astropy-7671.astropy__baseline removed successfully.

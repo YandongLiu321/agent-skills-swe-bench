@@ -1,0 +1,64 @@
+diff --git a/ChangeLog b/ChangeLog
+index 97af302a..74b1abf6 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -10,6 +10,10 @@ Release date: TBA
+ ..
+   Put new features here and also in 'doc/whatsnew/2.11.rst'
+ 
++* Setting ``min-similarity-lines`` to ``0`` now disables the ``duplicate-code`` check.
++
++  Closes #214
++
+ * The python3 porting mode checker and it's ``py3k`` option were removed. You can still find it in older pylint
+   versions.
+ 
+diff --git a/pylint/checkers/similar.py b/pylint/checkers/similar.py
+index c65b1c89..b97429bb 100644
+--- a/pylint/checkers/similar.py
++++ b/pylint/checkers/similar.py
+@@ -370,6 +370,8 @@ class Similar:
+ 
+     def append_stream(self, streamid: str, stream: TextIO, encoding=None) -> None:
+         """append a file to search for similarities"""
++        if self.min_lines <= 0:
++            return
+         if encoding is None:
+             readlines = stream.readlines
+         else:
+@@ -390,10 +392,14 @@ class Similar:
+ 
+     def run(self) -> None:
+         """start looking for similarities and display results on stdout"""
++        if self.min_lines <= 0:
++            return
+         self._display_sims(self._compute_sims())
+ 
+     def _compute_sims(self) -> List[Tuple[int, Set[LinesChunkLimits_T]]]:
+         """compute similarities in appended files"""
++        if self.min_lines <= 0:
++            return []
+         no_duplicates: Dict[int, List[Set[LinesChunkLimits_T]]] = defaultdict(list)
+ 
+         for commonality in self._iter_sims():
+@@ -739,7 +745,10 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
+                 "default": DEFAULT_MIN_SIMILARITY_LINE,
+                 "type": "int",
+                 "metavar": "<int>",
+-                "help": "Minimum lines number of a similarity.",
++                "help": (
++                    "Minimum lines number of a similarity. "
++                    "Set to 0 to disable the duplicate code check."
++                ),
+             },
+         ),
+         (
+@@ -830,6 +839,8 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
+ 
+     def close(self):
+         """compute and display similarities on closing (i.e. end of parsing)"""
++        if self.min_lines <= 0:
++            return
+         total = sum(len(lineset) for lineset in self.linesets)
+         duplicated = 0
+         stats = self.stats

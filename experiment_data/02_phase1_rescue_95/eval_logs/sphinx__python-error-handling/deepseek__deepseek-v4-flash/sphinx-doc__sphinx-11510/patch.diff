@@ -1,0 +1,69 @@
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..55676377d 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,10 +1,13 @@
+ from __future__ import annotations
+ 
++import os
+ import re
+ from typing import TYPE_CHECKING, Any, cast
+ 
+ from docutils import nodes
++from docutils.io import FileInput
+ from docutils.parsers.rst import directives
++from docutils.parsers.rst.directives import misc as rst_misc
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+ from docutils.parsers.rst.directives.misc import Class
+ from docutils.parsers.rst.directives.misc import Include as BaseInclude
+@@ -376,7 +379,37 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++
++        env = self.env
++
++        class SphinxIncludeFileInput(FileInput):
++            """A ``FileInput`` that emits source-read and include-read events."""
++
++            def read(self) -> str:
++                content = [super().read()]
++                docname = env.path2doc(self.source_path) or env.docname
++                env.events.emit('source-read', docname, content)
++                relative_path = os.path.relpath(self.source_path, env.srcdir)
++                env.events.emit('include-read', relative_path, env.docname, content)
++                return content[0]
++
++        # Patch the FileInput used by the docutils Include directive, so that
++        # content read by ``.. include::`` passes through Sphinx's events.
++        # Only the ``misc`` module's reference to ``io`` is replaced to avoid
++        # affecting other directives that read files.
++        _orig_io = rst_misc.io
++
++        class _IOProxy:
++            FileInput = SphinxIncludeFileInput
++
++            def __getattr__(self, name: str) -> Any:
++                return getattr(_orig_io, name)
++
++        rst_misc.io = _IOProxy()  # type: ignore[assignment]
++        try:
++            return super().run()
++        finally:
++            rst_misc.io = _orig_io
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:
+diff --git a/sphinx/events.py b/sphinx/events.py
+index c3fdb37c1..dad33aa63 100644
+--- a/sphinx/events.py
++++ b/sphinx/events.py
+@@ -38,6 +38,7 @@ core_events = {
+     'env-before-read-docs': 'env, docnames',
+     'env-check-consistency': 'env',
+     'source-read': 'docname, source text',
++    'include-read': 'relative path, parent docname, source text',
+     'doctree-read': 'the doctree before being pickled',
+     'env-merge-info': 'env, read docnames, other env instance',
+     'missing-reference': 'env, node, contnode',

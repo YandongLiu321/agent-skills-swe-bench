@@ -1,0 +1,47 @@
+diff --git a/sphinx/builders/html/transforms.py b/sphinx/builders/html/transforms.py
+index c91da57e9..42c77edec 100644
+--- a/sphinx/builders/html/transforms.py
++++ b/sphinx/builders/html/transforms.py
+@@ -9,7 +9,7 @@
+ """
+ 
+ import re
+-from typing import Any, Dict
++from typing import Any, Dict, List
+ 
+ from docutils import nodes
+ 
+@@ -43,6 +43,33 @@ class KeyboardTransform(SphinxPostTransform):
+         matcher = NodeMatcher(nodes.literal, classes=["kbd"])
+         for node in self.document.traverse(matcher):  # type: nodes.literal
+             parts = self.pattern.split(node[-1].astext())
++            if len(parts) == 1:
++                continue
++
++            # ``parts`` contains keystrokes and separators alternately.  But
++            # a separator character (ex. ``-``) is not distinguishable from a
++            # keystroke consisting of the same character (ex. the minus key).
++            # So merge a separator into the neighboring keystroke if it is not
++            # sandwiched between two keystrokes.
++            keys = []  # type: List[str]
++            pending = ''
++            for i, part in enumerate(parts):
++                if i % 2 == 0:
++                    # a keystroke
++                    pending += part
++                else:
++                    # a separator (or a part of a keystroke)
++                    rest = ''.join(parts[i + 1:])
++                    if pending and rest:
++                        keys.append(pending)
++                        keys.append(part)
++                        pending = ''
++                    else:
++                        pending += part
++            if pending:
++                keys.append(pending)
++            parts = keys
++
+             if len(parts) == 1:
+                 continue
+ 

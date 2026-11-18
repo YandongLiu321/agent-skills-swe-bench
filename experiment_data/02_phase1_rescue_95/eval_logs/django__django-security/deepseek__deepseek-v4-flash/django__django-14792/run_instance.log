@@ -1,0 +1,150 @@
+2026-10-06 23:43:16,627 - INFO - Creating container for django__django-14792...
+2026-10-06 23:43:16,674 - INFO - Container for django__django-14792 created: fa72bff7a4a68617fe821553fa431a16643183ae3c500e63c350c07e9c0b5d60
+2026-10-06 23:43:16,787 - INFO - Container for django__django-14792 started: fa72bff7a4a68617fe821553fa431a16643183ae3c500e63c350c07e9c0b5d60
+2026-10-06 23:43:16,788 - INFO - Intermediate patch for django__django-14792 written to logs\run_evaluation\django__django-security\deepseek__deepseek-v4-flash\django__django-14792\patch.diff, now applying to container...
+2026-10-06 23:43:16,865 - INFO - >>>>> Applied Patch:
+Checking patch django/db/backends/sqlite3/base.py...
+Checking patch django/utils/timezone.py...
+Applied patch django/db/backends/sqlite3/base.py cleanly.
+Applied patch django/utils/timezone.py cleanly.
+
+2026-10-06 23:43:18,041 - INFO - Git diff before:
+diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py
+index a64190f0d0..92d52016d4 100644
+--- a/django/db/backends/sqlite3/base.py
++++ b/django/db/backends/sqlite3/base.py
+@@ -423,6 +423,29 @@ class SQLiteCursorWrapper(Database.Cursor):
+         return FORMAT_QMARK_REGEX.sub('?', query).replace('%%', '%')
+ 
+ 
++def _parse_tzname(tzname):
++    """Parse a timezone name into a name and an optional UTC offset."""
++    if tzname.startswith('UTC'):
++        tzname = tzname[3:]
++    if tzname.startswith('+'):
++        sign = 1
++    elif tzname.startswith('-'):
++        sign = -1
++    else:
++        return tzname or 'UTC', None
++    offset = tzname[1:]
++    if not offset:
++        return 'UTC', None
++    if ':' in offset:
++        hours, minutes = offset.split(':')
++    elif len(offset) > 2:
++        hours, minutes = offset[:-2], offset[-2:]
++    else:
++        hours, minutes = offset, 0
++    delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
++    return 'UTC', delta if sign == 1 else -delta
++
++
+ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if dt is None:
+         return None
+@@ -433,14 +456,9 @@ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if conn_tzname:
+         dt = dt.replace(tzinfo=pytz.timezone(conn_tzname))
+     if tzname is not None and tzname != conn_tzname:
+-        sign_index = tzname.find('+') + tzname.find('-') + 1
+-        if sign_index > -1:
+-            sign = tzname[sign_index]
+-            tzname, offset = tzname.split(sign)
+-            if offset:
+-                hours, minutes = offset.split(':')
+-                offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
+-                dt += offset_delta if sign == '+' else -offset_delta
++        tzname, offset = _parse_tzname(tzname)
++        if offset:
++            dt += offset
+         dt = timezone.localtime(dt, pytz.timezone(tzname))
+     return dt
+ 
+diff --git a/django/utils/timezone.py b/django/utils/timezone.py
+index bb2b6b9594..732d91645e 100644
+--- a/django/utils/timezone.py
++++ b/django/utils/timezone.py
+@@ -73,7 +73,7 @@ def get_current_timezone_name():
+ 
+ def _get_timezone_name(timezone):
+     """Return the name of ``timezone``."""
+-    return str(timezone)
++    return timezone.tzname(None) or str(timezone)
+ 
+ # Timezone selection functions.
+2026-10-06 23:43:18,042 - INFO - Eval script for django__django-14792 written to logs\run_evaluation\django__django-security\deepseek__deepseek-v4-flash\django__django-14792\eval.sh; copying to container...
+2026-10-06 23:43:24,071 - INFO - Test runtime: 5.98 seconds
+2026-10-06 23:43:24,072 - INFO - Test output for django__django-14792 written to logs\run_evaluation\django__django-security\deepseek__deepseek-v4-flash\django__django-14792\test_output.txt
+2026-10-06 23:43:24,111 - INFO - Git diff after:
+diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py
+index a64190f0d0..92d52016d4 100644
+--- a/django/db/backends/sqlite3/base.py
++++ b/django/db/backends/sqlite3/base.py
+@@ -423,6 +423,29 @@ class SQLiteCursorWrapper(Database.Cursor):
+         return FORMAT_QMARK_REGEX.sub('?', query).replace('%%', '%')
+ 
+ 
++def _parse_tzname(tzname):
++    """Parse a timezone name into a name and an optional UTC offset."""
++    if tzname.startswith('UTC'):
++        tzname = tzname[3:]
++    if tzname.startswith('+'):
++        sign = 1
++    elif tzname.startswith('-'):
++        sign = -1
++    else:
++        return tzname or 'UTC', None
++    offset = tzname[1:]
++    if not offset:
++        return 'UTC', None
++    if ':' in offset:
++        hours, minutes = offset.split(':')
++    elif len(offset) > 2:
++        hours, minutes = offset[:-2], offset[-2:]
++    else:
++        hours, minutes = offset, 0
++    delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
++    return 'UTC', delta if sign == 1 else -delta
++
++
+ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if dt is None:
+         return None
+@@ -433,14 +456,9 @@ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if conn_tzname:
+         dt = dt.replace(tzinfo=pytz.timezone(conn_tzname))
+     if tzname is not None and tzname != conn_tzname:
+-        sign_index = tzname.find('+') + tzname.find('-') + 1
+-        if sign_index > -1:
+-            sign = tzname[sign_index]
+-            tzname, offset = tzname.split(sign)
+-            if offset:
+-                hours, minutes = offset.split(':')
+-                offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
+-                dt += offset_delta if sign == '+' else -offset_delta
++        tzname, offset = _parse_tzname(tzname)
++        if offset:
++            dt += offset
+         dt = timezone.localtime(dt, pytz.timezone(tzname))
+     return dt
+ 
+diff --git a/django/utils/timezone.py b/django/utils/timezone.py
+index bb2b6b9594..732d91645e 100644
+--- a/django/utils/timezone.py
++++ b/django/utils/timezone.py
+@@ -73,7 +73,7 @@ def get_current_timezone_name():
+ 
+ def _get_timezone_name(timezone):
+     """Return the name of ``timezone``."""
+-    return str(timezone)
++    return timezone.tzname(None) or str(timezone)
+ 
+ # Timezone selection functions.
+2026-10-06 23:43:24,112 - INFO - Grading answer for django__django-14792...
+2026-10-06 23:43:24,112 - INFO - report: {'django__django-14792': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['The _get_timezone_name() helper must return the offset for fixed offset', 'test_is_aware (utils_tests.test_timezone.TimezoneTests)'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_activate_invalid_timezone (utils_tests.test_timezone.TimezoneTests)', 'test_fixedoffset_negative_timedelta (utils_tests.test_timezone.TimezoneTests)', 'test_fixedoffset_timedelta (utils_tests.test_timezone.TimezoneTests)', 'test_get_default_timezone (utils_tests.test_timezone.TimezoneTests)', 'test_get_default_timezone_utc (utils_tests.test_timezone.TimezoneTests)', 'test_is_naive (utils_tests.test_timezone.TimezoneTests)', 'test_localdate (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware2 (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_no_tz (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_pytz_ambiguous (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_pytz_non_existent (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_zoneinfo_ambiguous (utils_tests.test_timezone.TimezoneTests)', 'test_make_aware_zoneinfo_non_existent (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_no_tz (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_pytz (utils_tests.test_timezone.TimezoneTests)', 'test_make_naive_zoneinfo (utils_tests.test_timezone.TimezoneTests)', 'test_now (utils_tests.test_timezone.TimezoneTests)', 'test_override (utils_tests.test_timezone.TimezoneTests)', 'test_override_decorator (utils_tests.test_timezone.TimezoneTests)', 'test_override_fixed_offset (utils_tests.test_timezone.TimezoneTests)', 'test_override_string_tz (utils_tests.test_timezone.TimezoneTests)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-14792: resolved: True
+2026-10-06 23:43:24,113 - INFO - Attempting to stop container sweb.eval.django__django-14792.django__django-security...
+2026-10-06 23:43:39,414 - INFO - Container sweb.eval.django__django-14792.django__django-security stopped successfully.
+2026-10-06 23:43:39,414 - INFO - Attempting to remove container sweb.eval.django__django-14792.django__django-security...
+2026-10-06 23:43:39,515 - INFO - Container sweb.eval.django__django-14792.django__django-security removed successfully.

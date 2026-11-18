@@ -1,0 +1,94 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..78f22dc64 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,88 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++def _split_regexp_csv(value: str) -> list[str]:
++    """Split a comma separated list of regular expressions.
++
++    A comma is only considered a separator when it is not escaped and not
++    inside a regular expression character class, group or quantifier. This
++    allows regular expressions such as ``(foo{1,3})`` to be used in
++    comma-separated options.
++    """
++    patterns: list[str] = []
++    current: list[str] = []
++    escaped = False
++    in_character_class = False
++    character_class_can_close = False
++    character_class_negation_allowed = False
++    group_depth = 0
++    quantifier_depth = 0
++
++    for char in value:
++        if escaped:
++            current.append(char)
++            escaped = False
++            if in_character_class:
++                character_class_can_close = True
++            continue
++        if char == "\\":
++            current.append(char)
++            escaped = True
++            continue
++        if in_character_class:
++            if char == "]" and character_class_can_close:
++                current.append(char)
++                in_character_class = False
++            else:
++                current.append(char)
++                if char == "^" and character_class_negation_allowed:
++                    character_class_negation_allowed = False
++                else:
++                    character_class_negation_allowed = False
++                    character_class_can_close = True
++            continue
++        if char == "[":
++            current.append(char)
++            in_character_class = True
++            character_class_can_close = False
++            character_class_negation_allowed = True
++            continue
++        if char == "(":
++            current.append(char)
++            group_depth += 1
++            continue
++        if char == ")":
++            current.append(char)
++            if group_depth:
++                group_depth -= 1
++            continue
++        if char == "{":
++            current.append(char)
++            quantifier_depth += 1
++            continue
++        if char == "}":
++            current.append(char)
++            if quantifier_depth:
++                quantifier_depth -= 1
++            continue
++        if char == "," and not group_depth and not quantifier_depth:
++            pattern = "".join(current).strip()
++            if pattern:
++                patterns.append(pattern)
++            current = []
++            continue
++        current.append(char)
++
++    pattern = "".join(current).strip()
++    if pattern:
++        patterns.append(pattern)
++    return patterns
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regexp_csv(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 

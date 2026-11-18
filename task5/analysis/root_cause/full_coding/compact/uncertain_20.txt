@@ -1,0 +1,3096 @@
+
+##########################################################################################
+## [0256] django__django-13089 · test-driven-development | B=uncertain
+files: patch=django/core/cache/backends/db.py | gold=django/core/cache/backends/db.py | test=tests/cache/tests.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=True status=patch
+evidence: 同实例存在规范化后逐字相同补丁的成功记录；缺少可解释差异的评测链证据，不能按未通过反推补丁错误。 | patch L12: +                last_cache_key = cursor.fetchone() | patch L13: +                if last_cache_key: | patch L14: +                    cursor.execute("DELETE FROM %s "
+F2P: test_cull_delete_when_store_empty (cache.tests.DBCacheTests) | test_cull_delete_when_store_empty (cache.tests.DBCacheWithTimeZoneTests)
+--- FINAL PATCH ---
+diff --git a/django/core/cache/backends/db.py b/django/core/cache/backends/db.py
+index 33c79c5a14..0c10cc2271 100644
+--- a/django/core/cache/backends/db.py
++++ b/django/core/cache/backends/db.py
+@@ -267,9 +267,11 @@ class DatabaseCache(BaseDatabaseCache):
+                 cursor.execute(
+                     connection.ops.cache_key_culling_sql() % table,
+                     [cull_num])
+-                cursor.execute("DELETE FROM %s "
+-                               "WHERE cache_key < %%s" % table,
+-                               [cursor.fetchone()[0]])
++                last_cache_key = cursor.fetchone()
++                if last_cache_key:
++                    cursor.execute("DELETE FROM %s "
++                                   "WHERE cache_key < %%s" % table,
++                                   [last_cache_key[0]])
+ 
+     def clear(self):
+         db = router.db_for_write(self.cache_model_class)
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/core/cache/backends/db.py b/django/core/cache/backends/db.py
++++ b/django/core/cache/backends/db.py
+@@ -267,9 +267,12 @@ def _cull(self, db, cursor, now):
++                last_cache_key = cursor.fetchone()
++                if last_cache_key:
++                    cursor.execute(
++                        'DELETE FROM %s WHERE cache_key < %%s' % table,
++                        [last_cache_key[0]],
++                    )
+--- TEST (headers/+ lines) ---
+diff --git a/tests/cache/tests.py b/tests/cache/tests.py
+@@ -621,6 +621,20 @@ def test_cull(self):
++    def test_cull_delete_when_store_empty(self):
++        try:
++            cull_cache = caches['cull']
++        except InvalidCacheBackendError:
++            self.skipTest("Culling isn't implemented.")
++        old_max_entries = cull_cache._max_entries
++        # Force _cull to delete on first cached record.
++        cull_cache._max_entries = -1
++        try:
++            cull_cache.set('force_cull_delete', 'value', 1000)
++            self.assertIs(cull_cache.has_key('force_cull_delete'), True)
++        finally:
++            cull_cache._max_entries = old_max_entries
++
+
+##########################################################################################
+## [0278] sphinx-doc__sphinx-8548 · verification-before-completion | B=uncertain
+files: patch=sphinx/ext/autodoc/__init__.py | gold=sphinx/ext/autodoc/__init__.py;sphinx/ext/autodoc/importer.py | test=tests/roots/test-ext-autodoc/target/instance_variable.py;tests/test_ext_autodoc_autoclass.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=2 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=False status=patch
+evidence: 已按MRO与模块查文档，但过滤、成员导入与instance变量的细节仍异于成功实现；本地有1项失败，缺少官方失败断言，主因保留待核。 | 最终补丁第9行：+def get_attr_doc_comment(obj: Any, name: str) -> Optional[List[str]]:
+F2P: tests/test_ext_autodoc_autoclass.py::test_inherited_instance_variable
+--- FINAL PATCH ---
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index ddfd2b365..429b3710f 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -134,6 +134,30 @@ def member_order_option(arg: Any) -> Optional[str]:
+         raise ValueError(__('invalid value for member-order option: %s') % arg)
+ 
+ 
++def get_attr_doc_comment(obj: Any, name: str) -> Optional[List[str]]:
++    """Get an attribute comment for *name* from *obj* and its base classes.
++
++    The comment is looked up in the source code analyzer of the module where
++    each class is defined.  This allows the comment of an inherited attribute
++    to be found even though it is stored under the namespace of the class
++    which defines the attribute.
++    """
++    for cls in inspect.getmro(obj):
++        try:
++            module = safe_getattr(cls, '__module__')
++            qualname = safe_getattr(cls, '__qualname__')
++            analyzer = ModuleAnalyzer.for_module(module)
++            analyzer.analyze()
++            if qualname:
++                key = (qualname, name)
++                if key in analyzer.attr_docs:
++                    return list(analyzer.attr_docs[key])
++        except (AttributeError, PycodeError):
++            pass
++
++    return None
++
++
+ SUPPRESS = object()
+ 
+ 
+@@ -599,11 +623,21 @@ class Documenter:
+             if self.objpath:
+                 key = ('.'.join(self.objpath[:-1]), self.objpath[-1])
+                 if key in attr_docs:
++                    docstrings = [list(attr_docs[key])]
++                else:
++                    # the attribute might be inherited from a base class.  In
++                    # that case, its comment is stored under the namespace of
++                    # the base class.
++                    comment = get_attr_doc_comment(self.parent, self.objpath[-1])
++                    if comment:
++                        docstrings = [comment]
++                    else:
++                        docstrings = None
++
++                if docstrings is not None:
+                     no_docstring = True
+                     # make a copy of docstring for attributes to avoid cache
+                     # the change of autodoc-process-docstring event.
+-                    docstrings = [list(attr_docs[key])]
+-
+                     for i, line in enumerate(self.process_doc(docstrings)):
+                         self.add_line(line, sourcename, i)
+ 
+@@ -746,8 +780,11 @@ class Documenter:
+                         keep = has_doc or self.options.undoc_members
+                 else:
+                     keep = False
+-            elif (namespace, membername) in attr_docs:
+-                if want_all and isprivate:
++            elif ((namespace, membername) in attr_docs or
++                  get_attr_doc_comment(self.object, membername) is not None):
++                if want_all and is_filtered_inherited_member(membername):
++                    keep = False
++                elif want_all and isprivate:
+                     if self.options.private_members is None:
+                         keep = False
+                     else:
+@@ -2161,24 +2198,10 @@ class UninitializedInstanceAttributeMixin(DataDocumenterMixinBase):
+     """
+ 
+     def get_attribute_comment(self, parent: Any) -> Optional[List[str]]:
+-        try:
+-            for cls in inspect.getmro(parent):
+-                try:
+-                    module = safe_getattr(cls, '__module__')
+-                    qualname = safe_getattr(cls, '__qualname__')
+-
+-                    analyzer = ModuleAnalyzer.for_module(module)
+-                    analyzer.analyze()
+-                    if qualname and self.objpath:
+-                        key = (qualname, self.objpath[-1])
+-                        if key in analyzer.attr_docs:
+-                            return list(analyzer.attr_docs[key])
+-                except (AttributeError, PycodeError):
+-                    pass
+-        except (AttributeError, PycodeError):
+-            pass
+-
+-        return None
++        if self.objpath:
++            return get_attr_doc_comment(parent, self.objpath[-1])
++        else:
++            return None
+ 
+     def is_uninitialized_instance_attribute(self, parent: Any) -> bool:
+         """Check the subject is an attribute defined in __init__()."""
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -1584,7 +1584,7 @@ def add_directive_header(self, sig: str) -> None:
++        members = get_class_members(self.object, self.objpath, self.get_attr)
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -14,7 +14,7 @@
++from sphinx.pycode import ModuleAnalyzer, PycodeError
+@@ -251,8 +251,8 @@ def __init__(self, cls: Any, name: str, value: Any, docstring: Optional[str] = N
++def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
++                      ) -> Dict[str, ClassAttribute]:
+@@ -297,23 +297,31 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable,
++    try:
++        for cls in getmro(subject):
++            # annotation only member (ex. attr: int)
++            try:
++                for name in getannotations(cls):
++                    name = unmangle(cls, name)
++                    if name and name not in members:
++                        members[name] = ClassAttribute(cls, name, INSTANCEATTR)
++            except AttributeError:
++                pass
++
++            # append instance attributes (cf. self.attr1) if analyzer knows
++            try:
++                modname = safe_getattr(cls, '__module__')
++                qualname = safe_getattr(cls, '__qualname__')
++                analyzer = ModuleAnalyzer.for_module(modname)
++                analyzer.analyze()
++                for (ns, name), docstring in analyzer.attr_docs.items():
++                    if ns == qualname and name not in members:
++                        members[name] = ClassAttribute(cls, name, INSTANCEATTR,
++                                                       '\n'.join(docstring))
++            except (AttributeError, PycodeError):
++                pass
++    except AttributeError:
++        pass
+--- TEST (headers/+ lines) ---
+diff --git a/tests/roots/test-ext-autodoc/target/instance_variable.py b/tests/roots/test-ext-autodoc/target/instance_variable.py
+@@ -0,0 +1,10 @@
++class Foo:
++    def __init__(self):
++        self.attr1 = None  #: docstring foo
++        self.attr2 = None  #: docstring foo
++
++
++class Bar(Foo):
++    def __init__(self):
++        self.attr2 = None  #: docstring bar
++        self.attr3 = None  #: docstring bar
+diff --git a/tests/test_ext_autodoc_autoclass.py b/tests/test_ext_autodoc_autoclass.py
+@@ -51,6 +51,61 @@ def test_classes(app):
++@pytest.mark.sphinx('html', testroot='ext-autodoc')
++def test_instance_variable(app):
++    options = {'members': True}
++    actual = do_autodoc(app, 'class', 'target.instance_variable.Bar', options)
++    assert list(actual) == [
++        '',
++        '.. py:class:: Bar()',
++        '   :module: target.instance_variable',
++        '',
++        '',
++        '   .. py:attribute:: Bar.attr2',
++        '      :module: target.instance_variable',
++        '',
++        '      docstring bar',
++        '',
++        '',
++        '   .. py:attribute:: Bar.attr3',
++        '      :module: target.instance_variable',
++        '',
++        '      docstring bar',
++        '',
++    ]
++
++
++@pytest.mark.sphinx('html', testroot='ext-autodoc')
++def test_inherited_instance_variable(app):
++    options = {'members': True,
++               'inherited-members': True}
++    actual = do_autodoc(app, 'class', 'target.instance_variable.Bar', options)
++    assert list(actual) == [
++        '',
++        '.. py:class:: Bar()',
++        '   :module: target.instance_variable',
++        '',
++        '',
++        '   .. py:attribute:: Bar.attr1',
++        '      :module: target.instance_variable',
++        '',
++        '      docstring foo',
++        '',
++        '',
++        '   .. py:attribute:: Bar.attr2',
++        '      :module: target.instance_variable',
++        '',
++        '      docstring bar',
++        '',
++        '',
++        '   .. py:attribute:: Bar.attr3',
++        '      :module: target.instance_variable',
++        '',
++        '      docstring bar',
++        '',
++    ]
++
++
+
+##########################################################################################
+## [0300] django__django-11885 · django-access-review | B=uncertain
+files: patch=django/db/models/deletion.py | gold=django/contrib/admin/utils.py;django/db/models/deletion.py | test=tests/delete/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.16666666666666666
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 补丁采用末端合并fast-delete QuerySet的替代方案；仅与gold早期按模型分组不同不足以证明错误。缺少正式失败断言，不能确定查询次数、兼容行为或评测链何者导致失败。 | patch L10: +            fast_delete_queries = {} | patch L12: +                model = qs.model | patch L13: +                if model in fast_delete_queries:
+F2P: test_fast_delete_combined_relationships (delete.tests.FastDeleteTests)
+--- FINAL PATCH ---
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index ae82d26340..deb4db4aef 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -310,7 +310,15 @@ class Collector:
+                     )
+ 
+             # fast deletes
++            # Combine fast delete queries for the same model.
++            fast_delete_queries = {}
+             for qs in self.fast_deletes:
++                model = qs.model
++                if model in fast_delete_queries:
++                    fast_delete_queries[model] = fast_delete_queries[model] | qs
++                else:
++                    fast_delete_queries[model] = qs
++            for qs in fast_delete_queries.values():
+                 count = qs._raw_delete(using=self.using)
+                 deleted_counter[qs.model._meta.label] += count
+ 
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -182,9 +182,9 @@ def collect(self, objs, source=None, source_attr=None, **kwargs):
++    def related_objects(self, related_model, related_fields, objs):
++        qs = super().related_objects(related_model, related_fields, objs)
++        return qs.select_related(*[related_field.name for related_field in related_fields])
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -1,9 +1,11 @@
++import operator
++from collections import Counter, defaultdict
++from functools import partial, reduce
++from django.db.models import query_utils, signals, sql
+@@ -65,8 +67,9 @@ class Collector:
++        self.data = defaultdict(set)
++        # {model: {(field, value): {instances}}}
++        self.field_updates = defaultdict(partial(defaultdict, set))
+@@ -76,7 +79,7 @@ def __init__(self, using):
++        self.dependencies = defaultdict(set)  # {model: {models}}
+@@ -90,7 +93,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++        instances = self.data[model]
+@@ -101,8 +104,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++            self.dependencies[source._meta.concrete_model].add(model._meta.concrete_model)
+@@ -113,9 +115,7 @@ def add_field_update(self, field, value, objs):
++        self.field_updates[model][field, value].update(objs)
+@@ -137,7 +137,7 @@ def can_fast_delete(self, objs, from_field=None):
++            model = objs._meta.model
+@@ -159,12 +159,13 @@ def can_fast_delete(self, objs, from_field=None):
++    def get_del_batches(self, objs, fields):
++        field_names = [field.name for field in fields]
++            connections[self.using].ops.bulk_batch_size(field_names, objs), 1)
+@@ -211,51 +212,60 @@ def collect(self, objs, source=None, nullable=False, collect_related=True,
++        if not collect_related:
++            return
++
++        if keep_parents:
++            parents = set(model._meta.get_parent_list())
++        model_fast_deletes = defaultdict(list)
++        for related in get_candidate_relations_to_delete(model._meta):
++            # Preserve parent reverse relationships if keep_parents=True.
++            if keep_parents and related.model in parents:
++                continue
++            field = related.field
++            if field.remote_field.on_delete == DO_NOTHING:
++                continue
++            related_model = r
+...[truncated 2403 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/delete/tests.py b/tests/delete/tests.py
+@@ -582,3 +582,11 @@ def test_fast_delete_empty_no_update_can_self_select(self):
++
++    def test_fast_delete_combined_relationships(self):
++        # The cascading fast-delete of SecondReferrer should be combined
++        # in a single DELETE WHERE referrer_id OR unique_field.
++        origin = Origin.objects.create()
++        referer = Referrer.objects.create(origin=origin, unique_field=42)
++        with self.assertNumQueries(2):
++            referer.delete()
+
+##########################################################################################
+## [0305] django__django-11885 · django-security | B=uncertain
+files: patch=django/db/models/deletion.py | gold=django/contrib/admin/utils.py;django/db/models/deletion.py | test=tests/delete/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.16666666666666666
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 补丁采用末端合并fast-delete QuerySet的替代方案；仅与gold早期按模型分组不同不足以证明错误。缺少正式失败断言，不能确定查询次数、兼容行为或评测链何者导致失败。 | patch L15: +        self.fast_deletes = {} | patch L23: +    def _add_fast_delete(self, objs): | patch L24: +        """
+F2P: test_fast_delete_combined_relationships (delete.tests.FastDeleteTests)
+--- FINAL PATCH ---
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index ae82d26340..be931b2747 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -67,9 +67,10 @@ class Collector:
+         # Initially, {model: {instances}}, later values become lists.
+         self.data = {}
+         self.field_updates = {}  # {model: {(field, value): {instances}}}
+-        # fast_deletes is a list of queryset-likes that can be deleted without
+-        # fetching the objects into memory.
+-        self.fast_deletes = []
++        # fast_deletes is a dict of model: queryset-like that can be deleted
++        # without fetching the objects into memory. Querysets targeting the
++        # same model are combined to reduce the number of queries.
++        self.fast_deletes = {}
+ 
+         # Tracks deletion-order dependency for databases without transactions
+         # or ability to defer constraint checks. Only concrete model classes
+@@ -159,6 +160,17 @@ class Collector:
+             )
+         )
+ 
++    def _add_fast_delete(self, objs):
++        """
++        Add a queryset-like to the collection of objects to fast-delete,
++        combining it with any queryset already registered for the same model.
++        """
++        model = objs.model
++        if model in self.fast_deletes:
++            self.fast_deletes[model] = self.fast_deletes[model] | objs
++        else:
++            self.fast_deletes[model] = objs
++
+     def get_del_batches(self, objs, field):
+         """
+         Return the objs in suitably sized batches for the used connection.
+@@ -191,7 +203,7 @@ class Collector:
+         If 'keep_parents' is True, data of parent model's will be not deleted.
+         """
+         if self.can_fast_delete(objs):
+-            self.fast_deletes.append(objs)
++            self._add_fast_delete(objs)
+             return
+         new_objs = self.add(objs, source, nullable,
+                             reverse_dependency=reverse_dependency)
+@@ -225,7 +237,7 @@ class Collector:
+                 for batch in batches:
+                     sub_objs = self.related_objects(related, batch)
+                     if self.can_fast_delete(sub_objs, from_field=field):
+-                        self.fast_deletes.append(sub_objs)
++                        self._add_fast_delete(sub_objs)
+                     else:
+                         related_model = related.related_model
+                         # Non-referenced fields can be deferred if no signal
+@@ -310,7 +322,7 @@ class Collector:
+                     )
+ 
+             # fast deletes
+-            for qs in self.fast_deletes:
++            for qs in self.fast_deletes.values():
+                 count = qs._raw_delete(using=self.using)
+                 deleted_counter[qs.model._meta.label] += count
+ 
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -182,9 +182,9 @@ def collect(self, objs, source=None, source_attr=None, **kwargs):
++    def related_objects(self, related_model, related_fields, objs):
++        qs = super().related_objects(related_model, related_fields, objs)
++        return qs.select_related(*[related_field.name for related_field in related_fields])
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -1,9 +1,11 @@
++import operator
++from collections import Counter, defaultdict
++from functools import partial, reduce
++from django.db.models import query_utils, signals, sql
+@@ -65,8 +67,9 @@ class Collector:
++        self.data = defaultdict(set)
++        # {model: {(field, value): {instances}}}
++        self.field_updates = defaultdict(partial(defaultdict, set))
+@@ -76,7 +79,7 @@ def __init__(self, using):
++        self.dependencies = defaultdict(set)  # {model: {models}}
+@@ -90,7 +93,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++        instances = self.data[model]
+@@ -101,8 +104,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++            self.dependencies[source._meta.concrete_model].add(model._meta.concrete_model)
+@@ -113,9 +115,7 @@ def add_field_update(self, field, value, objs):
++        self.field_updates[model][field, value].update(objs)
+@@ -137,7 +137,7 @@ def can_fast_delete(self, objs, from_field=None):
++            model = objs._meta.model
+@@ -159,12 +159,13 @@ def can_fast_delete(self, objs, from_field=None):
++    def get_del_batches(self, objs, fields):
++        field_names = [field.name for field in fields]
++            connections[self.using].ops.bulk_batch_size(field_names, objs), 1)
+@@ -211,51 +212,60 @@ def collect(self, objs, source=None, nullable=False, collect_related=True,
++        if not collect_related:
++            return
++
++        if keep_parents:
++            parents = set(model._meta.get_parent_list())
++        model_fast_deletes = defaultdict(list)
++        for related in get_candidate_relations_to_delete(model._meta):
++            # Preserve parent reverse relationships if keep_parents=True.
++            if keep_parents and related.model in parents:
++                continue
++            field = related.field
++            if field.remote_field.on_delete == DO_NOTHING:
++                continue
++            related_model = r
+...[truncated 2403 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/delete/tests.py b/tests/delete/tests.py
+@@ -582,3 +582,11 @@ def test_fast_delete_empty_no_update_can_self_select(self):
++
++    def test_fast_delete_combined_relationships(self):
++        # The cascading fast-delete of SecondReferrer should be combined
++        # in a single DELETE WHERE referrer_id OR unique_field.
++        origin = Origin.objects.create()
++        referer = Referrer.objects.create(origin=origin, unique_field=42)
++        with self.assertNumQueries(2):
++            referer.delete()
+
+##########################################################################################
+## [0312] django__django-11885 · django-verification | B=uncertain
+files: patch=django/db/models/deletion.py | gold=django/contrib/admin/utils.py;django/db/models/deletion.py | test=tests/delete/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.16666666666666666
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 补丁采用末端合并fast-delete QuerySet的替代方案；仅与gold早期按模型分组不同不足以证明错误。缺少正式失败断言，不能确定查询次数、兼容行为或评测链何者导致失败。 | patch L9: +    def add_fast_delete(self, objs, from_field=None): | patch L10: +        """ | patch L11: +        Add a set of objects to the fast-deletes list of the collector. This
+F2P: test_fast_delete_combined_relationships (delete.tests.FastDeleteTests)
+--- FINAL PATCH ---
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index ae82d26340..f30249e6c3 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -159,6 +159,25 @@ class Collector:
+             )
+         )
+ 
++    def add_fast_delete(self, objs, from_field=None):
++        """
++        Add a set of objects to the fast-deletes list of the collector. This
++        avoids the overhead of collecting all the objects in the cascade,
++        but only works for models without any cascades or signal listeners.
++        """
++        if not self.can_fast_delete(objs, from_field):
++            return False
++        model = getattr(objs, 'model', None)
++        if model is not None:
++            # Combine with an existing fast delete for the same model into a
++            # single query to reduce the number of roundtrips to the database.
++            for index, fast_delete in enumerate(self.fast_deletes):
++                if getattr(fast_delete, 'model', None) == model:
++                    self.fast_deletes[index] = fast_delete | objs
++                    return True
++        self.fast_deletes.append(objs)
++        return True
++
+     def get_del_batches(self, objs, field):
+         """
+         Return the objs in suitably sized batches for the used connection.
+@@ -190,8 +209,7 @@ class Collector:
+ 
+         If 'keep_parents' is True, data of parent model's will be not deleted.
+         """
+-        if self.can_fast_delete(objs):
+-            self.fast_deletes.append(objs)
++        if self.add_fast_delete(objs):
+             return
+         new_objs = self.add(objs, source, nullable,
+                             reverse_dependency=reverse_dependency)
+@@ -224,9 +242,7 @@ class Collector:
+                 batches = self.get_del_batches(new_objs, field)
+                 for batch in batches:
+                     sub_objs = self.related_objects(related, batch)
+-                    if self.can_fast_delete(sub_objs, from_field=field):
+-                        self.fast_deletes.append(sub_objs)
+-                    else:
++                    if not self.add_fast_delete(sub_objs, from_field=field):
+                         related_model = related.related_model
+                         # Non-referenced fields can be deferred if no signal
+                         # receivers are connected for the related model as
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -182,9 +182,9 @@ def collect(self, objs, source=None, source_attr=None, **kwargs):
++    def related_objects(self, related_model, related_fields, objs):
++        qs = super().related_objects(related_model, related_fields, objs)
++        return qs.select_related(*[related_field.name for related_field in related_fields])
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -1,9 +1,11 @@
++import operator
++from collections import Counter, defaultdict
++from functools import partial, reduce
++from django.db.models import query_utils, signals, sql
+@@ -65,8 +67,9 @@ class Collector:
++        self.data = defaultdict(set)
++        # {model: {(field, value): {instances}}}
++        self.field_updates = defaultdict(partial(defaultdict, set))
+@@ -76,7 +79,7 @@ def __init__(self, using):
++        self.dependencies = defaultdict(set)  # {model: {models}}
+@@ -90,7 +93,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++        instances = self.data[model]
+@@ -101,8 +104,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++            self.dependencies[source._meta.concrete_model].add(model._meta.concrete_model)
+@@ -113,9 +115,7 @@ def add_field_update(self, field, value, objs):
++        self.field_updates[model][field, value].update(objs)
+@@ -137,7 +137,7 @@ def can_fast_delete(self, objs, from_field=None):
++            model = objs._meta.model
+@@ -159,12 +159,13 @@ def can_fast_delete(self, objs, from_field=None):
++    def get_del_batches(self, objs, fields):
++        field_names = [field.name for field in fields]
++            connections[self.using].ops.bulk_batch_size(field_names, objs), 1)
+@@ -211,51 +212,60 @@ def collect(self, objs, source=None, nullable=False, collect_related=True,
++        if not collect_related:
++            return
++
++        if keep_parents:
++            parents = set(model._meta.get_parent_list())
++        model_fast_deletes = defaultdict(list)
++        for related in get_candidate_relations_to_delete(model._meta):
++            # Preserve parent reverse relationships if keep_parents=True.
++            if keep_parents and related.model in parents:
++                continue
++            field = related.field
++            if field.remote_field.on_delete == DO_NOTHING:
++                continue
++            related_model = r
+...[truncated 2403 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/delete/tests.py b/tests/delete/tests.py
+@@ -582,3 +582,11 @@ def test_fast_delete_empty_no_update_can_self_select(self):
++
++    def test_fast_delete_combined_relationships(self):
++        # The cascading fast-delete of SecondReferrer should be combined
++        # in a single DELETE WHERE referrer_id OR unique_field.
++        origin = Origin.objects.create()
++        referer = Referrer.objects.create(origin=origin, unique_field=42)
++        with self.assertNumQueries(2):
++            referer.delete()
+
+##########################################################################################
+## [0317] django__django-11885 · systematic-debugging | B=uncertain
+files: patch=django/db/models/deletion.py | gold=django/contrib/admin/utils.py;django/db/models/deletion.py | test=tests/delete/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.16666666666666666
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 补丁采用末端合并fast-delete QuerySet的替代方案；仅与gold早期按模型分组不同不足以证明错误。缺少正式失败断言，不能确定查询次数、兼容行为或评测链何者导致失败。 | patch L7: +from collections import Counter, defaultdict | patch L8: +from functools import reduce | patch L11: +from operator import attrgetter, or_
+F2P: test_fast_delete_combined_relationships (delete.tests.FastDeleteTests)
+--- FINAL PATCH ---
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index ae82d26340..a3ff88da0f 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -1,6 +1,7 @@
+-from collections import Counter
++from collections import Counter, defaultdict
++from functools import reduce
+ from itertools import chain
+-from operator import attrgetter
++from operator import attrgetter, or_
+ 
+ from django.db import IntegrityError, connections, transaction
+ from django.db.models import signals, sql
+@@ -67,9 +68,9 @@ class Collector:
+         # Initially, {model: {instances}}, later values become lists.
+         self.data = {}
+         self.field_updates = {}  # {model: {(field, value): {instances}}}
+-        # fast_deletes is a list of queryset-likes that can be deleted without
+-        # fetching the objects into memory.
+-        self.fast_deletes = []
++        # fast_deletes is a dict of queryset-likes grouped by model that can
++        # be deleted without fetching the objects into memory.
++        self.fast_deletes = defaultdict(list)
+ 
+         # Tracks deletion-order dependency for databases without transactions
+         # or ability to defer constraint checks. Only concrete model classes
+@@ -191,7 +192,7 @@ class Collector:
+         If 'keep_parents' is True, data of parent model's will be not deleted.
+         """
+         if self.can_fast_delete(objs):
+-            self.fast_deletes.append(objs)
++            self.fast_deletes[objs.model].append(objs)
+             return
+         new_objs = self.add(objs, source, nullable,
+                             reverse_dependency=reverse_dependency)
+@@ -225,7 +226,7 @@ class Collector:
+                 for batch in batches:
+                     sub_objs = self.related_objects(related, batch)
+                     if self.can_fast_delete(sub_objs, from_field=field):
+-                        self.fast_deletes.append(sub_objs)
++                        self.fast_deletes[related.related_model].append(sub_objs)
+                     else:
+                         related_model = related.related_model
+                         # Non-referenced fields can be deferred if no signal
+@@ -310,9 +311,10 @@ class Collector:
+                     )
+ 
+             # fast deletes
+-            for qs in self.fast_deletes:
++            for model, querysets in self.fast_deletes.items():
++                qs = reduce(or_, querysets)
+                 count = qs._raw_delete(using=self.using)
+-                deleted_counter[qs.model._meta.label] += count
++                deleted_counter[model._meta.label] += count
+ 
+             # update fields
+             for model, instances_for_fieldvalues in self.field_updates.items():
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -182,9 +182,9 @@ def collect(self, objs, source=None, source_attr=None, **kwargs):
++    def related_objects(self, related_model, related_fields, objs):
++        qs = super().related_objects(related_model, related_fields, objs)
++        return qs.select_related(*[related_field.name for related_field in related_fields])
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -1,9 +1,11 @@
++import operator
++from collections import Counter, defaultdict
++from functools import partial, reduce
++from django.db.models import query_utils, signals, sql
+@@ -65,8 +67,9 @@ class Collector:
++        self.data = defaultdict(set)
++        # {model: {(field, value): {instances}}}
++        self.field_updates = defaultdict(partial(defaultdict, set))
+@@ -76,7 +79,7 @@ def __init__(self, using):
++        self.dependencies = defaultdict(set)  # {model: {models}}
+@@ -90,7 +93,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++        instances = self.data[model]
+@@ -101,8 +104,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++            self.dependencies[source._meta.concrete_model].add(model._meta.concrete_model)
+@@ -113,9 +115,7 @@ def add_field_update(self, field, value, objs):
++        self.field_updates[model][field, value].update(objs)
+@@ -137,7 +137,7 @@ def can_fast_delete(self, objs, from_field=None):
++            model = objs._meta.model
+@@ -159,12 +159,13 @@ def can_fast_delete(self, objs, from_field=None):
++    def get_del_batches(self, objs, fields):
++        field_names = [field.name for field in fields]
++            connections[self.using].ops.bulk_batch_size(field_names, objs), 1)
+@@ -211,51 +212,60 @@ def collect(self, objs, source=None, nullable=False, collect_related=True,
++        if not collect_related:
++            return
++
++        if keep_parents:
++            parents = set(model._meta.get_parent_list())
++        model_fast_deletes = defaultdict(list)
++        for related in get_candidate_relations_to_delete(model._meta):
++            # Preserve parent reverse relationships if keep_parents=True.
++            if keep_parents and related.model in parents:
++                continue
++            field = related.field
++            if field.remote_field.on_delete == DO_NOTHING:
++                continue
++            related_model = r
+...[truncated 2403 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/delete/tests.py b/tests/delete/tests.py
+@@ -582,3 +582,11 @@ def test_fast_delete_empty_no_update_can_self_select(self):
++
++    def test_fast_delete_combined_relationships(self):
++        # The cascading fast-delete of SecondReferrer should be combined
++        # in a single DELETE WHERE referrer_id OR unique_field.
++        origin = Origin.objects.create()
++        referer = Referrer.objects.create(origin=origin, unique_field=42)
++        with self.assertNumQueries(2):
++            referer.delete()
+
+##########################################################################################
+## [0322] django__django-11885 · verification-before-completion | B=uncertain
+files: patch=django/db/models/deletion.py | gold=django/contrib/admin/utils.py;django/db/models/deletion.py | test=tests/delete/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.16666666666666666
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 补丁采用末端合并fast-delete QuerySet的替代方案；仅与gold早期按模型分组不同不足以证明错误。缺少正式失败断言，不能确定查询次数、兼容行为或评测链何者导致失败。 | patch L14: +        self.fast_deletes = {} | patch L22: +    def add_fast_delete(self, objs, from_field=None): | patch L23: +        """
+F2P: test_fast_delete_combined_relationships (delete.tests.FastDeleteTests)
+--- FINAL PATCH ---
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index ae82d26340..9ef3299ea3 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -67,9 +67,9 @@ class Collector:
+         # Initially, {model: {instances}}, later values become lists.
+         self.data = {}
+         self.field_updates = {}  # {model: {(field, value): {instances}}}
+-        # fast_deletes is a list of queryset-likes that can be deleted without
+-        # fetching the objects into memory.
+-        self.fast_deletes = []
++        # fast_deletes is a dict of {model: queryset} that can be deleted
++        # without fetching the objects into memory.
++        self.fast_deletes = {}
+ 
+         # Tracks deletion-order dependency for databases without transactions
+         # or ability to defer constraint checks. Only concrete model classes
+@@ -117,6 +117,20 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def add_fast_delete(self, objs, from_field=None):
++        """
++        Add 'objs' to the collection of fast-delete queries, combining it
++        with an existing fast-delete query for the same model if possible.
++        """
++        if not self.can_fast_delete(objs, from_field):
++            return False
++        model = objs.model
++        if model in self.fast_deletes:
++            self.fast_deletes[model] |= objs
++        else:
++            self.fast_deletes[model] = objs
++        return True
++
+     def _has_signal_listeners(self, model):
+         return (
+             signals.pre_delete.has_listeners(model) or
+@@ -190,8 +204,7 @@ class Collector:
+ 
+         If 'keep_parents' is True, data of parent model's will be not deleted.
+         """
+-        if self.can_fast_delete(objs):
+-            self.fast_deletes.append(objs)
++        if self.add_fast_delete(objs):
+             return
+         new_objs = self.add(objs, source, nullable,
+                             reverse_dependency=reverse_dependency)
+@@ -224,9 +237,7 @@ class Collector:
+                 batches = self.get_del_batches(new_objs, field)
+                 for batch in batches:
+                     sub_objs = self.related_objects(related, batch)
+-                    if self.can_fast_delete(sub_objs, from_field=field):
+-                        self.fast_deletes.append(sub_objs)
+-                    else:
++                    if not self.add_fast_delete(sub_objs, from_field=field):
+                         related_model = related.related_model
+                         # Non-referenced fields can be deferred if no signal
+                         # receivers are connected for the related model as
+@@ -310,7 +321,7 @@ class Collector:
+                     )
+ 
+             # fast deletes
+-            for qs in self.fast_deletes:
++            for qs in self.fast_deletes.values():
+                 count = qs._raw_delete(using=self.using)
+                 deleted_counter[qs.model._meta.label] += count
+ 
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -182,9 +182,9 @@ def collect(self, objs, source=None, source_attr=None, **kwargs):
++    def related_objects(self, related_model, related_fields, objs):
++        qs = super().related_objects(related_model, related_fields, objs)
++        return qs.select_related(*[related_field.name for related_field in related_fields])
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -1,9 +1,11 @@
++import operator
++from collections import Counter, defaultdict
++from functools import partial, reduce
++from django.db.models import query_utils, signals, sql
+@@ -65,8 +67,9 @@ class Collector:
++        self.data = defaultdict(set)
++        # {model: {(field, value): {instances}}}
++        self.field_updates = defaultdict(partial(defaultdict, set))
+@@ -76,7 +79,7 @@ def __init__(self, using):
++        self.dependencies = defaultdict(set)  # {model: {models}}
+@@ -90,7 +93,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++        instances = self.data[model]
+@@ -101,8 +104,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++            self.dependencies[source._meta.concrete_model].add(model._meta.concrete_model)
+@@ -113,9 +115,7 @@ def add_field_update(self, field, value, objs):
++        self.field_updates[model][field, value].update(objs)
+@@ -137,7 +137,7 @@ def can_fast_delete(self, objs, from_field=None):
++            model = objs._meta.model
+@@ -159,12 +159,13 @@ def can_fast_delete(self, objs, from_field=None):
++    def get_del_batches(self, objs, fields):
++        field_names = [field.name for field in fields]
++            connections[self.using].ops.bulk_batch_size(field_names, objs), 1)
+@@ -211,51 +212,60 @@ def collect(self, objs, source=None, nullable=False, collect_related=True,
++        if not collect_related:
++            return
++
++        if keep_parents:
++            parents = set(model._meta.get_parent_list())
++        model_fast_deletes = defaultdict(list)
++        for related in get_candidate_relations_to_delete(model._meta):
++            # Preserve parent reverse relationships if keep_parents=True.
++            if keep_parents and related.model in parents:
++                continue
++            field = related.field
++            if field.remote_field.on_delete == DO_NOTHING:
++                continue
++            related_model = r
+...[truncated 2403 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/delete/tests.py b/tests/delete/tests.py
+@@ -582,3 +582,11 @@ def test_fast_delete_empty_no_update_can_self_select(self):
++
++    def test_fast_delete_combined_relationships(self):
++        # The cascading fast-delete of SecondReferrer should be combined
++        # in a single DELETE WHERE referrer_id OR unique_field.
++        origin = Origin.objects.create()
++        referer = Referrer.objects.create(origin=origin, unique_field=42)
++        with self.assertNumQueries(2):
++            referer.delete()
+
+##########################################################################################
+## [0323] django__django-13344 · verification-before-completion | B=uncertain
+files: patch=django/middleware/cache.py;django/middleware/security.py | gold=django/contrib/sessions/middleware.py;django/middleware/cache.py;django/middleware/security.py | test=tests/cache/tests.py;tests/deprecation/test_middleware_mixin.py;tests/runtests.py
+overlap: exact=False subset=True disjoint=False touched_gold=2/3 func_jaccard=0.6666666666666666
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=True status=patch
+evidence: 同实例存在规范化后完全相同补丁却成功的运行。未跑完整套件只是观察，不能解释相同补丁的不同判定；优先保留评测链冲突标记，暂不归因于修复或提交行为。 | patch L9: +        self._async_check() | patch L17: +        self._async_check() | patch L25: +        self._async_check()
+F2P: test_coroutine (deprecation.test_middleware_mixin.MiddlewareMixinTests) | test_deprecation (deprecation.test_middleware_mixin.MiddlewareMixinTests)
+--- FINAL PATCH ---
+diff --git a/django/middleware/cache.py b/django/middleware/cache.py
+index e92f768fa3..d957448eb5 100644
+--- a/django/middleware/cache.py
++++ b/django/middleware/cache.py
+@@ -71,6 +71,7 @@ class UpdateCacheMiddleware(MiddlewareMixin):
+         self.cache_alias = settings.CACHE_MIDDLEWARE_ALIAS
+         self.cache = caches[self.cache_alias]
+         self.get_response = get_response
++        self._async_check()
+ 
+     def _should_update_cache(self, request, response):
+         return hasattr(request, '_cache_update_cache') and request._cache_update_cache
+@@ -133,6 +134,7 @@ class FetchFromCacheMiddleware(MiddlewareMixin):
+         self.cache_alias = settings.CACHE_MIDDLEWARE_ALIAS
+         self.cache = caches[self.cache_alias]
+         self.get_response = get_response
++        self._async_check()
+ 
+     def process_request(self, request):
+         """
+@@ -175,6 +177,7 @@ class CacheMiddleware(UpdateCacheMiddleware, FetchFromCacheMiddleware):
+     def __init__(self, get_response=None, cache_timeout=None, page_timeout=None, **kwargs):
+         self._get_response_none_deprecation(get_response)
+         self.get_response = get_response
++        self._async_check()
+         # We need to differentiate between "provided, but using default value",
+         # and "not provided". If the value is provided using a default, then
+         # we fall back to system defaults. If it is not provided at all,
+diff --git a/django/middleware/security.py b/django/middleware/security.py
+index 035c329efb..d292194502 100644
+--- a/django/middleware/security.py
++++ b/django/middleware/security.py
+@@ -20,6 +20,7 @@ class SecurityMiddleware(MiddlewareMixin):
+         self.redirect_exempt = [re.compile(r) for r in settings.SECURE_REDIRECT_EXEMPT]
+         self.referrer_policy = settings.SECURE_REFERRER_POLICY
+         self.get_response = get_response
++        self._async_check()
+ 
+     def process_request(self, request):
+         path = request.path.lstrip("/")
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/sessions/middleware.py b/django/contrib/sessions/middleware.py
++++ b/django/contrib/sessions/middleware.py
+@@ -13,9 +13,7 @@ class SessionMiddleware(MiddlewareMixin):
++        super().__init__(get_response)
+diff --git a/django/middleware/cache.py b/django/middleware/cache.py
++++ b/django/middleware/cache.py
+@@ -64,13 +64,12 @@ class UpdateCacheMiddleware(MiddlewareMixin):
++        super().__init__(get_response)
+@@ -128,11 +127,10 @@ class FetchFromCacheMiddleware(MiddlewareMixin):
++        super().__init__(get_response)
+@@ -173,8 +171,7 @@ class CacheMiddleware(UpdateCacheMiddleware, FetchFromCacheMiddleware):
++        super().__init__(get_response)
+@@ -184,20 +181,18 @@ def __init__(self, get_response=None, cache_timeout=None, page_timeout=None, **k
++            self.key_prefix = key_prefix
++            pass
++            self.cache_alias = cache_alias
++            self.cache = caches[self.cache_alias]
++            pass
++        if cache_timeout is not None:
++            self.cache_timeout = cache_timeout
+diff --git a/django/middleware/security.py b/django/middleware/security.py
++++ b/django/middleware/security.py
+@@ -9,7 +9,7 @@ class SecurityMiddleware(MiddlewareMixin):
++        super().__init__(get_response)
+@@ -19,7 +19,6 @@ def __init__(self, get_response=None):
+--- TEST (headers/+ lines) ---
+diff --git a/tests/cache/tests.py b/tests/cache/tests.py
+@@ -2083,6 +2083,7 @@ def test_constructor(self):
++        self.assertEqual(middleware.cache, self.other_cache)
+@@ -2092,6 +2093,7 @@ def test_constructor(self):
++        self.assertEqual(as_view_decorator.cache, self.default_cache)
+@@ -2101,6 +2103,21 @@ def test_constructor(self):
++        self.assertEqual(as_view_decorator_with_custom.cache, self.other_cache)
++
++    def test_update_cache_middleware_constructor(self):
++        middleware = UpdateCacheMiddleware(empty_response)
++        self.assertEqual(middleware.cache_timeout, 30)
++        self.assertIsNone(middleware.page_timeout)
++        self.assertEqual(middleware.key_prefix, 'middlewareprefix')
++        self.assertEqual(middleware.cache_alias, 'other')
++        self.assertEqual(middleware.cache, self.other_cache)
++
++    def test_fetch_cache_middleware_constructor(self):
++        middleware = FetchFromCacheMiddleware(empty_response)
++        self.assertEqual(middleware.key_prefix, 'middlewareprefix')
++        self.assertEqual(middleware.cache_alias, 'other')
++        self.assertEqual(middleware.cache, self.other_cache)
+diff --git a/tests/deprecation/test_middleware_mixin.py b/tests/deprecation/test_middleware_mixin.py
+@@ -1,15 +1,31 @@
++import asyncio
++from django.contrib.admindocs.middleware import XViewMiddleware
++from django.contrib.auth.middleware import (
++    AuthenticationMiddleware, RemoteUserMiddleware,
++)
++from django.contrib.flatpages.middleware import FlatpageFallbackMiddleware
++from django.contrib.messages.middleware import MessageMiddleware
++from django.contrib.redirects.middleware import RedirectFallbackMiddleware
++from django.contrib.sites.middleware import CurrentSiteMiddleware
++from django.middleware.clickjacking import XFrameOptionsMiddleware
++from django.middleware.common import (
++    BrokenLinkEmailsMiddleware, CommonMiddleware,
++)
++from django.middleware.csrf import CsrfViewMiddleware
++from django.middleware.gzip import GZipMiddleware
++from django.middleware.http import ConditionalGetMiddleware
++from django.middleware.locale import LocaleMiddleware
+@@ -20,30 +36,57 @@ class MiddlewareMixinTests(SimpleTestCase):
++    middlewares = [
++        AuthenticationMiddleware,
++        BrokenLinkEmailsMiddleware,
++        CacheMiddleware,
++        CommonMiddleware,
++        ConditionalGetMiddleware,
++        CsrfViewMiddleware,
++        CurrentSiteMiddleware,
++        FetchFromCacheMiddleware,
++        FlatpageFallbackMiddleware,
++
+...[truncated 1959 chars]
+
+##########################################################################################
+## [0335] sympy__sympy-13878 · debugging-and-error-recovery | B=uncertain
+files: patch=sympy/stats/crv_types.py | gold=sympy/stats/crv_types.py | test=sympy/stats/tests/test_continuous_rv.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.16666666666666666
+signals: eq=12 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 补丁落在正确分布模块，存在Piecewise条件、UniformSum求和表示和rv.py求值策略差异；pytest缺失可确认，但不能证明最终评测失败由环境导致。具体失败分布/断言待核。 | 最终补丁第1行：diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+F2P: test_arcsin
+--- FINAL PATCH ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+index fff7da80a..af1ac8096 100644
+--- a/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,8 @@
+ 
+ from sympy import (log, sqrt, pi, S, Dummy, Interval, sympify, gamma,
+                    Piecewise, And, Eq, binomial, factorial, Sum, floor, Abs,
+-                   Lambda, Basic, lowergamma, erf, erfc, I)
++                   Lambda, Basic, lowergamma, erf, erfc, I, asin, hyper,
++                   uppergamma)
+ from sympy import beta as beta_fn
+ from sympy import cos, exp, besseli
+ from sympy.stats.crv import (SingleContinuousPSpace, SingleContinuousDistribution,
+@@ -153,6 +154,12 @@ class ArcsinDistribution(SingleContinuousDistribution):
+     def pdf(self, x):
+         return 1/(pi*sqrt((x - self.a)*(self.b - x)))
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (2*asin(sqrt((x - a)/(b - a)))/pi, x <= b),
++                (1, True))
++
+ def Arcsin(name, a=0, b=1):
+     r"""
+     Create a Continuous Random Variable with an arcsin distribution.
+@@ -670,6 +677,12 @@ def pdf(self, x):
+         p, a, b = self.p, self.a, self.b
+         return a*p/x*((x/b)**(a*p)/(((x/b)**a + 1)**(p + 1)))
+ 
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(
++                ((1 + (x/b)**(-a))**(-p), x > 0),
++                (0, True))
++
+ 
+ def Dagum(name, p, a, b):
+     r"""
+@@ -786,7 +799,7 @@ def Erlang(name, k, l):
+     .. [2] http://mathworld.wolfram.com/ErlangDistribution.html
+     """
+ 
+-    return rv(name, GammaDistribution, (k, 1/l))
++    return rv(name, GammaDistribution, (k, S.One/l))
+ 
+ #-------------------------------------------------------------------------------
+ # Exponential distribution -----------------------------------------------------
+@@ -1042,6 +1055,12 @@ def pdf(self, x):
+         a, s, m = self.a, self.s, self.m
+         return a/s * ((x-m)/s)**(-1-a) * exp(-((x-m)/s)**(-a))
+ 
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise(
++                (exp(-((x-m)/s)**(-a)), x > m),
++                (0, True))
++
+ def Frechet(name, a, s=1, m=0):
+     r"""
+     Create a continuous random variable with a Frechet distribution.
+@@ -1111,6 +1130,12 @@ def pdf(self, x):
+     def sample(self):
+         return random.gammavariate(self.k, self.theta)
+ 
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                (lowergamma(k, x/theta)/gamma(k), x > 0),
++                (0, True))
++
+ 
+ def Gamma(name, k, theta):
+     r"""
+@@ -1200,6 +1225,12 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return b**a/gamma(a) * x**(-a-1) * exp(-b/x)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (uppergamma(a, b/x)/gamma(a), x > 0),
++                (0, True))
++
+ def GammaInverse(name, a, b):
+     r"""
+     Create a continuous random variable with an inverse Gamma distribution.
+@@ -1385,6 +1416,12 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return a * b * x**(a-1) * (1-x**a)**(b-1)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (1 - (1 - x**a)**b, x <= 1),
++                (1, True))
++
+ def Kumaraswamy(name, a, b):
+     r"""
+     Create a Continuous Random Variable with a Kumaraswamy distribution.
+@@ -1445,6 +1482,12 @@ def pdf(self, x):
+         mu, b = self.mu, self.b
+         return 1/(2*b)*exp(-Abs(x - mu)/b)
+ 
++    def _cdf(self, x):
++        mu, b = self.mu, self.b
++        return Piecewise(
++                (exp((x - mu)/b)/2, x < mu),
++                (1 - exp(-(x - mu)/b)/2, True))
++
+ 
+ def Laplace(name, mu, b):
+     r"""
+@@ -1501,6 +1544,10 @@ def pdf(self, x):
+         mu, s = self.mu, self.s
+         return exp(-(x - mu)/s)/(s*(1 + exp(-(x - mu)/s))**2)
+ 
++    def _cdf(self, x):
++        mu, s = self.mu, self.s
++        return 1/(1 + exp(-(x - mu)/s))
++
+ 
+ def Logistic(name, mu, s):
+     r"""
+@@ -1711,6 +1758,12 @@ def pdf(self, x):
+         mu, omega = self.mu, self.omega
+         return 2*mu**mu/(gamma(mu)*omega**mu)*x**(2*mu - 1)*exp(-mu/omega*x**2)
+ 
++    def _cdf(self, x):
++        mu, omega = self.mu, self.omega
++        return Piecewise(
++                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x > 0),
++                (0, True))
++
+ 
+ def Nakagami(name, mu, omega):
+     r"""
+@@ -2227,6 +2280,12 @@ def pdf(self, x):
+         nu = self.nu
+         return 1/(sqrt(nu)*beta_fn(S(1)/2, nu/2))*(1 + x**2/nu)**(-(nu + 1)/2)
+ 
++    def _cdf(self, x):
++        nu = self.nu
++        return S.Half + x*gamma((nu + 1)/2)*hyper(
++                (S.Half, (nu + 1)/2), (S(3)/2,), -x**2/nu
++                )/(sqrt(pi*nu)*gamma(nu/2))
++
+ 
+ def StudentT(name, nu):
+     r"""
+@@ -2554,6 +2613,14 @@ def pdf(self, x):
+         return 1/factorial(
+             n - 1)*Sum((-1)**k*binomial(n, k)*(x - k)**(n - 1), (k, 0, floor(x)))
+ 
++    def _cdf(self, x):
++        n = self.n
++        k = Dummy("k")
++        return Piecewise(
++                (1/factorial(n)*Sum((-1)**k*binomial(n, k)*(x - k)**n,
++                    (k, 0, floor(x))), x <= n),
++                (1, True))
++
+ 
+ 
+ def UniformSum(name, n):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,7 @@
++                   Lambda, Basic, lowergamma, erf, erfc, I, uppergamma, hyper)
+@@ -133,6 +133,7 @@ def ContinuousRV(symbol, density, set=Interval(-oo, oo)):
++
+@@ -153,6 +154,15 @@ class ArcsinDistribution(SingleContinuousDistribution):
++    def _cdf(self, x):
++        from sympy import asin
++        a, b = self.a, self.b
++        return Piecewise(
++            (S.Zero, x < a),
++            (2*asin(sqrt((x - a)/(b - a)))/pi, x <= b),
++            (S.One, True))
++
++
+@@ -178,7 +188,7 @@ def Arcsin(name, a=0, b=1):
++    >>> from sympy.stats import Arcsin, density, cdf
+@@ -190,6 +200,12 @@ def Arcsin(name, a=0, b=1):
++    >>> cdf(X)(z)
++    Piecewise((0, a > z),
++            (2*asin(sqrt((-a + z)/(-a + b)))/pi, b >= z),
++            (1, True))
++
++
+@@ -603,7 +619,7 @@ def pdf(self, x):
++                (S.One/gamma(k/2)*lowergamma(k/2, x/2), x >= 0),
+@@ -670,6 +686,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(((S.One + (S(x)/b)**-a)**-p, x>=0),
++                    (S.Zero, True))
++
+@@ -698,7 +719,7 @@ def Dagum(name, p, a, b):
++    >>> from sympy.stats import Dagum, density, cdf
+@@ -711,6 +732,10 @@ def Dagum(name, p, a, b):
++    >>> cdf(X)(z)
++    Piecewise(((1 + (z/b)**(-a))**(-p), z >= 0), (0, True))
++
++
+@@ -722,6 +747,7 @@ def Dagum(name, p, a, b):
++
+@@ -786,7 +812,7 @@ def Erlang(name, k, l):
++    return rv(name, GammaDistribution, (k, S.One/l))
+@@ -809,7 +835,7 @@ def sample(self):
++                (S.One - exp(-self.rate*x), x >= 0),
+@@ -1042,6 +1068,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise((exp(-((x-m)/s)**(-a)), x >= m),
++                        (S.Zero, True))
++
+@@ -1069,7 +1100,7 @@ def Frechet(name, a, s=1, m=0):
++    >>> from sympy.stats import Frechet, density, E, std, cdf
+@@ -1082,6 +1113,9 @@ def Frechet(name, a, s=1, m=0):
++    >>> cdf(X)(z)
++     Piecewise((exp(-((-m + z)/s)**(-a)), m <= z), (0, True))
++
+@@ -1111,6 +1145,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                    (lowergamma(k, S(x)/theta)/gamma(k), x > 0),
++                    (S.Zero, True))
++
+@@ -1186,6 +1226,7 @@ def Gamma(name, k, theta):
++
+@@ -1200,6 +1241,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, b = self.a, self.b
++      
+...[truncated 4109 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/stats/tests/test_continuous_rv.py b/sympy/stats/tests/test_continuous_rv.py
+@@ -1,4 +1,5 @@
++from sympy.utilities.randtest import verify_numerically as tn
+@@ -13,9 +14,9 @@
++                   Eq, log, lowergamma, uppergamma, Sum, symbols, sqrt, And, gamma, beta,
++                   floor, expand_func, Rational, I, hyper, diff)
+@@ -177,11 +178,16 @@ def test_ContinuousRV():
++    from sympy import asin
++
++    assert cdf(X)(x) == Piecewise((0, a > x),
++                            (2*asin(sqrt((-a + x)/(-a + b)))/pi, b >= x),
++                            (1, True))
+@@ -246,12 +252,14 @@ def test_chi_noncentral():
++
++
+@@ -259,6 +267,9 @@ def test_dagum():
++    assert cdf(X)(x) == Piecewise(((1 + (x/b)**(-a))**(-p), x >= 0),
++                                    (0, True))
++
+@@ -266,6 +277,9 @@ def test_erlang():
++    assert cdf(X)(x) == Piecewise((lowergamma(k, l*x)/gamma(k), x > 0),
++                               (0, True))
++
+@@ -283,6 +297,7 @@ def test_exponential():
++
+@@ -306,6 +321,8 @@ def test_frechet():
++    assert cdf(X)(x) == Piecewise((exp(-((-m + x)/s)**(-a)), m <= x), (0, True))
++
+@@ -328,12 +345,15 @@ def test_gamma():
++
++    assert cdf(X)(x) == Piecewise((uppergamma(a, b/x)/gamma(a), x > 0), (0, True))
++
+@@ -342,6 +362,7 @@ def test_gompertz():
++
+@@ -349,12 +370,17 @@ def test_gumbel():
++
++    assert cdf(X)(x) == Piecewise((0, x < 0),
++                                (-(-x**a + 1)**b + 1, x <= 1),
++                                (1, True))
++
+@@ -362,6 +388,8 @@ def test_laplace():
++    assert cdf(X)(x) == Piecewise((exp((-mu + x)/b)/2, mu > x),
++                            (-exp((mu - x)/b)/2 + 1, True))
+@@ -369,6 +397,8 @@ def test_logistic():
++    assert cdf(X)(x) == 1/(exp((mu - x)/s) + 1)
++
+@@ -416,9 +446,12 @@ def test_nakagami():
++                                            *gamma(mu + S.Half)/gamma(mu + 1))
++    assert cdf(X)(x) == Piecewise(
++                                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x > 0),
++                                (0, True))
+@@ -475,6 +508,8 @@ def test_studentt():
++    assert cdf(X)(x) == 1/2 + x*gamma(nu/2 + 1/2)*hyper((1/2, nu/2 + 1/2),
++                                (3/2,), -x**2/nu)/(sqrt(pi)*sqrt(nu)*gamma(nu/2))
+@@ -659,6 +694,7 @@ def test_probability_unevaluated():
++
+@@ -674,6 +710,7 @@ def test_NormalDistribution():
++
+@@ -682,17 +719,20 @@ def test_random_parameters():
++
++
++
+@@ -709,6 +749,7 @@ def test_issue_10003():
++
+@@ -726,7 +767,33 @@ def test_precomputed_cdf
+...[truncated 990 chars]
+
+##########################################################################################
+## [0336] sympy__sympy-13878 · python-anti-patterns | B=uncertain
+files: patch=sympy/stats/crv_types.py | gold=sympy/stats/crv_types.py | test=sympy/stats/tests/test_continuous_rv.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.14285714285714285
+signals: eq=12 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 补丁落在正确分布模块，存在Piecewise条件、UniformSum求和表示和rv.py求值策略差异；pytest缺失可确认，但不能证明最终评测失败由环境导致。具体失败分布/断言待核。 | 最终补丁第1行：diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+F2P: test_arcsin
+--- FINAL PATCH ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+index fff7da80a..52e22d986 100644
+--- a/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,8 @@
+ 
+ from sympy import (log, sqrt, pi, S, Dummy, Interval, sympify, gamma,
+                    Piecewise, And, Eq, binomial, factorial, Sum, floor, Abs,
+-                   Lambda, Basic, lowergamma, erf, erfc, I)
++                   Lambda, Basic, lowergamma, uppergamma, erf, erfc, I, asin,
++                   hyper)
+ from sympy import beta as beta_fn
+ from sympy import cos, exp, besseli
+ from sympy.stats.crv import (SingleContinuousPSpace, SingleContinuousDistribution,
+@@ -150,9 +151,20 @@ def rv(symbol, cls, args):
+ class ArcsinDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 'b')
+ 
++    @property
++    def set(self):
++        return Interval(self.a, self.b)
++
+     def pdf(self, x):
+         return 1/(pi*sqrt((x - self.a)*(self.b - x)))
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++            (2*asin(sqrt((x - a)/(b - a)))/pi, And(a <= x, x <= b)),
++            (0, x < a),
++            (1, True))
++
+ def Arcsin(name, a=0, b=1):
+     r"""
+     Create a Continuous Random Variable with an arcsin distribution.
+@@ -666,10 +678,18 @@ def ChiSquared(name, k):
+ class DagumDistribution(SingleContinuousDistribution):
+     _argnames = ('p', 'a', 'b')
+ 
++    set = Interval(0, oo)
++
+     def pdf(self, x):
+         p, a, b = self.p, self.a, self.b
+         return a*p/x*((x/b)**(a*p)/(((x/b)**a + 1)**(p + 1)))
+ 
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(
++            ((1 + (x/b)**(-a))**(-p), x > 0),
++            (0, True))
++
+ 
+ def Dagum(name, p, a, b):
+     r"""
+@@ -786,7 +806,7 @@ def Erlang(name, k, l):
+     .. [2] http://mathworld.wolfram.com/ErlangDistribution.html
+     """
+ 
+-    return rv(name, GammaDistribution, (k, 1/l))
++    return rv(name, GammaDistribution, (k, S.One/l))
+ 
+ #-------------------------------------------------------------------------------
+ # Exponential distribution -----------------------------------------------------
+@@ -1032,7 +1052,9 @@ def FisherZ(name, d1, d2):
+ class FrechetDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 's', 'm')
+ 
+-    set = Interval(0, oo)
++    @property
++    def set(self):
++        return Interval(self.m, oo)
+ 
+     def __new__(cls, a, s=1, m=0):
+         a, s, m = list(map(sympify, (a, s, m)))
+@@ -1042,6 +1064,12 @@ def pdf(self, x):
+         a, s, m = self.a, self.s, self.m
+         return a/s * ((x-m)/s)**(-1-a) * exp(-((x-m)/s)**(-a))
+ 
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise(
++            (exp(-((x - m)/s)**(-a)), x > m),
++            (0, True))
++
+ def Frechet(name, a, s=1, m=0):
+     r"""
+     Create a continuous random variable with a Frechet distribution.
+@@ -1108,6 +1136,12 @@ def pdf(self, x):
+         k, theta = self.k, self.theta
+         return x**(k - 1) * exp(-x/theta) / (gamma(k)*theta**k)
+ 
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++            (lowergamma(k, x/theta)/gamma(k), x >= 0),
++            (0, True))
++
+     def sample(self):
+         return random.gammavariate(self.k, self.theta)
+ 
+@@ -1200,6 +1234,12 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return b**a/gamma(a) * x**(-a-1) * exp(-b/x)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++            (uppergamma(a, b/x)/gamma(a), x > 0),
++            (0, True))
++
+ def GammaInverse(name, a, b):
+     r"""
+     Create a continuous random variable with an inverse Gamma distribution.
+@@ -1374,7 +1414,7 @@ def Gompertz(name, b, eta):
+ class KumaraswamyDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 'b')
+ 
+-    set = Interval(0, oo)
++    set = Interval(0, 1)
+ 
+     @staticmethod
+     def check(a, b):
+@@ -1385,6 +1425,13 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return a * b * x**(a-1) * (1-x**a)**(b-1)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++            (1 - (1 - x**a)**b, And(x >= 0, x <= 1)),
++            (0, x < 0),
++            (1, True))
++
+ def Kumaraswamy(name, a, b):
+     r"""
+     Create a Continuous Random Variable with a Kumaraswamy distribution.
+@@ -1445,6 +1492,12 @@ def pdf(self, x):
+         mu, b = self.mu, self.b
+         return 1/(2*b)*exp(-Abs(x - mu)/b)
+ 
++    def _cdf(self, x):
++        mu, b = self.mu, self.b
++        return Piecewise(
++            (S.Half*exp((x - mu)/b), x < mu),
++            (1 - S.Half*exp((mu - x)/b), True))
++
+ 
+ def Laplace(name, mu, b):
+     r"""
+@@ -1501,6 +1554,10 @@ def pdf(self, x):
+         mu, s = self.mu, self.s
+         return exp(-(x - mu)/s)/(s*(1 + exp(-(x - mu)/s))**2)
+ 
++    def _cdf(self, x):
++        mu, s = self.mu, self.s
++        return 1/(1 + exp(-(x - mu)/s))
++
+ 
+ def Logistic(name, mu, s):
+     r"""
+@@ -1711,6 +1768,12 @@ def pdf(self, x):
+         mu, omega = self.mu, self.omega
+         return 2*mu**mu/(gamma(mu)*omega**mu)*x**(2*mu - 1)*exp(-mu/omega*x**2)
+ 
++    def _cdf(self, x):
++        mu, omega = self.mu, self.omega
++        return Piecewise(
++            (lowergamma(mu, mu*x**2/omega)/gamma(mu), x > 0),
++            (0, True))
++
+ 
+ def Nakagami(name, mu, omega):
+     r"""
+@@ -2227,6 +2290,12 @@ def pdf(self, x):
+         nu = self.nu
+         return 1/(sqrt(nu)*beta_fn(S(1)/2, nu/2))*(1 + x**2/nu)**(-(nu + 1)/2)
+ 
++    def _cdf(self, x):
++        nu = self.nu
++        return S.Half + x*gamma((nu + 1)/2)*hyper(
++            (S.Half, (nu + 1)/2), (S(3)/2,), -x**2/nu)/(
++            sqrt(pi*nu)*gamma(nu/2))
++
+ 
+ def StudentT(name, nu):
+     r"""
+@@ -2554,6 +2623,15 @@ def pdf(self, x):
+         return 1/factorial(
+             n - 1)*Sum((-1)**k*binomial(n, k)*(x - k)**(n - 1), (k, 0, floor(x)))
+ 
++    def _cdf(self, x):
++        n = self.n
++        k = Dummy("k")
++        retu
+...[truncated 206 chars]
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,7 @@
++                   Lambda, Basic, lowergamma, erf, erfc, I, uppergamma, hyper)
+@@ -133,6 +133,7 @@ def ContinuousRV(symbol, density, set=Interval(-oo, oo)):
++
+@@ -153,6 +154,15 @@ class ArcsinDistribution(SingleContinuousDistribution):
++    def _cdf(self, x):
++        from sympy import asin
++        a, b = self.a, self.b
++        return Piecewise(
++            (S.Zero, x < a),
++            (2*asin(sqrt((x - a)/(b - a)))/pi, x <= b),
++            (S.One, True))
++
++
+@@ -178,7 +188,7 @@ def Arcsin(name, a=0, b=1):
++    >>> from sympy.stats import Arcsin, density, cdf
+@@ -190,6 +200,12 @@ def Arcsin(name, a=0, b=1):
++    >>> cdf(X)(z)
++    Piecewise((0, a > z),
++            (2*asin(sqrt((-a + z)/(-a + b)))/pi, b >= z),
++            (1, True))
++
++
+@@ -603,7 +619,7 @@ def pdf(self, x):
++                (S.One/gamma(k/2)*lowergamma(k/2, x/2), x >= 0),
+@@ -670,6 +686,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(((S.One + (S(x)/b)**-a)**-p, x>=0),
++                    (S.Zero, True))
++
+@@ -698,7 +719,7 @@ def Dagum(name, p, a, b):
++    >>> from sympy.stats import Dagum, density, cdf
+@@ -711,6 +732,10 @@ def Dagum(name, p, a, b):
++    >>> cdf(X)(z)
++    Piecewise(((1 + (z/b)**(-a))**(-p), z >= 0), (0, True))
++
++
+@@ -722,6 +747,7 @@ def Dagum(name, p, a, b):
++
+@@ -786,7 +812,7 @@ def Erlang(name, k, l):
++    return rv(name, GammaDistribution, (k, S.One/l))
+@@ -809,7 +835,7 @@ def sample(self):
++                (S.One - exp(-self.rate*x), x >= 0),
+@@ -1042,6 +1068,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise((exp(-((x-m)/s)**(-a)), x >= m),
++                        (S.Zero, True))
++
+@@ -1069,7 +1100,7 @@ def Frechet(name, a, s=1, m=0):
++    >>> from sympy.stats import Frechet, density, E, std, cdf
+@@ -1082,6 +1113,9 @@ def Frechet(name, a, s=1, m=0):
++    >>> cdf(X)(z)
++     Piecewise((exp(-((-m + z)/s)**(-a)), m <= z), (0, True))
++
+@@ -1111,6 +1145,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                    (lowergamma(k, S(x)/theta)/gamma(k), x > 0),
++                    (S.Zero, True))
++
+@@ -1186,6 +1226,7 @@ def Gamma(name, k, theta):
++
+@@ -1200,6 +1241,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, b = self.a, self.b
++      
+...[truncated 4109 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/stats/tests/test_continuous_rv.py b/sympy/stats/tests/test_continuous_rv.py
+@@ -1,4 +1,5 @@
++from sympy.utilities.randtest import verify_numerically as tn
+@@ -13,9 +14,9 @@
++                   Eq, log, lowergamma, uppergamma, Sum, symbols, sqrt, And, gamma, beta,
++                   floor, expand_func, Rational, I, hyper, diff)
+@@ -177,11 +178,16 @@ def test_ContinuousRV():
++    from sympy import asin
++
++    assert cdf(X)(x) == Piecewise((0, a > x),
++                            (2*asin(sqrt((-a + x)/(-a + b)))/pi, b >= x),
++                            (1, True))
+@@ -246,12 +252,14 @@ def test_chi_noncentral():
++
++
+@@ -259,6 +267,9 @@ def test_dagum():
++    assert cdf(X)(x) == Piecewise(((1 + (x/b)**(-a))**(-p), x >= 0),
++                                    (0, True))
++
+@@ -266,6 +277,9 @@ def test_erlang():
++    assert cdf(X)(x) == Piecewise((lowergamma(k, l*x)/gamma(k), x > 0),
++                               (0, True))
++
+@@ -283,6 +297,7 @@ def test_exponential():
++
+@@ -306,6 +321,8 @@ def test_frechet():
++    assert cdf(X)(x) == Piecewise((exp(-((-m + x)/s)**(-a)), m <= x), (0, True))
++
+@@ -328,12 +345,15 @@ def test_gamma():
++
++    assert cdf(X)(x) == Piecewise((uppergamma(a, b/x)/gamma(a), x > 0), (0, True))
++
+@@ -342,6 +362,7 @@ def test_gompertz():
++
+@@ -349,12 +370,17 @@ def test_gumbel():
++
++    assert cdf(X)(x) == Piecewise((0, x < 0),
++                                (-(-x**a + 1)**b + 1, x <= 1),
++                                (1, True))
++
+@@ -362,6 +388,8 @@ def test_laplace():
++    assert cdf(X)(x) == Piecewise((exp((-mu + x)/b)/2, mu > x),
++                            (-exp((mu - x)/b)/2 + 1, True))
+@@ -369,6 +397,8 @@ def test_logistic():
++    assert cdf(X)(x) == 1/(exp((mu - x)/s) + 1)
++
+@@ -416,9 +446,12 @@ def test_nakagami():
++                                            *gamma(mu + S.Half)/gamma(mu + 1))
++    assert cdf(X)(x) == Piecewise(
++                                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x > 0),
++                                (0, True))
+@@ -475,6 +508,8 @@ def test_studentt():
++    assert cdf(X)(x) == 1/2 + x*gamma(nu/2 + 1/2)*hyper((1/2, nu/2 + 1/2),
++                                (3/2,), -x**2/nu)/(sqrt(pi)*sqrt(nu)*gamma(nu/2))
+@@ -659,6 +694,7 @@ def test_probability_unevaluated():
++
+@@ -674,6 +710,7 @@ def test_NormalDistribution():
++
+@@ -682,17 +719,20 @@ def test_random_parameters():
++
++
++
+@@ -709,6 +749,7 @@ def test_issue_10003():
++
+@@ -726,7 +767,33 @@ def test_precomputed_cdf
+...[truncated 990 chars]
+
+##########################################################################################
+## [0342] sympy__sympy-13878 · sympy | B=uncertain
+files: patch=sympy/stats/crv_types.py;sympy/stats/rv.py | gold=sympy/stats/crv_types.py | test=sympy/stats/tests/test_continuous_rv.py
+overlap: exact=False subset=False disjoint=False touched_gold=1/1 func_jaccard=0.13636363636363635
+signals: eq=12 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 补丁落在正确分布模块，存在Piecewise条件、UniformSum求和表示和rv.py求值策略差异；pytest缺失可确认，但不能证明最终评测失败由环境导致。具体失败分布/断言待核。 | 最终补丁第1行：diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+F2P: test_arcsin
+--- FINAL PATCH ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+index fff7da80a..a02fd9669 100644
+--- a/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,8 @@
+ 
+ from sympy import (log, sqrt, pi, S, Dummy, Interval, sympify, gamma,
+                    Piecewise, And, Eq, binomial, factorial, Sum, floor, Abs,
+-                   Lambda, Basic, lowergamma, erf, erfc, I)
++                   Lambda, Basic, lowergamma, uppergamma, erf, erfc, I,
++                   asin, hyper)
+ from sympy import beta as beta_fn
+ from sympy import cos, exp, besseli
+ from sympy.stats.crv import (SingleContinuousPSpace, SingleContinuousDistribution,
+@@ -150,9 +151,20 @@ def rv(symbol, cls, args):
+ class ArcsinDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 'b')
+ 
++    @property
++    def set(self):
++        return Interval(self.a, self.b)
++
+     def pdf(self, x):
+         return 1/(pi*sqrt((x - self.a)*(self.b - x)))
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (S(2)/pi*asin(sqrt((x - a)/(b - a))), And(a <= x, x <= b)),
++                (S.One, x > b),
++                (S.Zero, True))
++
+ def Arcsin(name, a=0, b=1):
+     r"""
+     Create a Continuous Random Variable with an arcsin distribution.
+@@ -666,10 +678,18 @@ def ChiSquared(name, k):
+ class DagumDistribution(SingleContinuousDistribution):
+     _argnames = ('p', 'a', 'b')
+ 
++    set = Interval(0, oo)
++
+     def pdf(self, x):
+         p, a, b = self.p, self.a, self.b
+         return a*p/x*((x/b)**(a*p)/(((x/b)**a + 1)**(p + 1)))
+ 
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(
++                ((1 + (x/b)**(-a))**(-p), x > 0),
++                (S.Zero, True))
++
+ 
+ def Dagum(name, p, a, b):
+     r"""
+@@ -786,7 +806,7 @@ def Erlang(name, k, l):
+     .. [2] http://mathworld.wolfram.com/ErlangDistribution.html
+     """
+ 
+-    return rv(name, GammaDistribution, (k, 1/l))
++    return rv(name, GammaDistribution, (k, S.One/l))
+ 
+ #-------------------------------------------------------------------------------
+ # Exponential distribution -----------------------------------------------------
+@@ -1032,7 +1052,9 @@ def FisherZ(name, d1, d2):
+ class FrechetDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 's', 'm')
+ 
+-    set = Interval(0, oo)
++    @property
++    def set(self):
++        return Interval(self.m, oo)
+ 
+     def __new__(cls, a, s=1, m=0):
+         a, s, m = list(map(sympify, (a, s, m)))
+@@ -1042,6 +1064,12 @@ def pdf(self, x):
+         a, s, m = self.a, self.s, self.m
+         return a/s * ((x-m)/s)**(-1-a) * exp(-((x-m)/s)**(-a))
+ 
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise(
++                (exp(-((x - m)/s)**(-a)), x > m),
++                (S.Zero, True))
++
+ def Frechet(name, a, s=1, m=0):
+     r"""
+     Create a continuous random variable with a Frechet distribution.
+@@ -1108,6 +1136,12 @@ def pdf(self, x):
+         k, theta = self.k, self.theta
+         return x**(k - 1) * exp(-x/theta) / (gamma(k)*theta**k)
+ 
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                (lowergamma(k, x/theta)/gamma(k), x >= 0),
++                (S.Zero, True))
++
+     def sample(self):
+         return random.gammavariate(self.k, self.theta)
+ 
+@@ -1200,6 +1234,12 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return b**a/gamma(a) * x**(-a-1) * exp(-b/x)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (uppergamma(a, b/x)/gamma(a), x > 0),
++                (S.Zero, True))
++
+ def GammaInverse(name, a, b):
+     r"""
+     Create a continuous random variable with an inverse Gamma distribution.
+@@ -1374,7 +1414,7 @@ def Gompertz(name, b, eta):
+ class KumaraswamyDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 'b')
+ 
+-    set = Interval(0, oo)
++    set = Interval(0, 1)
+ 
+     @staticmethod
+     def check(a, b):
+@@ -1385,6 +1425,13 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return a * b * x**(a-1) * (1-x**a)**(b-1)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (S.One - (1 - x**a)**b, And(x >= 0, x <= 1)),
++                (S.One, x > 1),
++                (S.Zero, True))
++
+ def Kumaraswamy(name, a, b):
+     r"""
+     Create a Continuous Random Variable with a Kumaraswamy distribution.
+@@ -1445,6 +1492,12 @@ def pdf(self, x):
+         mu, b = self.mu, self.b
+         return 1/(2*b)*exp(-Abs(x - mu)/b)
+ 
++    def _cdf(self, x):
++        mu, b = self.mu, self.b
++        return Piecewise(
++                (S.Half*exp((x - mu)/b), x < mu),
++                (S.One - S.Half*exp((mu - x)/b), x >= mu))
++
+ 
+ def Laplace(name, mu, b):
+     r"""
+@@ -1501,6 +1554,10 @@ def pdf(self, x):
+         mu, s = self.mu, self.s
+         return exp(-(x - mu)/s)/(s*(1 + exp(-(x - mu)/s))**2)
+ 
++    def _cdf(self, x):
++        mu, s = self.mu, self.s
++        return S.One/(S.One + exp(-(x - mu)/s))
++
+ 
+ def Logistic(name, mu, s):
+     r"""
+@@ -1711,6 +1768,12 @@ def pdf(self, x):
+         mu, omega = self.mu, self.omega
+         return 2*mu**mu/(gamma(mu)*omega**mu)*x**(2*mu - 1)*exp(-mu/omega*x**2)
+ 
++    def _cdf(self, x):
++        mu, omega = self.mu, self.omega
++        return Piecewise(
++                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x >= 0),
++                (S.Zero, True))
++
+ 
+ def Nakagami(name, mu, omega):
+     r"""
+@@ -2227,6 +2290,11 @@ def pdf(self, x):
+         nu = self.nu
+         return 1/(sqrt(nu)*beta_fn(S(1)/2, nu/2))*(1 + x**2/nu)**(-(nu + 1)/2)
+ 
++    def _cdf(self, x):
++        nu = self.nu
++        return S.Half + x*gamma((nu + 1)/2)*hyper((S.Half, (nu + 1)/2),
++                (S(3)/2,), -x**2/nu)/(sqrt(pi*nu)*gamma(nu/2))
++
+ 
+ def StudentT(name, nu):
+     r"""
+@@ -2554,6 +2622,15 @@ def pdf(self, x):
+         return 1/factorial(
+             n - 1)*Sum((-1)**k*binomia
+...[truncated 1228 chars]
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,7 @@
++                   Lambda, Basic, lowergamma, erf, erfc, I, uppergamma, hyper)
+@@ -133,6 +133,7 @@ def ContinuousRV(symbol, density, set=Interval(-oo, oo)):
++
+@@ -153,6 +154,15 @@ class ArcsinDistribution(SingleContinuousDistribution):
++    def _cdf(self, x):
++        from sympy import asin
++        a, b = self.a, self.b
++        return Piecewise(
++            (S.Zero, x < a),
++            (2*asin(sqrt((x - a)/(b - a)))/pi, x <= b),
++            (S.One, True))
++
++
+@@ -178,7 +188,7 @@ def Arcsin(name, a=0, b=1):
++    >>> from sympy.stats import Arcsin, density, cdf
+@@ -190,6 +200,12 @@ def Arcsin(name, a=0, b=1):
++    >>> cdf(X)(z)
++    Piecewise((0, a > z),
++            (2*asin(sqrt((-a + z)/(-a + b)))/pi, b >= z),
++            (1, True))
++
++
+@@ -603,7 +619,7 @@ def pdf(self, x):
++                (S.One/gamma(k/2)*lowergamma(k/2, x/2), x >= 0),
+@@ -670,6 +686,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(((S.One + (S(x)/b)**-a)**-p, x>=0),
++                    (S.Zero, True))
++
+@@ -698,7 +719,7 @@ def Dagum(name, p, a, b):
++    >>> from sympy.stats import Dagum, density, cdf
+@@ -711,6 +732,10 @@ def Dagum(name, p, a, b):
++    >>> cdf(X)(z)
++    Piecewise(((1 + (z/b)**(-a))**(-p), z >= 0), (0, True))
++
++
+@@ -722,6 +747,7 @@ def Dagum(name, p, a, b):
++
+@@ -786,7 +812,7 @@ def Erlang(name, k, l):
++    return rv(name, GammaDistribution, (k, S.One/l))
+@@ -809,7 +835,7 @@ def sample(self):
++                (S.One - exp(-self.rate*x), x >= 0),
+@@ -1042,6 +1068,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise((exp(-((x-m)/s)**(-a)), x >= m),
++                        (S.Zero, True))
++
+@@ -1069,7 +1100,7 @@ def Frechet(name, a, s=1, m=0):
++    >>> from sympy.stats import Frechet, density, E, std, cdf
+@@ -1082,6 +1113,9 @@ def Frechet(name, a, s=1, m=0):
++    >>> cdf(X)(z)
++     Piecewise((exp(-((-m + z)/s)**(-a)), m <= z), (0, True))
++
+@@ -1111,6 +1145,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                    (lowergamma(k, S(x)/theta)/gamma(k), x > 0),
++                    (S.Zero, True))
++
+@@ -1186,6 +1226,7 @@ def Gamma(name, k, theta):
++
+@@ -1200,6 +1241,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, b = self.a, self.b
++      
+...[truncated 4109 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/stats/tests/test_continuous_rv.py b/sympy/stats/tests/test_continuous_rv.py
+@@ -1,4 +1,5 @@
++from sympy.utilities.randtest import verify_numerically as tn
+@@ -13,9 +14,9 @@
++                   Eq, log, lowergamma, uppergamma, Sum, symbols, sqrt, And, gamma, beta,
++                   floor, expand_func, Rational, I, hyper, diff)
+@@ -177,11 +178,16 @@ def test_ContinuousRV():
++    from sympy import asin
++
++    assert cdf(X)(x) == Piecewise((0, a > x),
++                            (2*asin(sqrt((-a + x)/(-a + b)))/pi, b >= x),
++                            (1, True))
+@@ -246,12 +252,14 @@ def test_chi_noncentral():
++
++
+@@ -259,6 +267,9 @@ def test_dagum():
++    assert cdf(X)(x) == Piecewise(((1 + (x/b)**(-a))**(-p), x >= 0),
++                                    (0, True))
++
+@@ -266,6 +277,9 @@ def test_erlang():
++    assert cdf(X)(x) == Piecewise((lowergamma(k, l*x)/gamma(k), x > 0),
++                               (0, True))
++
+@@ -283,6 +297,7 @@ def test_exponential():
++
+@@ -306,6 +321,8 @@ def test_frechet():
++    assert cdf(X)(x) == Piecewise((exp(-((-m + x)/s)**(-a)), m <= x), (0, True))
++
+@@ -328,12 +345,15 @@ def test_gamma():
++
++    assert cdf(X)(x) == Piecewise((uppergamma(a, b/x)/gamma(a), x > 0), (0, True))
++
+@@ -342,6 +362,7 @@ def test_gompertz():
++
+@@ -349,12 +370,17 @@ def test_gumbel():
++
++    assert cdf(X)(x) == Piecewise((0, x < 0),
++                                (-(-x**a + 1)**b + 1, x <= 1),
++                                (1, True))
++
+@@ -362,6 +388,8 @@ def test_laplace():
++    assert cdf(X)(x) == Piecewise((exp((-mu + x)/b)/2, mu > x),
++                            (-exp((mu - x)/b)/2 + 1, True))
+@@ -369,6 +397,8 @@ def test_logistic():
++    assert cdf(X)(x) == 1/(exp((mu - x)/s) + 1)
++
+@@ -416,9 +446,12 @@ def test_nakagami():
++                                            *gamma(mu + S.Half)/gamma(mu + 1))
++    assert cdf(X)(x) == Piecewise(
++                                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x > 0),
++                                (0, True))
+@@ -475,6 +508,8 @@ def test_studentt():
++    assert cdf(X)(x) == 1/2 + x*gamma(nu/2 + 1/2)*hyper((1/2, nu/2 + 1/2),
++                                (3/2,), -x**2/nu)/(sqrt(pi)*sqrt(nu)*gamma(nu/2))
+@@ -659,6 +694,7 @@ def test_probability_unevaluated():
++
+@@ -674,6 +710,7 @@ def test_NormalDistribution():
++
+@@ -682,17 +719,20 @@ def test_random_parameters():
++
++
++
+@@ -709,6 +749,7 @@ def test_issue_10003():
++
+@@ -726,7 +767,33 @@ def test_precomputed_cdf
+...[truncated 990 chars]
+
+##########################################################################################
+## [0343] sympy__sympy-13878 · systematic-debugging | B=uncertain
+files: patch=sympy/stats/crv_types.py | gold=sympy/stats/crv_types.py | test=sympy/stats/tests/test_continuous_rv.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.14285714285714285
+signals: eq=12 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 补丁落在正确分布模块，存在Piecewise条件、UniformSum求和表示和rv.py求值策略差异；pytest缺失可确认，但不能证明最终评测失败由环境导致。具体失败分布/断言待核。 | 最终补丁第1行：diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+F2P: test_arcsin
+--- FINAL PATCH ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+index fff7da80a..a150654c5 100644
+--- a/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,8 @@
+ 
+ from sympy import (log, sqrt, pi, S, Dummy, Interval, sympify, gamma,
+                    Piecewise, And, Eq, binomial, factorial, Sum, floor, Abs,
+-                   Lambda, Basic, lowergamma, erf, erfc, I)
++                   Lambda, Basic, lowergamma, uppergamma, erf, erfc, I, asin,
++                   hyper, Max)
+ from sympy import beta as beta_fn
+ from sympy import cos, exp, besseli
+ from sympy.stats.crv import (SingleContinuousPSpace, SingleContinuousDistribution,
+@@ -150,8 +151,20 @@ def rv(symbol, cls, args):
+ class ArcsinDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 'b')
+ 
++    @property
++    def set(self):
++        return Interval(self.a, self.b)
++
+     def pdf(self, x):
+-        return 1/(pi*sqrt((x - self.a)*(self.b - x)))
++        a, b = self.a, self.b
++        return 1/(pi*sqrt((x - a)*(b - x)))
++
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (2*asin(sqrt((x - a)/(b - a)))/pi, And(a <= x, x <= b)),
++                (S.One, x > b),
++                (S.Zero, True))
+ 
+ def Arcsin(name, a=0, b=1):
+     r"""
+@@ -666,10 +679,18 @@ def ChiSquared(name, k):
+ class DagumDistribution(SingleContinuousDistribution):
+     _argnames = ('p', 'a', 'b')
+ 
++    set = Interval(0, oo)
++
+     def pdf(self, x):
+         p, a, b = self.p, self.a, self.b
+         return a*p/x*((x/b)**(a*p)/(((x/b)**a + 1)**(p + 1)))
+ 
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(
++                ((1 + (x/b)**(-a))**(-p), x > 0),
++                (S.Zero, True))
++
+ 
+ def Dagum(name, p, a, b):
+     r"""
+@@ -786,7 +807,7 @@ def Erlang(name, k, l):
+     .. [2] http://mathworld.wolfram.com/ErlangDistribution.html
+     """
+ 
+-    return rv(name, GammaDistribution, (k, 1/l))
++    return rv(name, GammaDistribution, (k, S.One/l))
+ 
+ #-------------------------------------------------------------------------------
+ # Exponential distribution -----------------------------------------------------
+@@ -1032,7 +1053,9 @@ def FisherZ(name, d1, d2):
+ class FrechetDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 's', 'm')
+ 
+-    set = Interval(0, oo)
++    @property
++    def set(self):
++        return Interval(self.m, oo)
+ 
+     def __new__(cls, a, s=1, m=0):
+         a, s, m = list(map(sympify, (a, s, m)))
+@@ -1042,6 +1065,12 @@ def pdf(self, x):
+         a, s, m = self.a, self.s, self.m
+         return a/s * ((x-m)/s)**(-1-a) * exp(-((x-m)/s)**(-a))
+ 
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise(
++                (exp(-((x - m)/s)**(-a)), x > m),
++                (S.Zero, True))
++
+ def Frechet(name, a, s=1, m=0):
+     r"""
+     Create a continuous random variable with a Frechet distribution.
+@@ -1111,6 +1140,12 @@ def pdf(self, x):
+     def sample(self):
+         return random.gammavariate(self.k, self.theta)
+ 
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                (lowergamma(k, x/theta)/gamma(k), x >= 0),
++                (S.Zero, True))
++
+ 
+ def Gamma(name, k, theta):
+     r"""
+@@ -1200,6 +1235,12 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return b**a/gamma(a) * x**(-a-1) * exp(-b/x)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (uppergamma(a, b/x)/gamma(a), x > 0),
++                (S.Zero, True))
++
+ def GammaInverse(name, a, b):
+     r"""
+     Create a continuous random variable with an inverse Gamma distribution.
+@@ -1374,7 +1415,9 @@ def Gompertz(name, b, eta):
+ class KumaraswamyDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 'b')
+ 
+-    set = Interval(0, oo)
++    @property
++    def set(self):
++        return Interval(0, 1)
+ 
+     @staticmethod
+     def check(a, b):
+@@ -1385,6 +1428,13 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return a * b * x**(a-1) * (1-x**a)**(b-1)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (S.One - (S.One - x**a)**b, And(x >= 0, x <= 1)),
++                (S.One, x > 1),
++                (S.Zero, True))
++
+ def Kumaraswamy(name, a, b):
+     r"""
+     Create a Continuous Random Variable with a Kumaraswamy distribution.
+@@ -1445,6 +1495,12 @@ def pdf(self, x):
+         mu, b = self.mu, self.b
+         return 1/(2*b)*exp(-Abs(x - mu)/b)
+ 
++    def _cdf(self, x):
++        mu, b = self.mu, self.b
++        return Piecewise(
++                (S.Half*exp((x - mu)/b), x < mu),
++                (S.One - S.Half*exp(-(x - mu)/b), True))
++
+ 
+ def Laplace(name, mu, b):
+     r"""
+@@ -1501,6 +1557,10 @@ def pdf(self, x):
+         mu, s = self.mu, self.s
+         return exp(-(x - mu)/s)/(s*(1 + exp(-(x - mu)/s))**2)
+ 
++    def _cdf(self, x):
++        mu, s = self.mu, self.s
++        return 1/(1 + exp(-(x - mu)/s))
++
+ 
+ def Logistic(name, mu, s):
+     r"""
+@@ -1711,6 +1771,12 @@ def pdf(self, x):
+         mu, omega = self.mu, self.omega
+         return 2*mu**mu/(gamma(mu)*omega**mu)*x**(2*mu - 1)*exp(-mu/omega*x**2)
+ 
++    def _cdf(self, x):
++        mu, omega = self.mu, self.omega
++        return Piecewise(
++                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x >= 0),
++                (S.Zero, True))
++
+ 
+ def Nakagami(name, mu, omega):
+     r"""
+@@ -2227,6 +2293,12 @@ def pdf(self, x):
+         nu = self.nu
+         return 1/(sqrt(nu)*beta_fn(S(1)/2, nu/2))*(1 + x**2/nu)**(-(nu + 1)/2)
+ 
++    def _cdf(self, x):
++        nu = self.nu
++        return S.Half + x*gamma((nu + 1)/2)*hyper(
++                (S.Half, (nu + 1)/2), (S(3)/2,), -x**2/nu
++                )/(sqrt(pi*nu)*gamma(nu/2))
++
+ 
+ def StudentT(name, nu):
+     r"""
+@@ -2554,6 +2626,15 @@ def pdf(self, x):
+         return 1/factorial(
+             n - 1)*Sum((-1)**k*binomial(n, 
+...[truncated 371 chars]
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,7 @@
++                   Lambda, Basic, lowergamma, erf, erfc, I, uppergamma, hyper)
+@@ -133,6 +133,7 @@ def ContinuousRV(symbol, density, set=Interval(-oo, oo)):
++
+@@ -153,6 +154,15 @@ class ArcsinDistribution(SingleContinuousDistribution):
++    def _cdf(self, x):
++        from sympy import asin
++        a, b = self.a, self.b
++        return Piecewise(
++            (S.Zero, x < a),
++            (2*asin(sqrt((x - a)/(b - a)))/pi, x <= b),
++            (S.One, True))
++
++
+@@ -178,7 +188,7 @@ def Arcsin(name, a=0, b=1):
++    >>> from sympy.stats import Arcsin, density, cdf
+@@ -190,6 +200,12 @@ def Arcsin(name, a=0, b=1):
++    >>> cdf(X)(z)
++    Piecewise((0, a > z),
++            (2*asin(sqrt((-a + z)/(-a + b)))/pi, b >= z),
++            (1, True))
++
++
+@@ -603,7 +619,7 @@ def pdf(self, x):
++                (S.One/gamma(k/2)*lowergamma(k/2, x/2), x >= 0),
+@@ -670,6 +686,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(((S.One + (S(x)/b)**-a)**-p, x>=0),
++                    (S.Zero, True))
++
+@@ -698,7 +719,7 @@ def Dagum(name, p, a, b):
++    >>> from sympy.stats import Dagum, density, cdf
+@@ -711,6 +732,10 @@ def Dagum(name, p, a, b):
++    >>> cdf(X)(z)
++    Piecewise(((1 + (z/b)**(-a))**(-p), z >= 0), (0, True))
++
++
+@@ -722,6 +747,7 @@ def Dagum(name, p, a, b):
++
+@@ -786,7 +812,7 @@ def Erlang(name, k, l):
++    return rv(name, GammaDistribution, (k, S.One/l))
+@@ -809,7 +835,7 @@ def sample(self):
++                (S.One - exp(-self.rate*x), x >= 0),
+@@ -1042,6 +1068,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise((exp(-((x-m)/s)**(-a)), x >= m),
++                        (S.Zero, True))
++
+@@ -1069,7 +1100,7 @@ def Frechet(name, a, s=1, m=0):
++    >>> from sympy.stats import Frechet, density, E, std, cdf
+@@ -1082,6 +1113,9 @@ def Frechet(name, a, s=1, m=0):
++    >>> cdf(X)(z)
++     Piecewise((exp(-((-m + z)/s)**(-a)), m <= z), (0, True))
++
+@@ -1111,6 +1145,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                    (lowergamma(k, S(x)/theta)/gamma(k), x > 0),
++                    (S.Zero, True))
++
+@@ -1186,6 +1226,7 @@ def Gamma(name, k, theta):
++
+@@ -1200,6 +1241,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, b = self.a, self.b
++      
+...[truncated 4109 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/stats/tests/test_continuous_rv.py b/sympy/stats/tests/test_continuous_rv.py
+@@ -1,4 +1,5 @@
++from sympy.utilities.randtest import verify_numerically as tn
+@@ -13,9 +14,9 @@
++                   Eq, log, lowergamma, uppergamma, Sum, symbols, sqrt, And, gamma, beta,
++                   floor, expand_func, Rational, I, hyper, diff)
+@@ -177,11 +178,16 @@ def test_ContinuousRV():
++    from sympy import asin
++
++    assert cdf(X)(x) == Piecewise((0, a > x),
++                            (2*asin(sqrt((-a + x)/(-a + b)))/pi, b >= x),
++                            (1, True))
+@@ -246,12 +252,14 @@ def test_chi_noncentral():
++
++
+@@ -259,6 +267,9 @@ def test_dagum():
++    assert cdf(X)(x) == Piecewise(((1 + (x/b)**(-a))**(-p), x >= 0),
++                                    (0, True))
++
+@@ -266,6 +277,9 @@ def test_erlang():
++    assert cdf(X)(x) == Piecewise((lowergamma(k, l*x)/gamma(k), x > 0),
++                               (0, True))
++
+@@ -283,6 +297,7 @@ def test_exponential():
++
+@@ -306,6 +321,8 @@ def test_frechet():
++    assert cdf(X)(x) == Piecewise((exp(-((-m + x)/s)**(-a)), m <= x), (0, True))
++
+@@ -328,12 +345,15 @@ def test_gamma():
++
++    assert cdf(X)(x) == Piecewise((uppergamma(a, b/x)/gamma(a), x > 0), (0, True))
++
+@@ -342,6 +362,7 @@ def test_gompertz():
++
+@@ -349,12 +370,17 @@ def test_gumbel():
++
++    assert cdf(X)(x) == Piecewise((0, x < 0),
++                                (-(-x**a + 1)**b + 1, x <= 1),
++                                (1, True))
++
+@@ -362,6 +388,8 @@ def test_laplace():
++    assert cdf(X)(x) == Piecewise((exp((-mu + x)/b)/2, mu > x),
++                            (-exp((mu - x)/b)/2 + 1, True))
+@@ -369,6 +397,8 @@ def test_logistic():
++    assert cdf(X)(x) == 1/(exp((mu - x)/s) + 1)
++
+@@ -416,9 +446,12 @@ def test_nakagami():
++                                            *gamma(mu + S.Half)/gamma(mu + 1))
++    assert cdf(X)(x) == Piecewise(
++                                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x > 0),
++                                (0, True))
+@@ -475,6 +508,8 @@ def test_studentt():
++    assert cdf(X)(x) == 1/2 + x*gamma(nu/2 + 1/2)*hyper((1/2, nu/2 + 1/2),
++                                (3/2,), -x**2/nu)/(sqrt(pi)*sqrt(nu)*gamma(nu/2))
+@@ -659,6 +694,7 @@ def test_probability_unevaluated():
++
+@@ -674,6 +710,7 @@ def test_NormalDistribution():
++
+@@ -682,17 +719,20 @@ def test_random_parameters():
++
++
++
+@@ -709,6 +749,7 @@ def test_issue_10003():
++
+@@ -726,7 +767,33 @@ def test_precomputed_cdf
+...[truncated 990 chars]
+
+##########################################################################################
+## [0345] sympy__sympy-13878 · test-driven-development | B=uncertain
+files: patch=sympy/stats/crv_types.py;sympy/stats/rv.py | gold=sympy/stats/crv_types.py | test=sympy/stats/tests/test_continuous_rv.py
+overlap: exact=False subset=False disjoint=False touched_gold=1/1 func_jaccard=0.13636363636363635
+signals: eq=12 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 补丁落在正确分布模块，存在Piecewise条件、UniformSum求和表示和rv.py求值策略差异；pytest缺失可确认，但不能证明最终评测失败由环境导致。具体失败分布/断言待核。 | 最终补丁第1行：diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+F2P: test_arcsin
+--- FINAL PATCH ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
+index fff7da80a..b3e8f526a 100644
+--- a/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,8 @@
+ 
+ from sympy import (log, sqrt, pi, S, Dummy, Interval, sympify, gamma,
+                    Piecewise, And, Eq, binomial, factorial, Sum, floor, Abs,
+-                   Lambda, Basic, lowergamma, erf, erfc, I)
++                   Lambda, Basic, lowergamma, uppergamma, erf, erfc, I,
++                   hyper, asin)
+ from sympy import beta as beta_fn
+ from sympy import cos, exp, besseli
+ from sympy.stats.crv import (SingleContinuousPSpace, SingleContinuousDistribution,
+@@ -150,9 +151,20 @@ def rv(symbol, cls, args):
+ class ArcsinDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 'b')
+ 
++    @property
++    def set(self):
++        return Interval(self.a, self.b)
++
+     def pdf(self, x):
+         return 1/(pi*sqrt((x - self.a)*(self.b - x)))
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (2*asin(sqrt((x - a)/(b - a)))/pi, And(a <= x, x <= b)),
++                (S.Zero, x < a),
++                (S.One, True))
++
+ def Arcsin(name, a=0, b=1):
+     r"""
+     Create a Continuous Random Variable with an arcsin distribution.
+@@ -666,10 +678,18 @@ def ChiSquared(name, k):
+ class DagumDistribution(SingleContinuousDistribution):
+     _argnames = ('p', 'a', 'b')
+ 
++    set = Interval(0, oo)
++
+     def pdf(self, x):
+         p, a, b = self.p, self.a, self.b
+         return a*p/x*((x/b)**(a*p)/(((x/b)**a + 1)**(p + 1)))
+ 
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(
++                ((1 + (b/x)**a)**(-p), x > 0),
++                (S.Zero, True))
++
+ 
+ def Dagum(name, p, a, b):
+     r"""
+@@ -786,7 +806,7 @@ def Erlang(name, k, l):
+     .. [2] http://mathworld.wolfram.com/ErlangDistribution.html
+     """
+ 
+-    return rv(name, GammaDistribution, (k, 1/l))
++    return rv(name, GammaDistribution, (k, S.One/l))
+ 
+ #-------------------------------------------------------------------------------
+ # Exponential distribution -----------------------------------------------------
+@@ -1032,7 +1052,9 @@ def FisherZ(name, d1, d2):
+ class FrechetDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 's', 'm')
+ 
+-    set = Interval(0, oo)
++    @property
++    def set(self):
++        return Interval(self.m, oo)
+ 
+     def __new__(cls, a, s=1, m=0):
+         a, s, m = list(map(sympify, (a, s, m)))
+@@ -1042,6 +1064,12 @@ def pdf(self, x):
+         a, s, m = self.a, self.s, self.m
+         return a/s * ((x-m)/s)**(-1-a) * exp(-((x-m)/s)**(-a))
+ 
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise(
++                (exp(-((x - m)/s)**(-a)), x > m),
++                (S.Zero, True))
++
+ def Frechet(name, a, s=1, m=0):
+     r"""
+     Create a continuous random variable with a Frechet distribution.
+@@ -1108,6 +1136,12 @@ def pdf(self, x):
+         k, theta = self.k, self.theta
+         return x**(k - 1) * exp(-x/theta) / (gamma(k)*theta**k)
+ 
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                (lowergamma(k, x/theta)/gamma(k), x >= 0),
++                (S.Zero, True))
++
+     def sample(self):
+         return random.gammavariate(self.k, self.theta)
+ 
+@@ -1200,6 +1234,12 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return b**a/gamma(a) * x**(-a-1) * exp(-b/x)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (uppergamma(a, b/x)/gamma(a), x > 0),
++                (S.Zero, True))
++
+ def GammaInverse(name, a, b):
+     r"""
+     Create a continuous random variable with an inverse Gamma distribution.
+@@ -1374,7 +1414,7 @@ def Gompertz(name, b, eta):
+ class KumaraswamyDistribution(SingleContinuousDistribution):
+     _argnames = ('a', 'b')
+ 
+-    set = Interval(0, oo)
++    set = Interval(0, 1)
+ 
+     @staticmethod
+     def check(a, b):
+@@ -1385,6 +1425,13 @@ def pdf(self, x):
+         a, b = self.a, self.b
+         return a * b * x**(a-1) * (1-x**a)**(b-1)
+ 
++    def _cdf(self, x):
++        a, b = self.a, self.b
++        return Piecewise(
++                (1 - (1 - x**a)**b, And(0 <= x, x <= 1)),
++                (S.Zero, x < 0),
++                (S.One, True))
++
+ def Kumaraswamy(name, a, b):
+     r"""
+     Create a Continuous Random Variable with a Kumaraswamy distribution.
+@@ -1445,6 +1492,12 @@ def pdf(self, x):
+         mu, b = self.mu, self.b
+         return 1/(2*b)*exp(-Abs(x - mu)/b)
+ 
++    def _cdf(self, x):
++        mu, b = self.mu, self.b
++        return Piecewise(
++                (S.Half*exp((x - mu)/b), x < mu),
++                (S.One - S.Half*exp((mu - x)/b), True))
++
+ 
+ def Laplace(name, mu, b):
+     r"""
+@@ -1501,6 +1554,10 @@ def pdf(self, x):
+         mu, s = self.mu, self.s
+         return exp(-(x - mu)/s)/(s*(1 + exp(-(x - mu)/s))**2)
+ 
++    def _cdf(self, x):
++        mu, s = self.mu, self.s
++        return S.One/(S.One + exp((mu - x)/s))
++
+ 
+ def Logistic(name, mu, s):
+     r"""
+@@ -1711,6 +1768,12 @@ def pdf(self, x):
+         mu, omega = self.mu, self.omega
+         return 2*mu**mu/(gamma(mu)*omega**mu)*x**(2*mu - 1)*exp(-mu/omega*x**2)
+ 
++    def _cdf(self, x):
++        mu, omega = self.mu, self.omega
++        return Piecewise(
++                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x > 0),
++                (S.Zero, True))
++
+ 
+ def Nakagami(name, mu, omega):
+     r"""
+@@ -2227,6 +2290,12 @@ def pdf(self, x):
+         nu = self.nu
+         return 1/(sqrt(nu)*beta_fn(S(1)/2, nu/2))*(1 + x**2/nu)**(-(nu + 1)/2)
+ 
++    def _cdf(self, x):
++        nu = self.nu
++        return S.Half + x*gamma((nu + 1)/2)*hyper(
++                (S.Half, (nu + 1)/2), (S(3)/2,), -x**2/nu)/(
++                sqrt(pi*nu)*gamma(nu/2))
++
+ 
+ def StudentT(name, nu):
+     r"""
+@@ -2554,6 +2623,14 @@ def pdf(self, x):
+         return 1/factorial(
+             n - 1)*Sum((-1)**k*bin
+...[truncated 793 chars]
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/stats/crv_types.py b/sympy/stats/crv_types.py
++++ b/sympy/stats/crv_types.py
+@@ -47,7 +47,7 @@
++                   Lambda, Basic, lowergamma, erf, erfc, I, uppergamma, hyper)
+@@ -133,6 +133,7 @@ def ContinuousRV(symbol, density, set=Interval(-oo, oo)):
++
+@@ -153,6 +154,15 @@ class ArcsinDistribution(SingleContinuousDistribution):
++    def _cdf(self, x):
++        from sympy import asin
++        a, b = self.a, self.b
++        return Piecewise(
++            (S.Zero, x < a),
++            (2*asin(sqrt((x - a)/(b - a)))/pi, x <= b),
++            (S.One, True))
++
++
+@@ -178,7 +188,7 @@ def Arcsin(name, a=0, b=1):
++    >>> from sympy.stats import Arcsin, density, cdf
+@@ -190,6 +200,12 @@ def Arcsin(name, a=0, b=1):
++    >>> cdf(X)(z)
++    Piecewise((0, a > z),
++            (2*asin(sqrt((-a + z)/(-a + b)))/pi, b >= z),
++            (1, True))
++
++
+@@ -603,7 +619,7 @@ def pdf(self, x):
++                (S.One/gamma(k/2)*lowergamma(k/2, x/2), x >= 0),
+@@ -670,6 +686,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        p, a, b = self.p, self.a, self.b
++        return Piecewise(((S.One + (S(x)/b)**-a)**-p, x>=0),
++                    (S.Zero, True))
++
+@@ -698,7 +719,7 @@ def Dagum(name, p, a, b):
++    >>> from sympy.stats import Dagum, density, cdf
+@@ -711,6 +732,10 @@ def Dagum(name, p, a, b):
++    >>> cdf(X)(z)
++    Piecewise(((1 + (z/b)**(-a))**(-p), z >= 0), (0, True))
++
++
+@@ -722,6 +747,7 @@ def Dagum(name, p, a, b):
++
+@@ -786,7 +812,7 @@ def Erlang(name, k, l):
++    return rv(name, GammaDistribution, (k, S.One/l))
+@@ -809,7 +835,7 @@ def sample(self):
++                (S.One - exp(-self.rate*x), x >= 0),
+@@ -1042,6 +1068,11 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, s, m = self.a, self.s, self.m
++        return Piecewise((exp(-((x-m)/s)**(-a)), x >= m),
++                        (S.Zero, True))
++
+@@ -1069,7 +1100,7 @@ def Frechet(name, a, s=1, m=0):
++    >>> from sympy.stats import Frechet, density, E, std, cdf
+@@ -1082,6 +1113,9 @@ def Frechet(name, a, s=1, m=0):
++    >>> cdf(X)(z)
++     Piecewise((exp(-((-m + z)/s)**(-a)), m <= z), (0, True))
++
+@@ -1111,6 +1145,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        k, theta = self.k, self.theta
++        return Piecewise(
++                    (lowergamma(k, S(x)/theta)/gamma(k), x > 0),
++                    (S.Zero, True))
++
+@@ -1186,6 +1226,7 @@ def Gamma(name, k, theta):
++
+@@ -1200,6 +1241,12 @@ def pdf(self, x):
++    def _cdf(self, x):
++        a, b = self.a, self.b
++      
+...[truncated 4109 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/stats/tests/test_continuous_rv.py b/sympy/stats/tests/test_continuous_rv.py
+@@ -1,4 +1,5 @@
++from sympy.utilities.randtest import verify_numerically as tn
+@@ -13,9 +14,9 @@
++                   Eq, log, lowergamma, uppergamma, Sum, symbols, sqrt, And, gamma, beta,
++                   floor, expand_func, Rational, I, hyper, diff)
+@@ -177,11 +178,16 @@ def test_ContinuousRV():
++    from sympy import asin
++
++    assert cdf(X)(x) == Piecewise((0, a > x),
++                            (2*asin(sqrt((-a + x)/(-a + b)))/pi, b >= x),
++                            (1, True))
+@@ -246,12 +252,14 @@ def test_chi_noncentral():
++
++
+@@ -259,6 +267,9 @@ def test_dagum():
++    assert cdf(X)(x) == Piecewise(((1 + (x/b)**(-a))**(-p), x >= 0),
++                                    (0, True))
++
+@@ -266,6 +277,9 @@ def test_erlang():
++    assert cdf(X)(x) == Piecewise((lowergamma(k, l*x)/gamma(k), x > 0),
++                               (0, True))
++
+@@ -283,6 +297,7 @@ def test_exponential():
++
+@@ -306,6 +321,8 @@ def test_frechet():
++    assert cdf(X)(x) == Piecewise((exp(-((-m + x)/s)**(-a)), m <= x), (0, True))
++
+@@ -328,12 +345,15 @@ def test_gamma():
++
++    assert cdf(X)(x) == Piecewise((uppergamma(a, b/x)/gamma(a), x > 0), (0, True))
++
+@@ -342,6 +362,7 @@ def test_gompertz():
++
+@@ -349,12 +370,17 @@ def test_gumbel():
++
++    assert cdf(X)(x) == Piecewise((0, x < 0),
++                                (-(-x**a + 1)**b + 1, x <= 1),
++                                (1, True))
++
+@@ -362,6 +388,8 @@ def test_laplace():
++    assert cdf(X)(x) == Piecewise((exp((-mu + x)/b)/2, mu > x),
++                            (-exp((mu - x)/b)/2 + 1, True))
+@@ -369,6 +397,8 @@ def test_logistic():
++    assert cdf(X)(x) == 1/(exp((mu - x)/s) + 1)
++
+@@ -416,9 +446,12 @@ def test_nakagami():
++                                            *gamma(mu + S.Half)/gamma(mu + 1))
++    assert cdf(X)(x) == Piecewise(
++                                (lowergamma(mu, mu*x**2/omega)/gamma(mu), x > 0),
++                                (0, True))
+@@ -475,6 +508,8 @@ def test_studentt():
++    assert cdf(X)(x) == 1/2 + x*gamma(nu/2 + 1/2)*hyper((1/2, nu/2 + 1/2),
++                                (3/2,), -x**2/nu)/(sqrt(pi)*sqrt(nu)*gamma(nu/2))
+@@ -659,6 +694,7 @@ def test_probability_unevaluated():
++
+@@ -674,6 +710,7 @@ def test_NormalDistribution():
++
+@@ -682,17 +719,20 @@ def test_random_parameters():
++
++
++
+@@ -709,6 +749,7 @@ def test_issue_10003():
++
+@@ -726,7 +767,33 @@ def test_precomputed_cdf
+...[truncated 990 chars]
+
+##########################################################################################
+## [0408] pylint-dev__pylint-7080 · python-pro | B=uncertain
+files: patch=pylint/config/argument.py;pylint/config/option.py;pylint/lint/expand_modules.py;pylint/lint/pylinter.py | gold=pylint/lint/expand_modules.py | test=tests/test_self.py
+overlap: exact=False subset=False disjoint=False touched_gold=1/1 func_jaccard=0.25
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 已包含normpath目标修复，额外正则与递归修改可能引入回归，但缺少匹配的正式失败断言，不能只凭改动多定wrong_fix。 | patch L12: +                pathlib.PureWindowsPath(pattern).as_posix().replace("/", "[\\\\/]") | patch L29: +            re.compile(pathlib.PureWindowsPath(val).as_posix().replace("/", "[\\\\/]")) | patch L41: +    element = os.path.normpath(element)
+F2P: tests/test_self.py::TestRunTC::test_ignore_path_recursive_current_dir
+--- FINAL PATCH ---
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 3c295151..427d07c2 100755
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -113,9 +113,7 @@ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     for pattern in _csv_transformer(value):
+         patterns.append(
+             re.compile(
+-                str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+-                + "|"
+-                + pathlib.PureWindowsPath(pattern).as_posix()
++                pathlib.PureWindowsPath(pattern).as_posix().replace("/", "[\\\\/]")
+             )
+         )
+     return patterns
+diff --git a/pylint/config/option.py b/pylint/config/option.py
+index 5043fe76..7f05485b 100755
+--- a/pylint/config/option.py
++++ b/pylint/config/option.py
+@@ -39,11 +39,7 @@ def _regexp_paths_csv_validator(
+     patterns = []
+     for val in _csv_validator(_, name, value):
+         patterns.append(
+-            re.compile(
+-                str(pathlib.PureWindowsPath(val)).replace("\\", "\\\\")
+-                + "|"
+-                + pathlib.PureWindowsPath(val).as_posix()
+-            )
++            re.compile(pathlib.PureWindowsPath(val).as_posix().replace("/", "[\\\\/]"))
+         )
+     return patterns
+ 
+diff --git a/pylint/lint/expand_modules.py b/pylint/lint/expand_modules.py
+index 5cacc037..289e1afc 100755
+--- a/pylint/lint/expand_modules.py
++++ b/pylint/lint/expand_modules.py
+@@ -52,6 +52,7 @@ def _is_ignored_file(
+     ignore_list_re: list[Pattern[str]],
+     ignore_list_paths_re: list[Pattern[str]],
+ ) -> bool:
++    element = os.path.normpath(element)
+     basename = os.path.basename(element)
+     return (
+         basename in ignore_list
+diff --git a/pylint/lint/pylinter.py b/pylint/lint/pylinter.py
+index e2bbf061..d4643662 100755
+--- a/pylint/lint/pylinter.py
++++ b/pylint/lint/pylinter.py
+@@ -614,6 +614,12 @@ class PyLinter(
+                             os.path.join(root, file)
+                             for file in files
+                             if file.endswith(".py")
++                            if not _is_ignored_file(
++                                os.path.join(root, file),
++                                self.config.ignore,
++                                self.config.ignore_patterns,
++                                self.config.ignore_paths,
++                            )
+                         )
+             else:
+                 yield something
+
+--- GOLD (headers/+ lines) ---
+diff --git a/pylint/lint/expand_modules.py b/pylint/lint/expand_modules.py
++++ b/pylint/lint/expand_modules.py
+@@ -52,6 +52,7 @@ def _is_ignored_file(
++    element = os.path.normpath(element)
+--- TEST (headers/+ lines) ---
+diff --git a/tests/test_self.py b/tests/test_self.py
+@@ -1330,6 +1330,27 @@ def test_recursive_current_dir(self):
++    def test_ignore_path_recursive_current_dir(self) -> None:
++        """Tests that path is normalized before checked that is ignored. GitHub issue #6964"""
++        with _test_sys_path():
++            # pytest is including directory HERE/regrtest_data to sys.path which causes
++            # astroid to believe that directory is a package.
++            sys.path = [
++                path
++                for path in sys.path
++                if not os.path.basename(path) == "regrtest_data"
++            ]
++            with _test_cwd():
++                os.chdir(join(HERE, "regrtest_data", "directory"))
++                self._runtest(
++                    [
++                        ".",
++                        "--recursive=y",
++                        "--ignore-paths=^ignored_subdirectory/.*",
++                    ],
++                    code=0,
++                )
++
+
+##########################################################################################
+## [0409] pylint-dev__pylint-4970 · python-project-structure | B=uncertain
+files: patch=pylint/checkers/similar.py | gold=pylint/checkers/similar.py | test=tests/checkers/unittest_similar.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.0
+signals: eq=2 is=0 in=0 raises=1 new_tests_in_f2p=all conflict=False status=patch
+evidence: 已包含append_stream零阈值短路，与可通过方案关键行为相符；存在额外短路或CLI修改，但没有正式失败断言，主因保留待核。 | patch L9: +        if self.min_lines == 0: | patch L10: +            return | patch L15: +        if self.min_lines == 0:
+F2P: tests/checkers/unittest_similar.py::test_set_duplicate_lines_to_zero
+--- FINAL PATCH ---
+diff --git a/pylint/checkers/similar.py b/pylint/checkers/similar.py
+index c65b1c89..9d8f57b9 100644
+--- a/pylint/checkers/similar.py
++++ b/pylint/checkers/similar.py
+@@ -390,10 +390,15 @@ class Similar:
+ 
+     def run(self) -> None:
+         """start looking for similarities and display results on stdout"""
++        if self.min_lines == 0:
++            return
+         self._display_sims(self._compute_sims())
+ 
+     def _compute_sims(self) -> List[Tuple[int, Set[LinesChunkLimits_T]]]:
+         """compute similarities in appended files"""
++        if self.min_lines == 0:
++            return []
++
+         no_duplicates: Dict[int, List[Set[LinesChunkLimits_T]]] = defaultdict(list)
+ 
+         for commonality in self._iter_sims():
+
+--- GOLD (headers/+ lines) ---
+diff --git a/pylint/checkers/similar.py b/pylint/checkers/similar.py
++++ b/pylint/checkers/similar.py
+@@ -390,6 +390,8 @@ def append_stream(self, streamid: str, stream: TextIO, encoding=None) -> None:
++        if self.min_lines == 0:
++            return
+--- TEST (headers/+ lines) ---
+diff --git a/tests/checkers/unittest_similar.py b/tests/checkers/unittest_similar.py
+@@ -502,3 +502,11 @@ def test_get_map_data() -> None:
++
++
++def test_set_duplicate_lines_to_zero() -> None:
++    output = StringIO()
++    with redirect_stdout(output), pytest.raises(SystemExit) as ex:
++        similar.Run(["--duplicates=0", SIMILAR1, SIMILAR2])
++    assert ex.value.code == 0
++    assert output.getvalue() == ""
+
+##########################################################################################
+## [0410] pylint-dev__pylint-4970 · systematic-debugging | B=uncertain
+files: patch=pylint/checkers/similar.py | gold=pylint/checkers/similar.py | test=tests/checkers/unittest_similar.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.0
+signals: eq=2 is=0 in=0 raises=1 new_tests_in_f2p=all conflict=False status=patch
+evidence: 已包含append_stream零阈值短路，与可通过方案关键行为相符；存在额外短路或CLI修改，但没有正式失败断言，主因保留待核。 | patch L9: +        if self.min_lines <= 0: | patch L10: +            return | patch L18: +        if self.min_lines <= 0:
+F2P: tests/checkers/unittest_similar.py::test_set_duplicate_lines_to_zero
+--- FINAL PATCH ---
+diff --git a/pylint/checkers/similar.py b/pylint/checkers/similar.py
+index c65b1c89..1986409e 100644
+--- a/pylint/checkers/similar.py
++++ b/pylint/checkers/similar.py
+@@ -390,6 +390,8 @@ class Similar:
+ 
+     def run(self) -> None:
+         """start looking for similarities and display results on stdout"""
++        if self.min_lines <= 0:
++            return
+         self._display_sims(self._compute_sims())
+ 
+     def _compute_sims(self) -> List[Tuple[int, Set[LinesChunkLimits_T]]]:
+@@ -830,6 +832,8 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
+ 
+     def close(self):
+         """compute and display similarities on closing (i.e. end of parsing)"""
++        if self.min_lines <= 0:
++            return
+         total = sum(len(lineset) for lineset in self.linesets)
+         duplicated = 0
+         stats = self.stats
+
+--- GOLD (headers/+ lines) ---
+diff --git a/pylint/checkers/similar.py b/pylint/checkers/similar.py
++++ b/pylint/checkers/similar.py
+@@ -390,6 +390,8 @@ def append_stream(self, streamid: str, stream: TextIO, encoding=None) -> None:
++        if self.min_lines == 0:
++            return
+--- TEST (headers/+ lines) ---
+diff --git a/tests/checkers/unittest_similar.py b/tests/checkers/unittest_similar.py
+@@ -502,3 +502,11 @@ def test_get_map_data() -> None:
++
++
++def test_set_duplicate_lines_to_zero() -> None:
++    output = StringIO()
++    with redirect_stdout(output), pytest.raises(SystemExit) as ex:
++        similar.Run(["--duplicates=0", SIMILAR1, SIMILAR2])
++    assert ex.value.code == 0
++    assert output.getvalue() == ""
+
+##########################################################################################
+## [0411] pylint-dev__pylint-4970 · verification-before-completion | B=uncertain
+files: patch=pylint/checkers/similar.py | gold=pylint/checkers/similar.py | test=tests/checkers/unittest_similar.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.0
+signals: eq=2 is=0 in=0 raises=1 new_tests_in_f2p=all conflict=False status=patch
+evidence: 已包含append_stream零阈值短路，与可通过方案关键行为相符；存在额外短路或CLI修改，但没有正式失败断言，主因保留待核。 | patch L9: +        if self.min_lines == 0: | patch L10: +            return | patch L18: +        if self.min_lines == 0:
+F2P: tests/checkers/unittest_similar.py::test_set_duplicate_lines_to_zero
+--- FINAL PATCH ---
+diff --git a/pylint/checkers/similar.py b/pylint/checkers/similar.py
+index c65b1c89..5f47ed74 100644
+--- a/pylint/checkers/similar.py
++++ b/pylint/checkers/similar.py
+@@ -390,6 +390,8 @@ class Similar:
+ 
+     def run(self) -> None:
+         """start looking for similarities and display results on stdout"""
++        if self.min_lines == 0:
++            return
+         self._display_sims(self._compute_sims())
+ 
+     def _compute_sims(self) -> List[Tuple[int, Set[LinesChunkLimits_T]]]:
+@@ -830,6 +832,8 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
+ 
+     def close(self):
+         """compute and display similarities on closing (i.e. end of parsing)"""
++        if self.min_lines == 0:
++            return
+         total = sum(len(lineset) for lineset in self.linesets)
+         duplicated = 0
+         stats = self.stats
+@@ -889,7 +893,7 @@ def Run(argv=None):
+     if argv is None:
+         argv = sys.argv[1:]
+ 
+-    s_opts = "hdi"
++    s_opts = "hd:i"
+     l_opts = (
+         "help",
+         "duplicates=",
+
+--- GOLD (headers/+ lines) ---
+diff --git a/pylint/checkers/similar.py b/pylint/checkers/similar.py
++++ b/pylint/checkers/similar.py
+@@ -390,6 +390,8 @@ def append_stream(self, streamid: str, stream: TextIO, encoding=None) -> None:
++        if self.min_lines == 0:
++            return
+--- TEST (headers/+ lines) ---
+diff --git a/tests/checkers/unittest_similar.py b/tests/checkers/unittest_similar.py
+@@ -502,3 +502,11 @@ def test_get_map_data() -> None:
++
++
++def test_set_duplicate_lines_to_zero() -> None:
++    output = StringIO()
++    with redirect_stdout(output), pytest.raises(SystemExit) as ex:
++        similar.Run(["--duplicates=0", SIMILAR1, SIMILAR2])
++    assert ex.value.code == 0
++    assert output.getvalue() == ""
+
+##########################################################################################
+## [0413] psf__requests-1766 · code-simplification | B=uncertain
+files: patch=requests/auth.py | gold=requests/auth.py | test=test_requests.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.0
+signals: eq=0 is=0 in=1 raises=0 new_tests_in_f2p=all conflict=True status=patch
+evidence: 同实例存在规范化后完全相同补丁却成功的运行。未跑完整套件只是观察，不能解释相同补丁的不同判定；优先保留评测链冲突标记，暂不归因于修复或提交行为。 | patch L16: +            noncebit = "%s:%s:%s:%s:%s" % (nonce, ncvalue, cnonce, 'auth', HA2) | patch L25: +            base += ', qop="auth", nc=%s, cnonce="%s"' % (ncvalue, cnonce)
+F2P: test_requests.py::RequestsTestCase::test_DIGESTAUTH_QUOTES_QOP_VALUE | test_requests.py::RequestsTestCase::test_HTTP_200_OK_GET_ALTERNATIVE | test_requests.py::RequestsTestCase::test_cookie_sent_on_redirect | test_requests.py::RequestsTestCase::test_custom_content_type | test_requests.py::RequestsTestCase::test_params_are_merged_case_sensitive | test_requests.py::RequestsTestCase::test_user_agent_transfers
+--- FINAL PATCH ---
+diff --git a/requests/auth.py b/requests/auth.py
+index a3de123..f2a4270 100644
+--- a/requests/auth.py
++++ b/requests/auth.py
+@@ -120,13 +120,13 @@ class HTTPDigestAuth(AuthBase):
+         s += os.urandom(8)
+ 
+         cnonce = (hashlib.sha1(s).hexdigest()[:16])
+-        noncebit = "%s:%s:%s:%s:%s" % (nonce, ncvalue, cnonce, qop, HA2)
+         if _algorithm == 'MD5-SESS':
+             HA1 = hash_utf8('%s:%s:%s' % (HA1, nonce, cnonce))
+ 
+         if qop is None:
+             respdig = KD(HA1, "%s:%s" % (nonce, HA2))
+         elif qop == 'auth' or 'auth' in qop.split(','):
++            noncebit = "%s:%s:%s:%s:%s" % (nonce, ncvalue, cnonce, 'auth', HA2)
+             respdig = KD(HA1, noncebit)
+         else:
+             # XXX handle auth-int.
+@@ -144,7 +144,7 @@ class HTTPDigestAuth(AuthBase):
+         if entdig:
+             base += ', digest="%s"' % entdig
+         if qop:
+-            base += ', qop=auth, nc=%s, cnonce="%s"' % (ncvalue, cnonce)
++            base += ', qop="auth", nc=%s, cnonce="%s"' % (ncvalue, cnonce)
+ 
+         return 'Digest %s' % (base)
+ 
+
+--- GOLD (headers/+ lines) ---
+diff --git a/requests/auth.py b/requests/auth.py
++++ b/requests/auth.py
+@@ -105,7 +105,7 @@ def sha_utf8(x):
++
+@@ -144,7 +144,7 @@ def sha_utf8(x):
++            base += ', qop="auth", nc=%s, cnonce="%s"' % (ncvalue, cnonce)
+--- TEST (headers/+ lines) ---
+diff --git a/test_requests.py b/test_requests.py
+@@ -320,6 +320,14 @@ def test_DIGESTAUTH_WRONG_HTTP_401_GET(self):
++    def test_DIGESTAUTH_QUOTES_QOP_VALUE(self):
++
++        auth = HTTPDigestAuth('user', 'pass')
++        url = httpbin('digest-auth', 'auth', 'user', 'pass')
++
++        r = requests.get(url, auth=auth)
++        assert '"auth"' in r.request.headers['Authorization']
++
+
+##########################################################################################
+## [0414] psf__requests-1724 · python-error-handling | B=uncertain
+files: patch=requests/models.py | gold=requests/sessions.py | test=test_requests.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=1 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=True status=patch
+evidence: 同实例存在规范化后完全相同补丁却成功的运行。未跑完整套件只是观察，不能解释相同补丁的不同判定；优先保留评测链冲突标记，暂不归因于修复或提交行为。 | patch L10: +            self.method = to_native_string(self.method.upper())
+F2P: test_requests.py::RequestsTestCase::test_DIGEST_AUTH_RETURNS_COOKIE | test_requests.py::RequestsTestCase::test_DIGEST_HTTP_200_OK_GET | test_requests.py::RequestsTestCase::test_different_encodings_dont_break_post | test_requests.py::RequestsTestCase::test_generic_cookiejar_works | test_requests.py::RequestsTestCase::test_uppercase_scheme_redirect | test_requests.py::RequestsTestCase::test_user_agent_transfers
+--- FINAL PATCH ---
+diff --git a/requests/models.py b/requests/models.py
+index f82f56a..2d49061 100644
+--- a/requests/models.py
++++ b/requests/models.py
+@@ -307,7 +307,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         """Prepares the given HTTP method."""
+         self.method = method
+         if self.method is not None:
+-            self.method = self.method.upper()
++            self.method = to_native_string(self.method.upper())
+ 
+     def prepare_url(self, url, params):
+         """Prepares the given HTTP URL."""
+
+--- GOLD (headers/+ lines) ---
+diff --git a/requests/sessions.py b/requests/sessions.py
++++ b/requests/sessions.py
+@@ -12,7 +12,7 @@
++from .compat import cookielib, OrderedDict, urljoin, urlparse, urlunparse, builtin_str
+@@ -309,6 +309,9 @@ def request(self, method, url,
++
++        method = builtin_str(method)
++
+--- TEST (headers/+ lines) ---
+diff --git a/test_requests.py b/test_requests.py
+@@ -433,6 +433,11 @@ def test_unicode_multipart_post_fieldnames(self):
++    
++    def test_unicode_method_name(self):
++        files = {'file': open('test_requests.py', 'rb')}
++        r = requests.request(method=u'POST', url=httpbin('post'), files=files)
++        assert r.status_code == 200
+
+##########################################################################################
+## [0415] psf__requests-1766 · python-error-handling | B=uncertain
+files: patch=requests/auth.py | gold=requests/auth.py | test=test_requests.py
+overlap: exact=True subset=True disjoint=False touched_gold=1/1 func_jaccard=0.0
+signals: eq=0 is=0 in=1 raises=0 new_tests_in_f2p=all conflict=True status=patch
+evidence: 同实例存在规范化后完全相同补丁却成功的运行。未跑完整套件只是观察，不能解释相同补丁的不同判定；优先保留评测链冲突标记，暂不归因于修复或提交行为。 | patch L16: +            noncebit = "%s:%s:%s:%s:%s" % (nonce, ncvalue, cnonce, 'auth', HA2) | patch L25: +            base += ', qop="auth", nc=%s, cnonce="%s"' % (ncvalue, cnonce)
+F2P: test_requests.py::RequestsTestCase::test_DIGESTAUTH_QUOTES_QOP_VALUE | test_requests.py::RequestsTestCase::test_HTTP_200_OK_GET_ALTERNATIVE | test_requests.py::RequestsTestCase::test_cookie_sent_on_redirect | test_requests.py::RequestsTestCase::test_custom_content_type | test_requests.py::RequestsTestCase::test_params_are_merged_case_sensitive | test_requests.py::RequestsTestCase::test_user_agent_transfers
+--- FINAL PATCH ---
+diff --git a/requests/auth.py b/requests/auth.py
+index a3de123..f2a4270 100644
+--- a/requests/auth.py
++++ b/requests/auth.py
+@@ -120,13 +120,13 @@ class HTTPDigestAuth(AuthBase):
+         s += os.urandom(8)
+ 
+         cnonce = (hashlib.sha1(s).hexdigest()[:16])
+-        noncebit = "%s:%s:%s:%s:%s" % (nonce, ncvalue, cnonce, qop, HA2)
+         if _algorithm == 'MD5-SESS':
+             HA1 = hash_utf8('%s:%s:%s' % (HA1, nonce, cnonce))
+ 
+         if qop is None:
+             respdig = KD(HA1, "%s:%s" % (nonce, HA2))
+         elif qop == 'auth' or 'auth' in qop.split(','):
++            noncebit = "%s:%s:%s:%s:%s" % (nonce, ncvalue, cnonce, 'auth', HA2)
+             respdig = KD(HA1, noncebit)
+         else:
+             # XXX handle auth-int.
+@@ -144,7 +144,7 @@ class HTTPDigestAuth(AuthBase):
+         if entdig:
+             base += ', digest="%s"' % entdig
+         if qop:
+-            base += ', qop=auth, nc=%s, cnonce="%s"' % (ncvalue, cnonce)
++            base += ', qop="auth", nc=%s, cnonce="%s"' % (ncvalue, cnonce)
+ 
+         return 'Digest %s' % (base)
+ 
+
+--- GOLD (headers/+ lines) ---
+diff --git a/requests/auth.py b/requests/auth.py
++++ b/requests/auth.py
+@@ -105,7 +105,7 @@ def sha_utf8(x):
++
+@@ -144,7 +144,7 @@ def sha_utf8(x):
++            base += ', qop="auth", nc=%s, cnonce="%s"' % (ncvalue, cnonce)
+--- TEST (headers/+ lines) ---
+diff --git a/test_requests.py b/test_requests.py
+@@ -320,6 +320,14 @@ def test_DIGESTAUTH_WRONG_HTTP_401_GET(self):
++    def test_DIGESTAUTH_QUOTES_QOP_VALUE(self):
++
++        auth = HTTPDigestAuth('user', 'pass')
++        url = httpbin('digest-auth', 'auth', 'user', 'pass')
++
++        r = requests.get(url, auth=auth)
++        assert '"auth"' in r.request.headers['Authorization']
++

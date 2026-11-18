@@ -1,0 +1,162 @@
+diff --git a/django/contrib/contenttypes/fields.py b/django/contrib/contenttypes/fields.py
+index 5b327b6ae4..8b0ba6f8d7 100644
+--- a/django/contrib/contenttypes/fields.py
++++ b/django/contrib/contenttypes/fields.py
+@@ -13,6 +13,7 @@ from django.db.models.fields.related import (
+     ReverseManyToOneDescriptor,
+     lazy_related_operation,
+ )
++from django.db.models.fields.related_descriptors import _filter_prefetch_queryset
+ from django.db.models.query_utils import PathInfo
+ from django.db.models.sql import AND
+ from django.db.models.sql.where import WhereNode
+@@ -605,7 +606,20 @@ def create_generic_related_manager(superclass, rel):
+             Filter the queryset for the instance this manager is bound to.
+             """
+             db = self._db or router.db_for_read(self.model, instance=self.instance)
+-            return queryset.using(db).filter(**self.core_filters)
++            queryset = queryset.using(db)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset.filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++                return queryset
++            return queryset.filter(**self.core_filters)
+ 
+         def _remove_prefetched_objects(self):
+             try:
+@@ -645,7 +659,7 @@ def create_generic_related_manager(superclass, rel):
+             object_id_converter = instances[0]._meta.pk.to_python
+             content_type_id_field_name = "%s_id" % self.content_type_field_name
+             return (
+-                queryset.filter(query),
++                _filter_prefetch_queryset(queryset, query, self.object_id_field_name),
+                 lambda relobj: (
+                     object_id_converter(getattr(relobj, self.object_id_field_name)),
+                     getattr(relobj, content_type_id_field_name),
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index b192df4fbf..0d63981797 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -65,7 +65,8 @@ and two directions (forward and reverse) for a total of six combinations.
+ 
+ from django.core.exceptions import FieldError
+ from django.db import connections, router, transaction
+-from django.db.models import Q, signals
++from django.db.models import Q, Window, signals
++from django.db.models.functions import RowNumber
+ from django.db.models.query import QuerySet
+ from django.db.models.query_utils import DeferredAttribute
+ from django.db.models.utils import resolve_callables
+@@ -609,6 +610,38 @@ class ReverseManyToOneDescriptor:
+         )
+ 
+ 
++def _filter_prefetch_queryset(queryset, predicate, partition_by):
++    if not queryset.query.is_sliced:
++        return queryset.filter(predicate)
++    # The queryset is sliced. A slice cannot be applied after the filter that
++    # restricts the queryset to the related objects, so retrieve the related
++    # objects per parent object using a window function that numbers the rows
++    # independently for each parent and then keep only the rows covered by the
++    # slice.
++    low_mark = queryset.query.low_mark
++    high_mark = queryset.query.high_mark
++    ordering = queryset.query.order_by
++    if not ordering and queryset.query.default_ordering:
++        ordering = queryset.model._meta.ordering
++    if not ordering:
++        ordering = ("pk",)
++    queryset = queryset._chain()
++    queryset.query.clear_limits()
++    queryset = queryset.filter(predicate)
++    queryset = queryset.annotate(
++        _prefetch_related_row_number=Window(
++            RowNumber(),
++            partition_by=partition_by,
++            order_by=ordering,
++        )
++    )
++    if low_mark:
++        queryset = queryset.filter(_prefetch_related_row_number__gt=low_mark)
++    if high_mark is not None:
++        queryset = queryset.filter(_prefetch_related_row_number__lte=high_mark)
++    return queryset
++
++
+ def create_reverse_many_to_one_manager(superclass, rel):
+     """
+     Create a manager for the reverse side of a many-to-one relation.
+@@ -662,8 +695,20 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             queryset._add_hints(instance=self.instance)
+             if self._db:
+                 queryset = queryset.using(self._db)
+-            queryset._defer_next_filter = True
+-            queryset = queryset.filter(**self.core_filters)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset.filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++            else:
++                queryset._defer_next_filter = True
++                queryset = queryset.filter(**self.core_filters)
+             for field in self.field.foreign_related_fields:
+                 val = getattr(self.instance, field.attname)
+                 if val is None or (val == "" and empty_strings_as_null):
+@@ -718,8 +763,8 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             rel_obj_attr = self.field.get_local_related_value
+             instance_attr = self.field.get_foreign_related_value
+             instances_dict = {instance_attr(inst): inst for inst in instances}
+-            query = {"%s__in" % self.field.name: instances}
+-            queryset = queryset.filter(**query)
++            predicate = Q(**{f"{self.field.name}__in": instances})
++            queryset = _filter_prefetch_queryset(queryset, predicate, self.field.name)
+ 
+             # Since we just bypassed this class' get_queryset(), we must manage
+             # the reverse relation manually.
+@@ -1028,6 +1073,18 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=self.instance)
+             if self._db:
+                 queryset = queryset.using(self._db)
++            if queryset.query.is_sliced:
++                # Filter first and re-apply the slice afterwards, as filtering
++                # a sliced queryset is not allowed.
++                low_mark, high_mark = (
++                    queryset.query.low_mark,
++                    queryset.query.high_mark,
++                )
++                queryset = queryset._chain()
++                queryset.query.clear_limits()
++                queryset = queryset._next_is_sticky().filter(**self.core_filters)
++                queryset.query.set_limits(low_mark, high_mark)
++                return queryset
+             queryset._defer_next_filter = True
+             return queryset._next_is_sticky().filter(**self.core_filters)
+ 
+@@ -1051,8 +1108,10 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
+ 
+-            query = {"%s__in" % self.query_field_name: instances}
+-            queryset = queryset._next_is_sticky().filter(**query)
++            predicate = Q(**{f"{self.query_field_name}__in": instances})
++            queryset = _filter_prefetch_queryset(
++                queryset._next_is_sticky(), predicate, self.query_field_name
++            )
+ 
+             # M2M: need to annotate the query in order to get the primary model
+             # that the secondary model was actually related to. We know that

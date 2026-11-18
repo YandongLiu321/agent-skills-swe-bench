@@ -1,0 +1,126 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..034b1059 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -39,6 +39,75 @@ def _astroid_wrapper(func, modname):
+     return None
+ 
+ 
++def _infer_annotation(annotation):
++    """Infer the type of an annotation.
++
++    Return an empty set if the annotation is missing or cannot be inferred.
++    """
++    if annotation is None:
++        return set()
++    try:
++        return set(annotation.infer())
++    except astroid.InferenceError:
++        return set()
++
++
++def _function_arguments(frame):
++    """Yield the name and annotation of all arguments of a function."""
++    args = frame.args
++    if args is None:
++        return
++    for arg, annotation in zip(args.args or (), args.annotations or ()):
++        yield arg.name, annotation
++    for arg, annotation in zip(
++        getattr(args, "posonlyargs", ()) or (),
++        getattr(args, "posonlyargs_annotations", ()) or (),
++    ):
++        yield arg.name, annotation
++    for arg, annotation in zip(
++        args.kwonlyargs or (), args.kwonlyargs_annotations or ()
++    ):
++        yield arg.name, annotation
++    if args.vararg:
++        yield args.vararg, args.varargannotation
++    if args.kwarg:
++        yield args.kwarg, args.kwargannotation
++
++
++def _assignment_annotation(node):
++    """Return the inferred annotation types for the value assigned to an attribute.
++
++    This handles the common ``self.attribute = argument`` pattern where the
++    argument itself is annotated (PEP 484).
++    """
++    assign = node.parent
++    if not isinstance(assign, astroid.Assign):
++        return set()
++    value = assign.value
++    if not isinstance(value, astroid.Name):
++        return set()
++    frame = value.frame()
++    if not isinstance(frame, astroid.FunctionDef):
++        return set()
++    for name, annotation in _function_arguments(frame):
++        if name == value.name:
++            return _infer_annotation(annotation)
++    return set()
++
++
++def _argument_annotation(node):
++    """Return the inferred annotation types of an argument node."""
++    if not isinstance(node.parent, astroid.Arguments):
++        return set()
++    frame = node.frame()
++    if not isinstance(frame, astroid.FunctionDef):
++        return set()
++    for name, annotation in _function_arguments(frame):
++        if name == node.name:
++            return _infer_annotation(annotation)
++    return set()
++
++
+ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+     """Return an iterator on interfaces implemented by the given class node."""
+     try:
+@@ -176,6 +245,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         """visit an astroid.Function node
+ 
+         * set the locals_type mapping
++        * take the arguments type hints into account
+         * optionally tag the node with a unique id
+         """
+         if hasattr(node, "locals_type"):
+@@ -183,6 +253,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         node.locals_type = collections.defaultdict(list)
+         if self.tag:
+             node.uid = self.generate_id()
++        for name, annotation in _function_arguments(node):
++            annotation_types = _infer_annotation(annotation)
++            if not annotation_types:
++                continue
++            node.locals_type[name] = list(annotation_types)
+ 
+     link_project = visit_project
+     link_module = visit_module
+@@ -218,7 +293,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            if isinstance(node.parent, astroid.AnnAssign):
++                annotation_types = _infer_annotation(node.parent.annotation)
++            else:
++                annotation_types = _argument_annotation(node)
++            values = annotation_types or set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +309,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            if isinstance(node.parent, astroid.AnnAssign):
++                annotation_types = _infer_annotation(node.parent.annotation)
++            else:
++                annotation_types = _assignment_annotation(node)
++            values = annotation_types or set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:

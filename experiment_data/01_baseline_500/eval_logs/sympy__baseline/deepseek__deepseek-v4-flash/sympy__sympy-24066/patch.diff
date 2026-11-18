@@ -1,0 +1,40 @@
+diff --git a/sympy/physics/units/unitsystem.py b/sympy/physics/units/unitsystem.py
+index 3daf84c108..c4f6fc113a 100755
+--- a/sympy/physics/units/unitsystem.py
++++ b/sympy/physics/units/unitsystem.py
+@@ -172,15 +172,20 @@ def _collect_factor_and_dimension(self, expr):
+             return factor ** exp_factor, dim ** (exp_factor * exp_dim)
+         elif isinstance(expr, Add):
+             factor, dim = self._collect_factor_and_dimension(expr.args[0])
++            dim_sys = self.get_dimension_system()
+             for addend in expr.args[1:]:
+                 addend_factor, addend_dim = \
+                     self._collect_factor_and_dimension(addend)
+-                if dim != addend_dim:
++                if dim != addend_dim and not (
++                        dim_sys.is_dimensionless(dim)
++                        and dim_sys.is_dimensionless(addend_dim)):
+                     raise ValueError(
+                         'Dimension of "{}" is {}, '
+                         'but it should be {}'.format(
+                             addend, addend_dim, dim))
+                 factor += addend_factor
++            if dim_sys.is_dimensionless(dim):
++                dim = Dimension(1)
+             return factor, dim
+         elif isinstance(expr, Derivative):
+             factor, dim = self._collect_factor_and_dimension(expr.args[0])
+@@ -192,8 +197,12 @@ def _collect_factor_and_dimension(self, expr):
+         elif isinstance(expr, Function):
+             fds = [self._collect_factor_and_dimension(
+                 arg) for arg in expr.args]
++            dims = [d[1] for d in fds]
++            if all(self.get_dimension_system().is_dimensionless(dim)
++                   for dim in dims):
++                return expr.func(*(f[0] for f in fds)), Dimension(1)
+             return (expr.func(*(f[0] for f in fds)),
+-                    *(d[1] for d in fds))
++                    *dims)
+         elif isinstance(expr, Dimension):
+             return S.One, expr
+         else:

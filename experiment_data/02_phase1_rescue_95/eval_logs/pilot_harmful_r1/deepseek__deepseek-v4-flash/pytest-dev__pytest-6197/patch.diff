@@ -1,0 +1,31 @@
+diff --git a/src/_pytest/python.py b/src/_pytest/python.py
+index 306e5f217..cc9bc4ca1 100644
+--- a/src/_pytest/python.py
++++ b/src/_pytest/python.py
+@@ -441,7 +441,17 @@ class Module(nodes.File, PyCollector):
+         )
+ 
+     def _getobj(self):
+-        return self._importtestmodule()
++        mod = self._importtestmodule()
++        # Importing a test module also imports its parent packages.  Use
++        # them to populate package-level markers without importing packages
++        # which contain no test modules at all.
++        if not isinstance(self, Package):
++            package = self.getparent(Package)
++            while package is not None:
++                package._mount_obj_if_needed()
++                parent = package.parent
++                package = parent.getparent(Package) if parent is not None else None
++        return mod
+ 
+     def collect(self):
+         self._inject_setup_module_fixture()
+@@ -639,7 +649,6 @@ class Package(Module):
+         return path in self.session._initialpaths
+ 
+     def collect(self):
+-        self._mount_obj_if_needed()
+         this_path = self.fspath.dirpath()
+         init_module = this_path.join("__init__.py")
+         if init_module.check(file=1) and path_matches_patterns(

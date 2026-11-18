@@ -1,0 +1,105 @@
+diff --git a/doc/usage/restructuredtext/domains.rst b/doc/usage/restructuredtext/domains.rst
+index 23844886e..f3c5b4e24 100644
+--- a/doc/usage/restructuredtext/domains.rst
++++ b/doc/usage/restructuredtext/domains.rst
+@@ -329,6 +329,13 @@ The following directives are provided for module and class contents:
+ 
+       Indicate the property is abstract.
+ 
++   .. rst:directive:option:: classmethod
++      :type: no value
++
++      Indicate the property is a class method.
++
++      .. versionadded:: 4.2
++
+    .. rst:directive:option:: type: type of the property
+       :type: text
+ 
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..4708104e3 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -865,9 +866,12 @@ class PyProperty(PyObject):
+         return fullname, prefix
+ 
+     def get_signature_prefix(self, sig: str) -> str:
+-        prefix = ['property']
++        prefix = []
+         if 'abstractmethod' in self.options:
+-            prefix.insert(0, 'abstract')
++            prefix.append('abstract')
++        if 'classmethod' in self.options:
++            prefix.append('classmethod')
++        prefix.append('property')
+ 
+         return ' '.join(prefix) + ' '
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..d9aebc350 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -2666,6 +2666,19 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+     def document_members(self, all_members: bool = False) -> None:
+         pass
+ 
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++        if not ret:
++            return ret
++
++        # a classmethod-wrapped property is imported as its value via
++        # getattr(), so use the property object defined in the class instead.
++        obj = self.parent.__dict__.get(self.object_name) if self.parent else None
++        if inspect.isclassmethod(obj) and inspect.isproperty(obj.__func__):
++            self.object = obj.__func__
++
++        return ret
++
+     def get_real_modname(self) -> str:
+         real_modname = self.get_attr(self.parent or self.object, '__module__', None)
+         return real_modname or self.modname
+@@ -2675,6 +2688,8 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         sourcename = self.get_sourcename()
+         if inspect.isabstractmethod(self.object):
+             self.add_line('   :abstractmethod:', sourcename)
++        if self.parent and inspect.isclassmethod(self.parent.__dict__.get(self.object_name)):
++            self.add_line('   :classmethod:', sourcename)
+ 
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..7b795b024 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -17,8 +17,8 @@ from sphinx.deprecation import RemovedInSphinx50Warning
+ from sphinx.ext.autodoc.mock import ismock, undecorate
+ from sphinx.pycode import ModuleAnalyzer, PycodeError
+ from sphinx.util import logging
+-from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isenumclass,
+-                                 safe_getattr)
++from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isclassmethod,
++                                 isenumclass, isproperty, safe_getattr)
+ 
+ if False:
+     # For type annotation
+@@ -281,6 +281,11 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+             unmangled = unmangle(subject, name)
+             if unmangled and unmangled not in members:
+                 if name in obj_dict:
++                    # a classmethod-wrapped property returns its value via
++                    # getattr(), so use the property object instead.
++                    obj = obj_dict[name]
++                    if isclassmethod(obj) and isproperty(obj.__func__):
++                        value = obj.__func__
+                     members[unmangled] = ObjectMember(unmangled, value, class_=subject)
+                 else:
+                     members[unmangled] = ObjectMember(unmangled, value)

@@ -1,0 +1,76 @@
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..fbdd9580b 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -229,9 +229,71 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
++    if sep == ",":
++        return _split_csv(string)
+     return [word.strip() for word in string.split(sep) if word.strip()]
+ 
+ 
++def _split_csv(value: str) -> list[str]:
++    """Split a comma separated string.
++
++    Commas can be escaped with a backslash (``\\,``) or a value can be quoted.
++    This makes it possible to use values containing commas, for example
++    ``(foo{1,3})`` (as ``(foo{1\\,3})`` or ``"(foo{1,3})"``).
++    """
++    values: list[str] = []
++    current: list[str] = []
++    quote_char: str | None = None
++    escaped = False
++    index = 0
++    while index < len(value):
++        char = value[index]
++        if quote_char is not None:
++            if char == quote_char:
++                if index + 1 < len(value) and value[index + 1] == quote_char:
++                    current.append(char)
++                    index += 2
++                    continue
++                quote_char = None
++            else:
++                current.append(char)
++            index += 1
++            continue
++        if escaped:
++            if char == ",":
++                current.append(",")
++            else:
++                current.append("\\")
++                current.append(char)
++            escaped = False
++            index += 1
++            continue
++        if char == "\\":
++            escaped = True
++            index += 1
++            continue
++        if char == '"' and all(character.isspace() for character in current):
++            quote_char = char
++            current = []
++            index += 1
++            continue
++        if char == ",":
++            field = "".join(current).strip()
++            if field:
++                values.append(field)
++            current = []
++            index += 1
++            continue
++        current.append(char)
++        index += 1
++    if escaped:
++        current.append("\\")
++    field = "".join(current).strip()
++    if field:
++        values.append(field)
++    return values
++
++
+ def _unquote(string: str) -> str:
+     """Remove optional quotes (simple or double) from the string.
+ 

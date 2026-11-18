@@ -1,0 +1,102 @@
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..3ba7ba1ae 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,10 +1,15 @@
+ from __future__ import annotations
+ 
++import os
+ import re
++from contextlib import contextmanager
++from contextvars import ContextVar
+ from typing import TYPE_CHECKING, Any, cast
+ 
++from docutils import io as docutils_io
+ from docutils import nodes
+ from docutils.parsers.rst import directives
++from docutils.parsers.rst.directives import misc as docutils_misc
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+ from docutils.parsers.rst.directives.misc import Class
+ from docutils.parsers.rst.directives.misc import Include as BaseInclude
+@@ -19,9 +24,12 @@ from sphinx.util.matching import Matcher, patfilter
+ from sphinx.util.nodes import explicit_title_re
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Iterator
++
+     from docutils.nodes import Element, Node
+ 
+     from sphinx.application import Sphinx
++    from sphinx.environment import BuildEnvironment
+     from sphinx.util.typing import OptionSpec
+ 
+ 
+@@ -29,6 +37,54 @@ glob_re = re.compile(r'.*[*?\[].*')
+ logger = logging.getLogger(__name__)
+ 
+ 
++_source_read_context: ContextVar[tuple[BuildEnvironment, str, str] | None] = ContextVar(
++    '_source_read_context', default=None,
++)
++
++
++class _SourceReadFileInput(docutils_io.FileInput):
++    """A file input that emits a ``source-read`` event on reading."""
++
++    def read(self) -> str:
++        content = super().read()
++
++        context = _source_read_context.get()
++        if context is not None:
++            env, docname, source_path = context
++            if (self.source_path is not None
++                    and os.path.abspath(self.source_path) == source_path):
++                source = [content]
++                env.events.emit('source-read', docname, source)
++                content = source[0]
++
++        return content
++
++
++class _SourceReadIO:
++    """A proxy for ``docutils.io`` used while reading included files."""
++
++    FileInput = _SourceReadFileInput
++
++    def __getattr__(self, name: str) -> Any:
++        return getattr(docutils_io, name)
++
++
++@contextmanager
++def _source_read_include(
++    env: BuildEnvironment, docname: str, filename: str,
++) -> Iterator[None]:
++    """Emit a ``source-read`` event while *filename* is read by docutils."""
++    source_path = os.path.abspath(filename)
++    token = _source_read_context.set((env, docname, source_path))
++    previous_io = docutils_misc.io
++    docutils_misc.io = _SourceReadIO()
++    try:
++        yield
++    finally:
++        docutils_misc.io = previous_io
++        _source_read_context.reset(token)
++
++
+ def int_or_nothing(argument: str) -> int:
+     if not argument:
+         return 999
+@@ -376,7 +432,12 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++
++        # Emit source-read for the included file when it is a document,
++        # or for the including document otherwise.
++        docname = self.env.path2doc(filename) or self.env.docname
++        with _source_read_include(self.env, docname, filename):
++            return super().run()
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:

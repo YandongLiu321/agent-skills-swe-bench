@@ -1,0 +1,131 @@
+diff --git a/doc/usage/restructuredtext/domains.rst b/doc/usage/restructuredtext/domains.rst
+index 23844886e..bb816d6f8 100644
+--- a/doc/usage/restructuredtext/domains.rst
++++ b/doc/usage/restructuredtext/domains.rst
+@@ -329,6 +329,20 @@ The following directives are provided for module and class contents:
+ 
+       Indicate the property is abstract.
+ 
++   .. rst:directive:option:: classmethod
++      :type: no value
++
++      Indicate the property is a class method.
++
++      .. versionadded:: 4.2
++
++   .. rst:directive:option:: staticmethod
++      :type: no value
++
++      Indicate the property is a static method.
++
++      .. versionadded:: 4.2
++
+    .. rst:directive:option:: type: type of the property
+       :type: text
+ 
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..f9665d6ac 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,8 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
++        'staticmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -868,6 +870,10 @@ class PyProperty(PyObject):
+         prefix = ['property']
+         if 'abstractmethod' in self.options:
+             prefix.insert(0, 'abstract')
++        if 'classmethod' in self.options:
++            prefix.insert(0, 'class')
++        if 'staticmethod' in self.options:
++            prefix.insert(0, 'static')
+ 
+         return ' '.join(prefix) + ' '
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..370f509e4 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -12,7 +12,7 @@
+ 
+ import re
+ import warnings
+-from inspect import Parameter, Signature
++from inspect import Parameter, Signature, getattr_static
+ from types import ModuleType
+ from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence,
+                     Set, Tuple, Type, TypeVar, Union)
+@@ -2670,11 +2670,38 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         real_modname = self.get_attr(self.parent or self.object, '__module__', None)
+         return real_modname or self.modname
+ 
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++        if not ret:
++            return ret
++
++        # A classmethod- or staticmethod-wrapped property is fetched as the value
++        # of the property getter when accessed via getattr().  Retrieve the
++        # original property object from the class to document it as a property.
++        try:
++            obj = getattr_static(self.parent, self.object_name)
++        except AttributeError:
++            obj = None
++
++        if isinstance(obj, (classmethod, staticmethod)) and inspect.isproperty(obj.__func__):
++            self.object = obj.__func__
++
++        return ret
++
+     def add_directive_header(self, sig: str) -> None:
+         super().add_directive_header(sig)
+         sourcename = self.get_sourcename()
++        try:
++            obj = getattr_static(self.parent, self.object_name)
++        except AttributeError:
++            obj = self.object
++
+         if inspect.isabstractmethod(self.object):
+             self.add_line('   :abstractmethod:', sourcename)
++        if inspect.isclassmethod(obj):
++            self.add_line('   :classmethod:', sourcename)
++        if inspect.isstaticmethod(obj, cls=self.parent, name=self.object_name):
++            self.add_line('   :staticmethod:', sourcename)
+ 
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..8bcf6c7a4 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -11,6 +11,7 @@
+ import importlib
+ import traceback
+ import warnings
++from inspect import getattr_static
+ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+ 
+ from sphinx.deprecation import RemovedInSphinx50Warning
+@@ -278,6 +279,17 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+             if ismock(value):
+                 value = undecorate(value)
+ 
++            try:
++                # a classmethod-wrapped property is replaced by the value of the
++                # getter when accessed via getattr().  Obtain the original
++                # property object to make it documentable.
++                descriptor = getattr_static(subject, name)
++                if (isinstance(descriptor, (classmethod, staticmethod)) and
++                        isinstance(descriptor.__func__, property)):
++                    value = descriptor.__func__
++            except AttributeError:
++                pass
++
+             unmangled = unmangle(subject, name)
+             if unmangled and unmangled not in members:
+                 if name in obj_dict:

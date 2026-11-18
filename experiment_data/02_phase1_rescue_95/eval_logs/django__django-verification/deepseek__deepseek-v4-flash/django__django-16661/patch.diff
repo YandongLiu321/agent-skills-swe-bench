@@ -1,0 +1,43 @@
+diff --git a/django/contrib/admin/options.py b/django/contrib/admin/options.py
+index 5240b07cd6..a3c29a7e00 100644
+--- a/django/contrib/admin/options.py
++++ b/django/contrib/admin/options.py
+@@ -454,6 +454,13 @@ class BaseModelAdmin(metaclass=forms.MediaDefiningClass):
+ 
+         relation_parts = []
+         prev_field = None
++        # A part that refers to the target field of the previous relation is
++        # redundant with the relation itself (e.g. employee__department__id is
++        # the same as employee__department_id), but only if it's the last
++        # traversable field. Otherwise it stands for a join (e.g.
++        # restaurant__place__country where place is the primary key of
++        # Restaurant) and must be kept.
++        pending_part = None
+         for part in lookup.split(LOOKUP_SEP):
+             try:
+                 field = model._meta.get_field(part)
+@@ -461,13 +468,21 @@ class BaseModelAdmin(metaclass=forms.MediaDefiningClass):
+                 # Lookups on nonexistent fields are ok, since they're ignored
+                 # later.
+                 break
++            if pending_part is not None:
++                # The pending part turned out to be traversed further on, so
++                # it wasn't redundant.
++                relation_parts.append(pending_part)
++                pending_part = None
+             # It is allowed to filter on values that would be found from local
+             # model anyways. For example, if you filter on employee__department__id,
+             # then the id value would be found already from employee__department_id.
+-            if not prev_field or (
+-                prev_field.is_relation
+-                and field not in prev_field.path_infos[-1].target_fields
++            if (
++                prev_field
++                and prev_field.is_relation
++                and field in prev_field.path_infos[-1].target_fields
+             ):
++                pending_part = part
++            else:
+                 relation_parts.append(part)
+             if not getattr(field, "path_infos", None):
+                 # This is not a relational field, so further parts

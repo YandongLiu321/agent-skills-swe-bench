@@ -1,0 +1,36 @@
+diff --git a/pylint/lint/run.py b/pylint/lint/run.py
+index a7e5d557..e915e96f 100644
+--- a/pylint/lint/run.py
++++ b/pylint/lint/run.py
+@@ -58,7 +58,12 @@ def _query_cpu() -> int | None:
+             cpu_shares = int(file.read().rstrip())
+         # For AWS, gives correct value * 1024.
+         avail_cpu = int(cpu_shares / 1024)
+-    return avail_cpu
++    if avail_cpu is not None:
++        # The number of available CPUs must be at least 1, otherwise
++        # multiprocessing will crash (e.g. in a container with a very low
++        # ``cpu.shares`` value).
++        return max(avail_cpu, 1)
++    return None
+ 
+ 
+ def _cpu_count() -> int:
+@@ -76,7 +81,7 @@ def _cpu_count() -> int:
+     else:
+         cpu_count = 1
+     if cpu_share is not None:
+-        return min(cpu_share, cpu_count)
++        return max(min(cpu_share, cpu_count), 1)
+     return cpu_count
+ 
+ 
+@@ -182,7 +187,7 @@ group are mutually exclusive.",
+                 )
+                 linter.set_option("jobs", 1)
+             elif linter.config.jobs == 0:
+-                linter.config.jobs = _cpu_count()
++                linter.config.jobs = _cpu_count() or 1
+ 
+         if self._output:
+             try:

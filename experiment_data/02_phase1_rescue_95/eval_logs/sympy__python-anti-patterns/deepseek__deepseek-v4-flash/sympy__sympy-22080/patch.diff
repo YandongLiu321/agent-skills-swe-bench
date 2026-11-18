@@ -1,0 +1,47 @@
+diff --git a/sympy/printing/pycode.py b/sympy/printing/pycode.py
+index b669a2c783..36c190778b 100644
+--- a/sympy/printing/pycode.py
++++ b/sympy/printing/pycode.py
+@@ -5,8 +5,9 @@
+ """
+ from collections import defaultdict
+ from itertools import chain
+-from sympy.core import S
+-from .precedence import precedence
++from sympy.core import S, Mod
++from sympy.functions.elementary.integers import frac
++from .precedence import precedence, PRECEDENCE
+ from .codeprinter import CodePrinter
+ 
+ _kw_py2and3 = {
+@@ -232,6 +233,30 @@ def _print_NegativeInfinity(self, expr):
+     def _print_ComplexInfinity(self, expr):
+         return self._print_NaN(expr)
+ 
++    def parenthesize(self, item, level, strict=False):
++        # The modulo operator ``%`` has the same precedence as the
++        # multiplication operator ``*`` and a lower precedence than the unary
++        # minus operator in Python.  Since ``Mod`` (and ``frac``) are printed
++        # using ``%`` they therefore have to be wrapped in parentheses whenever
++        # they are used as a factor of a product (e.g. ``-Mod(x, y)`` must be
++        # printed as ``-(x % y)`` and not as ``-x % y``).
++        if level >= PRECEDENCE["Add"] and self._mod_is_percent(item):
++            return "(%s)" % self._print(item)
++        return super().parenthesize(item, level, strict)
++
++    def _mod_is_percent(self, item):
++        # True when ``item`` is a modulus-like function which this printer
++        # renders with the infix ``%`` operator (as opposed to a function call,
++        # e.g. ``numpy.mod`` or ``mpmath.frac``).
++        if type(self)._print_Mod is not AbstractPythonCodePrinter._print_Mod:
++            return False
++        if isinstance(item, Mod):
++            return True
++        if isinstance(item, frac):
++            return getattr(type(self), '_print_frac', None) is \
++                PythonCodePrinter._print_frac
++        return False
++
+     def _print_Mod(self, expr):
+         PREC = precedence(expr)
+         return ('{} % {}'.format(*map(lambda x: self.parenthesize(x, PREC), expr.args)))

@@ -1,0 +1,705 @@
+
+##########################################################################################
+## [0024] django__django-11532 · debugging-and-error-recovery | B=incomplete_patch
+files: patch=django/core/mail/message.py | gold=django/core/mail/message.py;django/core/mail/utils.py;django/core/validators.py;django/utils/encoding.py;django/utils/html.py | test=tests/mail/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/5 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 仅在Message-ID消费点做IDNA转换，CachedDnsName仍缓存非ASCII主机名；SMTP EHLO复用该缓存时触发UnicodeEncodeError。 | patch L10: +            dns_name = force_str(DNS_NAME) | patch L11: +            try: | patch L12: +                dns_name.encode('ascii')
+F2P: test_non_ascii_dns_non_unicode_email (mail.tests.MailTests)
+--- FINAL PATCH ---
+diff --git a/django/core/mail/message.py b/django/core/mail/message.py
+index e393b4cf5c..ccfe262faf 100644
+--- a/django/core/mail/message.py
++++ b/django/core/mail/message.py
+@@ -257,7 +257,12 @@ class EmailMessage:
+             msg['Date'] = formatdate(localtime=settings.EMAIL_USE_LOCALTIME)
+         if 'message-id' not in header_names:
+             # Use cached DNS_NAME for performance
+-            msg['Message-ID'] = make_msgid(domain=DNS_NAME)
++            dns_name = force_str(DNS_NAME)
++            try:
++                dns_name.encode('ascii')
++            except UnicodeEncodeError:
++                dns_name = dns_name.encode('idna').decode('ascii')
++            msg['Message-ID'] = make_msgid(domain=dns_name)
+         for name, value in self.extra_headers.items():
+             if name.lower() != 'from':  # From is already handled
+                 msg[name] = value
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/core/mail/message.py b/django/core/mail/message.py
++++ b/django/core/mail/message.py
+@@ -16,7 +16,7 @@
++from django.utils.encoding import force_str, punycode
+@@ -102,10 +102,7 @@ def sanitize_address(addr, encoding):
++    domain = punycode(domain)
+diff --git a/django/core/mail/utils.py b/django/core/mail/utils.py
++++ b/django/core/mail/utils.py
+@@ -4,6 +4,8 @@
++from django.utils.encoding import punycode
++
+@@ -13,7 +15,7 @@ def __str__(self):
++            self._fqdn = punycode(socket.getfqdn())
+diff --git a/django/core/validators.py b/django/core/validators.py
++++ b/django/core/validators.py
+@@ -5,6 +5,7 @@
++from django.utils.encoding import punycode
+@@ -124,7 +125,7 @@ def __call__(self, value):
++                    netloc = punycode(netloc)  # IDN -> ACE
+@@ -199,7 +200,7 @@ def __call__(self, value):
++                domain_part = punycode(domain_part)
+diff --git a/django/utils/encoding.py b/django/utils/encoding.py
++++ b/django/utils/encoding.py
+@@ -218,6 +218,11 @@ def escape_uri_path(path):
++def punycode(domain):
++    """Return the Punycode of the given domain if it's non-ASCII."""
++    return domain.encode('idna').decode('ascii')
++
++
+diff --git a/django/utils/html.py b/django/utils/html.py
++++ b/django/utils/html.py
+@@ -8,6 +8,7 @@
++from django.utils.encoding import punycode
+@@ -210,7 +211,7 @@ def unquote_quote(segment):
++        netloc = punycode(netloc)  # IDN -> ACE
+@@ -319,7 +320,7 @@ def is_email_simple(value):
++                    domain = punycode(domain)
+--- TEST (headers/+ lines) ---
+diff --git a/tests/mail/tests.py b/tests/mail/tests.py
+@@ -14,10 +14,11 @@
++from unittest import mock
++    DNS_NAME, EmailMessage, EmailMultiAlternatives, mail_admins, mail_managers,
+@@ -365,6 +366,13 @@ def test_none_body(self):
++    @mock.patch('socket.getfqdn', return_value='漢字')
++    def test_non_ascii_dns_non_unicode_email(self, mocked_getfqdn):
++        delattr(DNS_NAME, '_fqdn')
++        email = EmailMessage('subject', 'content', 'from@example.com', ['to@example.com'])
++        email.encoding = 'iso-8859-1'
++        self.assertIn('@xn--p8s937b>', email.message()['Message-ID'])
++
+
+##########################################################################################
+## [0026] django__django-14011 · debugging-and-error-recovery | B=incomplete_patch
+files: patch=django/core/servers/basehttp.py | gold=django/core/servers/basehttp.py;django/db/backends/sqlite3/features.py | test=django/test/testcases.py;tests/servers/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 仅在请求线程finally中关闭连接，遗漏connections_override传递及可覆盖的_close_connections钩子；LiveServer共享连接与关闭测试接口不完整。 | patch L9: +from django.db import connections | patch L19: +    def process_request_thread(self, request, client_address): | patch L21: +        try:
+F2P: test_live_server_url_is_class_property (servers.tests.LiveServerAddress) | Data written to the database by a view can be read. | Fixtures are properly loaded and visible to the live server thread. | test_check_model_instance_from_subview (servers.tests.LiveServerThreadedTests) | test_view_calls_subview (servers.tests.LiveServerThreadedTests) | test_404 (servers.tests.LiveServerViews) | A HTTP 1.1 server is supposed to support keep-alive. Since our | test_environ (servers.tests.LiveServerViews) | test_keep_alive_connection_clears_previous_request_data (servers.tests.LiveServerViews) | See `test
+...[truncated 436 chars]
+--- FINAL PATCH ---
+diff --git a/django/core/servers/basehttp.py b/django/core/servers/basehttp.py
+index 14dab517c9..f4b28f1a39 100644
+--- a/django/core/servers/basehttp.py
++++ b/django/core/servers/basehttp.py
+@@ -16,6 +16,7 @@ from wsgiref import simple_server
+ from django.core.exceptions import ImproperlyConfigured
+ from django.core.handlers.wsgi import LimitedStream
+ from django.core.wsgi import get_wsgi_application
++from django.db import connections
+ from django.utils.module_loading import import_string
+ 
+ __all__ = ('WSGIServer', 'WSGIRequestHandler')
+@@ -79,7 +80,16 @@ class WSGIServer(simple_server.WSGIServer):
+ 
+ class ThreadedWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
+     """A threaded version of the WSGIServer"""
+-    daemon_threads = True
++
++    def process_request_thread(self, request, client_address):
++        # See https://code.djangoproject.com/ticket/32485
++        try:
++            super().process_request_thread(request, client_address)
++        finally:
++            # Make sure DB connections are closed after each request so that
++            # they don't remain open in the thread and prevent the test
++            # database from being dropped.
++            connections.close_all()
+ 
+ 
+ class ServerHandler(simple_server.ServerHandler):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/core/servers/basehttp.py b/django/core/servers/basehttp.py
++++ b/django/core/servers/basehttp.py
+@@ -16,6 +16,7 @@
++from django.db import connections
+@@ -81,6 +82,28 @@ class ThreadedWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
++    def __init__(self, *args, connections_override=None, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.connections_override = connections_override
++
++    # socketserver.ThreadingMixIn.process_request() passes this method as
++    # the target to a new Thread object.
++    def process_request_thread(self, request, client_address):
++        if self.connections_override:
++            # Override this thread's database connections with the ones
++            # provided by the parent thread.
++            for alias, conn in self.connections_override.items():
++                connections[alias] = conn
++        super().process_request_thread(request, client_address)
++
++    def _close_connections(self):
++        # Used for mocking in tests.
++        connections.close_all()
++
++    def close_request(self, request):
++        self._close_connections()
++        super().close_request(request)
++
+diff --git a/django/db/backends/sqlite3/features.py b/django/db/backends/sqlite3/features.py
++++ b/django/db/backends/sqlite3/features.py
+@@ -83,6 +83,7 @@ def django_test_skips(self):
++                    'servers.tests.LiveServerTestCloseConnectionTest.test_closes_connections',
+--- TEST (headers/+ lines) ---
+diff --git a/django/test/testcases.py b/django/test/testcases.py
+@@ -1513,11 +1513,12 @@ def run(self):
++    def _create_server(self, connections_override=None):
++            connections_override=connections_override,
+@@ -1553,21 +1554,28 @@ def allowed_host(cls):
++    def _make_connections_override(cls):
++        return connections_override
++    @classmethod
++    def setUpClass(cls):
++        super().setUpClass()
++
++        connections_override = cls._make_connections_override()
++        for conn in connections_override.values():
++            # Explicitly enable thread-shareability for this connection.
++            conn.inc_thread_sharing()
++
+@@ -1593,7 +1601,7 @@ def _create_server_thread(cls, connections_override):
++        # Restore shared connections' non-shareability.
+diff --git a/tests/servers/tests.py b/tests/servers/tests.py
+@@ -4,13 +4,15 @@
++import threading
++from django.core.servers.basehttp import ThreadedWSGIServer, WSGIServer
++from django.db import DEFAULT_DB_ALIAS, connections
+@@ -40,6 +42,71 @@ def urlopen(self, url):
++class CloseConnectionTestServer(ThreadedWSGIServer):
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        # This event is set right after the first time a request closes its
++        # database connections.
++        self._connections_closed = threading.Event()
++
++    def _close_connections(self):
++        super()._close_connections()
++        self._connections_closed.set()
++
++
++class CloseConnectionTestLiveServerThread(LiveServerThread):
++
++    server_class = CloseConnectionTestServer
++
++    def _create_server(self, connections_override=None):
++        return super()._create_server(connections_override=self.connections_override)
++
++
++class LiveServerTestCloseConnectionTest(LiveServerBase):
++
++    server_thread_class = CloseConnectionTestLiveServerThread
++
++    @classmethod
++    def _make_connections_override(cls):
++        conn = connections[DEFAULT_DB_ALIAS]
++        cls.conn = conn
++        cls.old_conn_max_age = conn.settings_dict['CONN_MAX_AGE']
++        # Set the connection's CONN_MAX_AGE to None to simulate the
++        # CONN_MAX_AGE setting being set to None on the server. This prevents
++        # Django from closing the connection and allows testing that
++        # ThreadedWSGIServer closes connections.
++        conn.settings_dict['CONN_MAX_AGE'] = None
++        # Pass a database connection through to the server to check it is being
++        # closed by ThreadedWSGIServer.
++ 
+...[truncated 1114 chars]
+
+##########################################################################################
+## [0028] django__django-14792 · debugging-and-error-recovery | B=wrong_location
+files: patch=django/db/backends/mysql/operations.py;django/db/backends/oracle/operations.py;django/db/backends/postgresql/operations.py;django/db/backends/sqlite3/base.py;django/db/backends/utils.py | gold=django/utils/timezone.py | test=tests/utils_tests/test_timezone.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 消息97-164把修复集中到 MySQL/Oracle/PostgreSQL/SQLite 及新工具函数，没有修改根因所在 django/utils/timezone.py；消息170-248进行了大量后端测试和反复修订；消息252-261最终仍提交五个后端文件，遗漏 gold 的 `_get_timezone_name()` 修复，评测 resolved=0。
+F2P: The _get_timezone_name() helper must return the offset for fixed offset | test_is_aware (utils_tests.test_timezone.TimezoneTests)
+--- FINAL PATCH ---
+diff --git a/django/db/backends/mysql/operations.py b/django/db/backends/mysql/operations.py
+index 89730cee29..f00eee3b05 100644
+--- a/django/db/backends/mysql/operations.py
++++ b/django/db/backends/mysql/operations.py
+@@ -2,6 +2,7 @@ import uuid
+ 
+ from django.conf import settings
+ from django.db.backends.base.operations import BaseDatabaseOperations
++from django.db.backends.utils import is_tzname_delta
+ from django.utils import timezone
+ from django.utils.encoding import force_str
+ 
+@@ -76,10 +77,11 @@ class DatabaseOperations(BaseDatabaseOperations):
+             return "DATE(%s)" % (field_name)
+ 
+     def _prepare_tzname_delta(self, tzname):
+-        if '+' in tzname:
+-            return tzname[tzname.find('+'):]
+-        elif '-' in tzname:
+-            return tzname[tzname.find('-'):]
++        if is_tzname_delta(tzname):
++            if '+' in tzname:
++                return tzname[tzname.find('+'):]
++            elif '-' in tzname:
++                return tzname[tzname.find('-'):]
+         return tzname
+ 
+     def _convert_field_to_tz(self, field_name, tzname):
+diff --git a/django/db/backends/oracle/operations.py b/django/db/backends/oracle/operations.py
+index 4cfc7da070..b1483b7bd8 100644
+--- a/django/db/backends/oracle/operations.py
++++ b/django/db/backends/oracle/operations.py
+@@ -5,7 +5,7 @@ from functools import lru_cache
+ from django.conf import settings
+ from django.db import DatabaseError, NotSupportedError
+ from django.db.backends.base.operations import BaseDatabaseOperations
+-from django.db.backends.utils import strip_quotes, truncate_name
++from django.db.backends.utils import is_tzname_delta, strip_quotes, truncate_name
+ from django.db.models import AutoField, Exists, ExpressionWrapper, Lookup
+ from django.db.models.expressions import RawSQL
+ from django.db.models.sql.where import WhereNode
+@@ -108,10 +108,11 @@ END;
+     _tzname_re = _lazy_re_compile(r'^[\w/:+-]+$')
+ 
+     def _prepare_tzname_delta(self, tzname):
+-        if '+' in tzname:
+-            return tzname[tzname.find('+'):]
+-        elif '-' in tzname:
+-            return tzname[tzname.find('-'):]
++        if is_tzname_delta(tzname):
++            if '+' in tzname:
++                return tzname[tzname.find('+'):]
++            elif '-' in tzname:
++                return tzname[tzname.find('-'):]
+         return tzname
+ 
+     def _convert_field_to_tz(self, field_name, tzname):
+diff --git a/django/db/backends/postgresql/operations.py b/django/db/backends/postgresql/operations.py
+index 8d19872bea..79ce6e8942 100644
+--- a/django/db/backends/postgresql/operations.py
++++ b/django/db/backends/postgresql/operations.py
+@@ -2,6 +2,7 @@ from psycopg2.extras import Inet
+ 
+ from django.conf import settings
+ from django.db.backends.base.operations import BaseDatabaseOperations
++from django.db.backends.utils import is_tzname_delta
+ 
+ 
+ class DatabaseOperations(BaseDatabaseOperations):
+@@ -44,10 +45,11 @@ class DatabaseOperations(BaseDatabaseOperations):
+         return "DATE_TRUNC('%s', %s)" % (lookup_type, field_name)
+ 
+     def _prepare_tzname_delta(self, tzname):
+-        if '+' in tzname:
+-            return tzname.replace('+', '-')
+-        elif '-' in tzname:
+-            return tzname.replace('-', '+')
++        if is_tzname_delta(tzname):
++            if '+' in tzname:
++                return tzname.replace('+', '-')
++            elif '-' in tzname:
++                return tzname.replace('-', '+')
+         return tzname
+ 
+     def _convert_field_to_tz(self, field_name, tzname):
+diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py
+index a64190f0d0..47f30becc0 100644
+--- a/django/db/backends/sqlite3/base.py
++++ b/django/db/backends/sqlite3/base.py
+@@ -433,14 +433,21 @@ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if conn_tzname:
+         dt = dt.replace(tzinfo=pytz.timezone(conn_tzname))
+     if tzname is not None and tzname != conn_tzname:
+-        sign_index = tzname.find('+') + tzname.find('-') + 1
+-        if sign_index > -1:
+-            sign = tzname[sign_index]
+-            tzname, offset = tzname.split(sign)
+-            if offset:
+-                hours, minutes = offset.split(':')
+-                offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
+-                dt += offset_delta if sign == '+' else -offset_delta
++        if backend_utils.is_tzname_delta(tzname):
++            sign_index = tzname.find('+') + tzname.find('-') + 1
++            if sign_index > -1:
++                sign = tzname[sign_index]
++                tzname, offset = tzname.split(sign)
++                if offset:
++                    if ':' in offset:
++                        hours, minutes = offset.split(':')
++                    elif len(offset) > 2:
++                        hours, minutes = offset[:2], offset[2:]
++                    else:
++                        hours, minutes = offset, 0
++                    offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
++                    dt += offset_delta if sign == '+' else -offset_delta
++                    tzname = tzname or 'UTC'
+         dt = timezone.localtime(dt, pytz.timezone(tzname))
+     return dt
+ 
+diff --git a/django/db/backends/utils.py b/django/db/backends/utils.py
+index c342cf79b5..efc6f2e210 100644
+--- a/django/db/backends/utils.py
++++ b/django/db/backends/utils.py
+@@ -11,6 +11,15 @@ from django.db import NotSupportedError
+ logger = logging.getLogger('django.db.backends')
+ 
+ 
++def is_tzname_delta(tzname):
++    """
++    Return True if tzname represents a fixed UTC offset (a "delta"), e.g.
++    '+05:00', '-0517' or 'UTC+05:00'. IANA time zone names such as
++    'Etc/GMT-10' are not deltas even though they contain a sign.
++    """
++    return tzname.startswith(('+', '-')) or tzname.startswith(('UTC+', 'UTC-'))
++
++
+ class CursorWrapper:
+     def __init__(self, cursor, db):
+         self.cursor = cursor
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/utils/timezone.py b/django/utils/timezone.py
++++ b/django/utils/timezone.py
+@@ -72,8 +72,11 @@ def get_current_timezone_name():
++    """
++    Return the offset for fixed offset timezones, or the name of timezone if
++    not set.
++    """
++    return timezone.tzname(None) or str(timezone)
+--- TEST (headers/+ lines) ---
+diff --git a/tests/utils_tests/test_timezone.py b/tests/utils_tests/test_timezone.py
+@@ -260,6 +260,31 @@ def test_make_aware_zoneinfo_non_existent(self):
++    def test_get_timezone_name(self):
++        """
++        The _get_timezone_name() helper must return the offset for fixed offset
++        timezones, for usage with Trunc DB functions.
++
++        The datetime.timezone examples show the current behavior.
++        """
++        tests = [
++            # datetime.timezone, fixed offset with and without `name`.
++            (datetime.timezone(datetime.timedelta(hours=10)), 'UTC+10:00'),
++            (datetime.timezone(datetime.timedelta(hours=10), name='Etc/GMT-10'), 'Etc/GMT-10'),
++            # pytz, named and fixed offset.
++            (pytz.timezone('Europe/Madrid'), 'Europe/Madrid'),
++            (pytz.timezone('Etc/GMT-10'), '+10'),
++        ]
++        if HAS_ZONEINFO:
++            tests += [
++                # zoneinfo, named and fixed offset.
++                (zoneinfo.ZoneInfo('Europe/Madrid'), 'Europe/Madrid'),
++                (zoneinfo.ZoneInfo('Etc/GMT-10'), '+10'),
++            ]
++        for tz, expected in tests:
++            with self.subTest(tz=tz, expected=expected):
++                self.assertEqual(timezone._get_timezone_name(tz), expected)
++
+
+##########################################################################################
+## [0048] django__django-11532 · django-patterns | B=other
+files: patch= | gold=django/core/mail/message.py;django/core/mail/utils.py;django/core/validators.py;django/utils/encoding.py;django/utils/html.py | test=tests/mail/tests.py
+overlap: exact=False subset=False disjoint=False touched_gold=0/5 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=limits_exceeded
+evidence: 未形成有效补丁，运行以LimitsExceeded结束；保留具体运行终止原因，不自动视为错误修复或过早提交。 | No valid diff; exit=LimitsExceeded
+F2P: test_non_ascii_dns_non_unicode_email (mail.tests.MailTests)
+--- FINAL PATCH ---
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/core/mail/message.py b/django/core/mail/message.py
++++ b/django/core/mail/message.py
+@@ -16,7 +16,7 @@
++from django.utils.encoding import force_str, punycode
+@@ -102,10 +102,7 @@ def sanitize_address(addr, encoding):
++    domain = punycode(domain)
+diff --git a/django/core/mail/utils.py b/django/core/mail/utils.py
++++ b/django/core/mail/utils.py
+@@ -4,6 +4,8 @@
++from django.utils.encoding import punycode
++
+@@ -13,7 +15,7 @@ def __str__(self):
++            self._fqdn = punycode(socket.getfqdn())
+diff --git a/django/core/validators.py b/django/core/validators.py
++++ b/django/core/validators.py
+@@ -5,6 +5,7 @@
++from django.utils.encoding import punycode
+@@ -124,7 +125,7 @@ def __call__(self, value):
++                    netloc = punycode(netloc)  # IDN -> ACE
+@@ -199,7 +200,7 @@ def __call__(self, value):
++                domain_part = punycode(domain_part)
+diff --git a/django/utils/encoding.py b/django/utils/encoding.py
++++ b/django/utils/encoding.py
+@@ -218,6 +218,11 @@ def escape_uri_path(path):
++def punycode(domain):
++    """Return the Punycode of the given domain if it's non-ASCII."""
++    return domain.encode('idna').decode('ascii')
++
++
+diff --git a/django/utils/html.py b/django/utils/html.py
++++ b/django/utils/html.py
+@@ -8,6 +8,7 @@
++from django.utils.encoding import punycode
+@@ -210,7 +211,7 @@ def unquote_quote(segment):
++        netloc = punycode(netloc)  # IDN -> ACE
+@@ -319,7 +320,7 @@ def is_email_simple(value):
++                    domain = punycode(domain)
+--- TEST (headers/+ lines) ---
+diff --git a/tests/mail/tests.py b/tests/mail/tests.py
+@@ -14,10 +14,11 @@
++from unittest import mock
++    DNS_NAME, EmailMessage, EmailMultiAlternatives, mail_admins, mail_managers,
+@@ -365,6 +366,13 @@ def test_none_body(self):
++    @mock.patch('socket.getfqdn', return_value='漢字')
++    def test_non_ascii_dns_non_unicode_email(self, mocked_getfqdn):
++        delattr(DNS_NAME, '_fqdn')
++        email = EmailMessage('subject', 'content', 'from@example.com', ['to@example.com'])
++        email.encoding = 'iso-8859-1'
++        self.assertIn('@xn--p8s937b>', email.message()['Message-ID'])
++
+
+##########################################################################################
+## [0061] django__django-15127 · django-perf-review | B=incomplete_patch
+files: patch=django/contrib/messages/storage/base.py | gold=django/contrib/messages/apps.py | test=tests/messages_tests/base.py;tests/messages_tests/tests.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 只让Message.level_tag动态读取，模块LEVEL_TAGS仍陈旧，未满足官方test_override_settings_level_tags的共享状态断言。 | 最终补丁第10行：+        return utils.get_level_tags().get(self.level, '')
+F2P: test_override_settings_level_tags (messages_tests.tests.TestLevelTags)
+--- FINAL PATCH ---
+diff --git a/django/contrib/messages/storage/base.py b/django/contrib/messages/storage/base.py
+index 01422066a6..a46c57cd53 100644
+--- a/django/contrib/messages/storage/base.py
++++ b/django/contrib/messages/storage/base.py
+@@ -38,7 +38,7 @@ class Message:
+ 
+     @property
+     def level_tag(self):
+-        return LEVEL_TAGS.get(self.level, '')
++        return utils.get_level_tags().get(self.level, '')
+ 
+ 
+ class BaseStorage:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/messages/apps.py b/django/contrib/messages/apps.py
++++ b/django/contrib/messages/apps.py
+@@ -1,7 +1,18 @@
++from django.contrib.messages.storage import base
++from django.contrib.messages.utils import get_level_tags
++from django.test.signals import setting_changed
++def update_level_tags(setting, **kwargs):
++    if setting == 'MESSAGE_TAGS':
++        base.LEVEL_TAGS = get_level_tags()
++
++
++
++    def ready(self):
++        setting_changed.connect(update_level_tags)
+--- TEST (headers/+ lines) ---
+diff --git a/tests/messages_tests/base.py b/tests/messages_tests/base.py
+@@ -1,7 +1,7 @@
++from django.contrib.messages import constants, get_level, set_level
++from django.contrib.messages.storage import default_storage
+@@ -22,20 +22,6 @@ def add_level_messages(storage):
+@@ -47,7 +33,7 @@ class BaseTests:
++        self.settings_override = override_settings(
+@@ -368,7 +354,7 @@ def test_level_tag(self):
++    @override_settings(MESSAGE_TAGS={
+diff --git a/tests/messages_tests/tests.py b/tests/messages_tests/tests.py
+@@ -1,8 +1,9 @@
++from django.contrib.messages.storage import base
++from django.test import SimpleTestCase, override_settings
+@@ -15,3 +16,18 @@ def test_eq(self):
++
++
++class TestLevelTags(SimpleTestCase):
++    message_tags = {
++        constants.INFO: 'info',
++        constants.DEBUG: '',
++        constants.WARNING: '',
++        constants.ERROR: 'bad',
++        constants.SUCCESS: '',
++        12: 'custom',
++    }
++
++    @override_settings(MESSAGE_TAGS=message_tags)
++    def test_override_settings_level_tags(self):
++        self.assertEqual(base.LEVEL_TAGS, self.message_tags)
+
+##########################################################################################
+## [0182] sphinx-doc__sphinx-8056 · python-error-handling | B=wrong_location
+files: patch=sphinx/util/docfields.py | gold=sphinx/ext/napoleon/docstring.py | test=tests/test_ext_napoleon_docstring.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 在util/docfields规避逗号误判，但Napoleon仍未生成分别命名的参数；正式NumpyDocstringTest.test_multiple_parameters失败，局部HTML能显示不等于转换契约通过。 | 最终补丁第1行：diff --git a/sphinx/util/docfields.py b/sphinx/util/docfields.py
+F2P: tests/test_ext_napoleon_docstring.py::NumpyDocstringTest::test_multiple_parameters
+--- FINAL PATCH ---
+diff --git a/sphinx/util/docfields.py b/sphinx/util/docfields.py
+index c07bc7f66..953baa704 100644
+--- a/sphinx/util/docfields.py
++++ b/sphinx/util/docfields.py
+@@ -322,6 +322,8 @@ class DocFieldTransformer:
+             if typedesc.is_typed:
+                 try:
+                     argtype, argname = fieldarg.split(None, 1)
++                    if argtype.endswith(','):
++                        raise ValueError
+                 except ValueError:
+                     pass
+                 else:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sphinx/ext/napoleon/docstring.py b/sphinx/ext/napoleon/docstring.py
++++ b/sphinx/ext/napoleon/docstring.py
+@@ -266,13 +266,16 @@ def _consume_field(self, parse_type: bool = True, prefer_type: bool = False
++    def _consume_fields(self, parse_type: bool = True, prefer_type: bool = False,
++                        multiple: bool = False) -> List[Tuple[str, str, List[str]]]:
++            if multiple and _name:
++                for name in _name.split(","):
++                    fields.append((name.strip(), _type, _desc))
++            elif _name or _type or _desc:
+@@ -681,10 +684,12 @@ def _parse_other_parameters_section(self, section: str) -> List[str]:
++            # Allow to declare multiple parameters at once (ex: x, y: int)
++            fields = self._consume_fields(multiple=True)
++            fields = self._consume_fields()
+--- TEST (headers/+ lines) ---
+diff --git a/tests/test_ext_napoleon_docstring.py b/tests/test_ext_napoleon_docstring.py
+@@ -1230,7 +1230,7 @@ class NumpyDocstringTest(BaseDocstringTest):
++        :Parameters: * **arg1** (:class:`str`) -- Extended description of arg1
+@@ -1337,6 +1337,32 @@ def test_parameters_with_class_reference(self):
++"""
++        self.assertEqual(expected, actual)
++
++    def test_multiple_parameters(self):
++        docstring = """\
++Parameters
++----------
++x1, x2 : array_like
++    Input arrays, description of ``x1``, ``x2``.
++
++"""
++
++        config = Config(napoleon_use_param=False)
++        actual = str(NumpyDocstring(docstring, config))
++        expected = """\
++:Parameters: **x1, x2** (:class:`array_like`) -- Input arrays, description of ``x1``, ``x2``.
++"""
++        self.assertEqual(expected, actual)
++
++        config = Config(napoleon_use_param=True)
++        actual = str(NumpyDocstring(dedent(docstring), config))
++        expected = """\
++:param x1: Input arrays, description of ``x1``, ``x2``.
++:type x1: :class:`array_like`
++:param x2: Input arrays, description of ``x1``, ``x2``.
++:type x2: :class:`array_like`
+
+##########################################################################################
+## [0210] sympy__sympy-17318 · debugging-and-error-recovery | B=wrong_location
+files: patch=sympy/simplify/radsimp.py | gold=sympy/simplify/radsimp.py;sympy/simplify/sqrtdenest.py | test=sympy/simplify/tests/test_sqrtdenest.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=3 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 只在radsimp底层避免空序列访问，调用者仍将返回值当有效匹配继续重写；正式test_issue_12420失败。 官方断言为_sqrt_match(4 + I) == []，因此不是仅有超时或网络问题。 | 最终补丁第1行：diff --git a/sympy/simplify/radsimp.py b/sympy/simplify/radsimp.py
+F2P: test_issue_12420
+--- FINAL PATCH ---
+diff --git a/sympy/simplify/radsimp.py b/sympy/simplify/radsimp.py
+index 216ae26204..37da7129de 100644
+--- a/sympy/simplify/radsimp.py
++++ b/sympy/simplify/radsimp.py
+@@ -1113,6 +1113,8 @@ def _split_gcd(*a):
+     >>> _split_gcd(55, 35, 22, 14, 77, 10)
+     (5, [55, 35, 10], [22, 14, 77])
+     """
++    if not a:
++        return S.One, [], []
+     g = a[0]
+     b1 = [g]
+     b2 = []
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/simplify/radsimp.py b/sympy/simplify/radsimp.py
++++ b/sympy/simplify/radsimp.py
+@@ -920,7 +920,7 @@ def handle(expr):
++    num and den are sum of terms whose squares are positive rationals.
+@@ -1061,9 +1061,9 @@ def denom_expand(expr, **hints):
++    Split an expression with terms whose squares are positive rationals
++    and a sum of terms with surds squared prime with g.
+diff --git a/sympy/simplify/sqrtdenest.py b/sympy/simplify/sqrtdenest.py
++++ b/sympy/simplify/sqrtdenest.py
+@@ -156,7 +156,8 @@ def _sqrt_match(p):
++        sqargs = [x**2 for x in pargs]
++        if all(sq.is_Rational and sq.is_positive for sq in sqargs):
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/simplify/tests/test_sqrtdenest.py b/sympy/simplify/tests/test_sqrtdenest.py
+@@ -1,5 +1,7 @@
++from sympy.simplify.sqrtdenest import _sqrt_match
++from sympy.core.expr import unchanged
+@@ -180,6 +182,12 @@ def test_issue_5653():
++def test_issue_12420():
++    I = S.ImaginaryUnit
++    assert _sqrt_match(4 + I) == []
++    assert sqrtdenest((3 - sqrt(2)*sqrt(4 + 3*I) + 3*I)/2) == I
++    e = 3 - sqrt(2)*sqrt(4 + I) + 3*I
++    assert sqrtdenest(e) == e
+
+##########################################################################################
+## [0348] pydata__xarray-6938 · debugging-and-error-recovery | B=incomplete_patch
+files: patch=xarray/core/dataset.py | gold=xarray/core/dataset.py;xarray/core/variable.py | test=xarray/tests/test_variable.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=1 is=1 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 消息34-39只在 Dataset.swap_dims() 调用处追加 shallow copy；消息43-50目标/局部测试通过，消息53-58提交仅 dataset.py。该方案未修复 IndexVariable.to_index_variable() 返回 self 的通用别名根因（gold 修改 variable.py），评测 resolved=0。
+F2P: xarray/tests/test_variable.py::TestIndexVariable::test_to_index_variable_copy
+--- FINAL PATCH ---
+diff --git a/xarray/core/dataset.py b/xarray/core/dataset.py
+index c775d05c..c55924fb 100644
+--- a/xarray/core/dataset.py
++++ b/xarray/core/dataset.py
+@@ -3772,7 +3772,7 @@ class Dataset(
+         for k, v in self.variables.items():
+             dims = tuple(dims_dict.get(dim, dim) for dim in v.dims)
+             if k in result_dims:
+-                var = v.to_index_variable()
++                var = v.to_index_variable().copy(deep=False)
+                 var.dims = dims
+                 if k in self._indexes:
+                     indexes[k] = self._indexes[k]
+
+--- GOLD (headers/+ lines) ---
+diff --git a/xarray/core/dataset.py b/xarray/core/dataset.py
++++ b/xarray/core/dataset.py
+@@ -3771,6 +3771,7 @@ def swap_dims(
++            var: Variable
+diff --git a/xarray/core/variable.py b/xarray/core/variable.py
++++ b/xarray/core/variable.py
+@@ -14,6 +14,7 @@
++    NoReturn,
+@@ -536,23 +537,23 @@ def values(self):
++    def to_base_variable(self) -> Variable:
++            self._dims, self._data, self._attrs, encoding=self._encoding, fastpath=True
++    def to_index_variable(self) -> IndexVariable:
++            self._dims, self._data, self._attrs, encoding=self._encoding, fastpath=True
++    def to_index(self) -> pd.Index:
+@@ -2879,13 +2880,13 @@ def equals(self, other, equiv=None):
++    def to_index_variable(self) -> IndexVariable:
++        return self.copy()
++    def to_index(self) -> pd.Index:
+@@ -2904,7 +2905,7 @@ def to_index(self):
++    def level_names(self) -> list[str] | None:
+@@ -2922,11 +2923,11 @@ def get_level_variable(self, level):
++    def name(self) -> Hashable:
++    def name(self, value) -> NoReturn:
+--- TEST (headers/+ lines) ---
+diff --git a/xarray/tests/test_variable.py b/xarray/tests/test_variable.py
+@@ -2422,6 +2422,15 @@ def test_rolling_window_errors(self):
++    def test_to_index_variable_copy(self) -> None:
++        # to_index_variable should return a copy
++        # https://github.com/pydata/xarray/issues/6931
++        a = IndexVariable("x", ["a"])
++        b = a.to_index_variable()
++        assert a is not b
++        b.dims = ("y",)
++        assert a.dims == ("x",)
++

@@ -1,0 +1,126 @@
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..4708104e3 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -865,9 +866,12 @@ class PyProperty(PyObject):
+         return fullname, prefix
+ 
+     def get_signature_prefix(self, sig: str) -> str:
+-        prefix = ['property']
++        prefix = []
+         if 'abstractmethod' in self.options:
+-            prefix.insert(0, 'abstract')
++            prefix.append('abstract')
++        if 'classmethod' in self.options:
++            prefix.append('classmethod')
++        prefix.append('property')
+ 
+         return ' '.join(prefix) + ' '
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..64ebf1e59 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -2666,6 +2666,32 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+     def document_members(self, all_members: bool = False) -> None:
+         pass
+ 
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++
++        # A classmethod wrapping a property is resolved to the value of the
++        # property when accessed through the class (since Python 3.9).  Restore
++        # the original property object to document it properly.
++        obj = self.get_original_object()
++        if inspect.isclassmethod(obj) and inspect.isproperty(obj.__func__):
++            self.object = obj.__func__
++
++        return ret
++
++    def get_original_object(self) -> Any:
++        """Get the original object from the class (or its bases)."""
++        if self.parent is None:
++            return self.object
++
++        for cls in inspect.getmro(self.parent):
++            try:
++                if self.object_name in cls.__dict__:
++                    return cls.__dict__[self.object_name]
++            except (AttributeError, TypeError):
++                pass
++
++        return self.object
++
+     def get_real_modname(self) -> str:
+         real_modname = self.get_attr(self.parent or self.object, '__module__', None)
+         return real_modname or self.modname
+@@ -2675,6 +2701,8 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         sourcename = self.get_sourcename()
+         if inspect.isabstractmethod(self.object):
+             self.add_line('   :abstractmethod:', sourcename)
++        if inspect.isclassmethod(self.get_original_object()):
++            self.add_line('   :classmethod:', sourcename)
+ 
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..14f50dde7 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -17,8 +17,8 @@ from sphinx.deprecation import RemovedInSphinx50Warning
+ from sphinx.ext.autodoc.mock import ismock, undecorate
+ from sphinx.pycode import ModuleAnalyzer, PycodeError
+ from sphinx.util import logging
+-from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isenumclass,
+-                                 safe_getattr)
++from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isclassmethod,
++                                 isenumclass, isproperty, safe_getattr, unwrap_all)
+ 
+ if False:
+     # For type annotation
+@@ -237,6 +237,21 @@ def get_object_members(subject: Any, objpath: List[str], attrgetter: Callable,
+     return members
+ 
+ 
++def get_descriptor(subject: Any, name: str, obj_dict: Dict[str, Any]) -> Any:
++    """Get the original descriptor for *name* defined in *subject* or its bases."""
++    if name in obj_dict:
++        return obj_dict[name]
++
++    for cls in getmro(subject):
++        try:
++            if name in cls.__dict__:
++                return cls.__dict__[name]
++        except AttributeError:
++            pass
++
++    return None
++
++
+ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+                       ) -> Dict[str, "ObjectMember"]:
+     """Get members and attributes of target class."""
+@@ -280,6 +295,15 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+ 
+             unmangled = unmangle(subject, name)
+             if unmangled and unmangled not in members:
++                # Since Python 3.9, classmethod can wrap a descriptor such as
++                # property.  In that case, accessing the attribute returns the
++                # value of the wrapped descriptor (not the descriptor itself).
++                # So take the wrapped descriptor from the class dictionary to
++                # keep its docstring.
++                descriptor = get_descriptor(subject, name, obj_dict)
++                if isclassmethod(descriptor) and isproperty(unwrap_all(descriptor)):
++                    value = unwrap_all(descriptor)
++
+                 if name in obj_dict:
+                     members[unmangled] = ObjectMember(unmangled, value, class_=subject)
+                 else:

@@ -1,0 +1,66 @@
+diff --git a/pylint/config/utils.py b/pylint/config/utils.py
+index 91e4ff86f..a0a0b369c 100644
+--- a/pylint/config/utils.py
++++ b/pylint/config/utils.py
+@@ -131,10 +131,21 @@ def _convert_option_to_argument(
+     )
+ 
+ 
++def _csv_escape(value: str) -> str:
++    """Quote a value so it is not split by the csv transformer.
++
++    A value only needs to be quoted when it contains a comma or a double quote.
++    Double quotes are doubled, as expected by the csv module.
++    """
++    if "," in value or '"' in value:
++        return '"' + value.replace('"', '""') + '"'
++    return value
++
++
+ def _parse_rich_type_value(value: Any) -> str:
+     """Parse rich (toml) types into strings."""
+     if isinstance(value, (list, tuple)):
+-        return ",".join(_parse_rich_type_value(i) for i in value)
++        return ",".join(_csv_escape(_parse_rich_type_value(i)) for i in value)
+     if isinstance(value, re.Pattern):
+         return str(value.pattern)
+     if isinstance(value, dict):
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..ef4089c72 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -16,6 +16,7 @@ except ImportError:  # isort < 5
+ 
+ import argparse
+ import codecs
++import csv
+ import os
+ import re
+ import sys
+@@ -229,7 +230,25 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    if len(sep) != 1:
++        # ``csv`` only supports single-character delimiters.
++        return [word.strip() for word in string.split(sep) if word.strip()]
++
++    # ``csv`` refuses unquoted newlines, but configuration values can span
++    # several lines. Replace them with a placeholder and restore them after
++    # parsing so that they are kept inside the resulting fields.
++    placeholder = "\x1f"
++    value = (
++        string.replace("\r\n", "\n")
++        .replace("\n", placeholder)
++        .replace("\r", placeholder)
++    )
++    fields = next(csv.reader([value], delimiter=sep, skipinitialspace=True), [])
++    return [
++        word.replace(placeholder, "\n").strip()
++        for word in fields
++        if word.replace(placeholder, "\n").strip()
++    ]
+ 
+ 
+ def _unquote(string: str) -> str:

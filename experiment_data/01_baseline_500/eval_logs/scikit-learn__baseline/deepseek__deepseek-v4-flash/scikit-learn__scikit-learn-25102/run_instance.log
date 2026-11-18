@@ -1,0 +1,342 @@
+2026-10-04 14:06:58,711 - INFO - Creating container for scikit-learn__scikit-learn-25102...
+2026-10-04 14:06:58,789 - INFO - Container for scikit-learn__scikit-learn-25102 created: e6344e93ccd65771d1dbbd7631bf9f55e55121575bb212734a2303387a0e58c0
+2026-10-04 14:06:58,962 - INFO - Container for scikit-learn__scikit-learn-25102 started: e6344e93ccd65771d1dbbd7631bf9f55e55121575bb212734a2303387a0e58c0
+2026-10-04 14:06:58,963 - INFO - Intermediate patch for scikit-learn__scikit-learn-25102 written to logs\run_evaluation\scikit-learn__baseline\deepseek__deepseek-v4-flash\scikit-learn__scikit-learn-25102\patch.diff, now applying to container...
+2026-10-04 14:06:59,075 - INFO - >>>>> Applied Patch:
+Checking patch sklearn/utils/_set_output.py...
+Applied patch sklearn/utils/_set_output.py cleanly.
+
+2026-10-04 14:06:59,671 - INFO - Git diff before:
+diff --git a/sklearn/utils/_set_output.py b/sklearn/utils/_set_output.py
+index 335773c6a..9652b8406 100644
+--- a/sklearn/utils/_set_output.py
++++ b/sklearn/utils/_set_output.py
+@@ -1,5 +1,6 @@
+ from functools import wraps
+ 
++import numpy as np
+ from scipy.sparse import issparse
+ 
+ from . import check_pandas_support
+@@ -7,11 +8,31 @@ from .._config import get_config
+ from ._available_if import available_if
+ 
+ 
++def _cast_dtypes(dataframe, dtypes, pd):
++    """Cast a dataframe to the requested dtypes.
++
++    If `dtypes` is a mapping, only the columns present in both the mapping and
++    the dataframe are cast. This makes it possible to preserve the dtypes of a
++    subset of the input columns, as done by feature selection transformers.
++    """
++    if isinstance(dtypes, pd.Series):
++        dtypes = dtypes.to_dict()
++
++    if isinstance(dtypes, dict):
++        columns = set(dataframe.columns)
++        dtypes = {col: dtype for col, dtype in dtypes.items() if col in columns}
++        if not dtypes:
++            return dataframe
++
++    return dataframe.astype(dtypes)
++
++
+ def _wrap_in_pandas_container(
+     data_to_wrap,
+     *,
+     columns,
+     index=None,
++    dtypes=None,
+ ):
+     """Create a Pandas DataFrame.
+ 
+@@ -36,6 +57,11 @@ def _wrap_in_pandas_container(
+     index : array-like, default=None
+         Index for data.
+ 
++    dtypes : dtype or dict, default=None
++        The dtypes to cast the dataframe to. If a dictionary mapping column
++        names to dtypes is provided, only the columns present in both the
++        mapping and the dataframe are cast.
++
+     Returns
+     -------
+     dataframe : DataFrame
+@@ -57,9 +83,14 @@ def _wrap_in_pandas_container(
+             data_to_wrap.columns = columns
+         if index is not None:
+             data_to_wrap.index = index
++        if dtypes is not None:
++            data_to_wrap = _cast_dtypes(data_to_wrap, dtypes, pd)
+         return data_to_wrap
+ 
+-    return pd.DataFrame(data_to_wrap, index=index, columns=columns)
++    data_to_wrap = pd.DataFrame(data_to_wrap, index=index, columns=columns)
++    if dtypes is not None:
++        data_to_wrap = _cast_dtypes(data_to_wrap, dtypes, pd)
++    return data_to_wrap
+ 
+ 
+ def _get_output_config(method, estimator=None):
+@@ -96,6 +127,69 @@ def _get_output_config(method, estimator=None):
+     return {"dense": dense_config}
+ 
+ 
++def _get_dtypes_to_preserve(data_to_wrap, original_input, feature_names_out):
++    """Get the input dtypes that can be preserved in the wrapped output.
++
++    Only dtypes for columns whose values are unchanged by the transformer are
++    returned. Columns that are created by the transformer are left untouched.
++    """
++    input_dtypes = getattr(original_input, "dtypes", None)
++    if input_dtypes is None or feature_names_out is None:
++        return None
++
++    if issparse(data_to_wrap) or not hasattr(data_to_wrap, "shape"):
++        return None
++
++    if data_to_wrap.ndim != 2 or len(feature_names_out) != data_to_wrap.shape[1]:
++        return None
++
++    try:
++        import pandas as pd
++    except ImportError:
++        pd = None
++
++    dtypes = {}
++    input_columns = input_dtypes.index
++    for idx, name in enumerate(feature_names_out):
++        if name not in input_columns:
++            continue
++
++        try:
++            original_values = np.asarray(original_input[name])
++
++            if hasattr(data_to_wrap, "iloc"):
++                output_values = np.asarray(data_to_wrap.iloc[:, idx])
++            else:
++                output_values = np.asarray(data_to_wrap[:, idx])
++
++            original_dtype = input_dtypes.loc[name]
++        except Exception:
++            continue
++
++        if hasattr(original_dtype, "iloc") and hasattr(original_dtype, "index"):
++            # ``name`` may refer to duplicated columns in the input.
++            original_dtype = original_dtype.iloc[0]
++
++        if output_values.shape != original_values.shape:
++            continue
++
++        try:
++            if pd is not None:
++                original_is_na = pd.isna(original_values)
++                output_is_na = pd.isna(output_values)
++                if not np.array_equal(original_is_na, output_is_na):
++                    continue
++                original_values = original_values[~original_is_na]
++                output_values = output_values[~output_is_na]
++
++            if np.array_equal(original_values, output_values):
++                dtypes[name] = original_dtype
++        except Exception:
++            continue
++
++    return dtypes or None
++
++
+ def _wrap_data_with_container(method, data_to_wrap, original_input, estimator):
+     """Wrap output with container based on an estimator's or global config.
+ 
+@@ -127,10 +221,21 @@ def _wrap_data_with_container(method, data_to_wrap, original_input, estimator):
+         return data_to_wrap
+ 
+     # dense_config == "pandas"
++    dtypes = None
++    if hasattr(original_input, "dtypes"):
++        try:
++            feature_names_out = estimator.get_feature_names_out()
++        except Exception:
++            feature_names_out = None
++        dtypes = _get_dtypes_to_preserve(
++            data_to_wrap, original_input, feature_names_out
++        )
++
+     return _wrap_in_pandas_container(
+         data_to_wrap=data_to_wrap,
+         index=getattr(original_input, "index", None),
+         columns=estimator.get_feature_names_out,
++        dtypes=dtypes,
+     )
+2026-10-04 14:06:59,672 - INFO - Eval script for scikit-learn__scikit-learn-25102 written to logs\run_evaluation\scikit-learn__baseline\deepseek__deepseek-v4-flash\scikit-learn__scikit-learn-25102\eval.sh; copying to container...
+2026-10-04 14:07:06,500 - INFO - Test runtime: 6.78 seconds
+2026-10-04 14:07:06,501 - INFO - Test output for scikit-learn__scikit-learn-25102 written to logs\run_evaluation\scikit-learn__baseline\deepseek__deepseek-v4-flash\scikit-learn__scikit-learn-25102\test_output.txt
+2026-10-04 14:07:06,657 - INFO - Git diff after:
+diff --git a/sklearn/utils/_set_output.py b/sklearn/utils/_set_output.py
+index 335773c6a..9652b8406 100644
+--- a/sklearn/utils/_set_output.py
++++ b/sklearn/utils/_set_output.py
+@@ -1,5 +1,6 @@
+ from functools import wraps
+ 
++import numpy as np
+ from scipy.sparse import issparse
+ 
+ from . import check_pandas_support
+@@ -7,11 +8,31 @@ from .._config import get_config
+ from ._available_if import available_if
+ 
+ 
++def _cast_dtypes(dataframe, dtypes, pd):
++    """Cast a dataframe to the requested dtypes.
++
++    If `dtypes` is a mapping, only the columns present in both the mapping and
++    the dataframe are cast. This makes it possible to preserve the dtypes of a
++    subset of the input columns, as done by feature selection transformers.
++    """
++    if isinstance(dtypes, pd.Series):
++        dtypes = dtypes.to_dict()
++
++    if isinstance(dtypes, dict):
++        columns = set(dataframe.columns)
++        dtypes = {col: dtype for col, dtype in dtypes.items() if col in columns}
++        if not dtypes:
++            return dataframe
++
++    return dataframe.astype(dtypes)
++
++
+ def _wrap_in_pandas_container(
+     data_to_wrap,
+     *,
+     columns,
+     index=None,
++    dtypes=None,
+ ):
+     """Create a Pandas DataFrame.
+ 
+@@ -36,6 +57,11 @@ def _wrap_in_pandas_container(
+     index : array-like, default=None
+         Index for data.
+ 
++    dtypes : dtype or dict, default=None
++        The dtypes to cast the dataframe to. If a dictionary mapping column
++        names to dtypes is provided, only the columns present in both the
++        mapping and the dataframe are cast.
++
+     Returns
+     -------
+     dataframe : DataFrame
+@@ -57,9 +83,14 @@ def _wrap_in_pandas_container(
+             data_to_wrap.columns = columns
+         if index is not None:
+             data_to_wrap.index = index
++        if dtypes is not None:
++            data_to_wrap = _cast_dtypes(data_to_wrap, dtypes, pd)
+         return data_to_wrap
+ 
+-    return pd.DataFrame(data_to_wrap, index=index, columns=columns)
++    data_to_wrap = pd.DataFrame(data_to_wrap, index=index, columns=columns)
++    if dtypes is not None:
++        data_to_wrap = _cast_dtypes(data_to_wrap, dtypes, pd)
++    return data_to_wrap
+ 
+ 
+ def _get_output_config(method, estimator=None):
+@@ -96,6 +127,69 @@ def _get_output_config(method, estimator=None):
+     return {"dense": dense_config}
+ 
+ 
++def _get_dtypes_to_preserve(data_to_wrap, original_input, feature_names_out):
++    """Get the input dtypes that can be preserved in the wrapped output.
++
++    Only dtypes for columns whose values are unchanged by the transformer are
++    returned. Columns that are created by the transformer are left untouched.
++    """
++    input_dtypes = getattr(original_input, "dtypes", None)
++    if input_dtypes is None or feature_names_out is None:
++        return None
++
++    if issparse(data_to_wrap) or not hasattr(data_to_wrap, "shape"):
++        return None
++
++    if data_to_wrap.ndim != 2 or len(feature_names_out) != data_to_wrap.shape[1]:
++        return None
++
++    try:
++        import pandas as pd
++    except ImportError:
++        pd = None
++
++    dtypes = {}
++    input_columns = input_dtypes.index
++    for idx, name in enumerate(feature_names_out):
++        if name not in input_columns:
++            continue
++
++        try:
++            original_values = np.asarray(original_input[name])
++
++            if hasattr(data_to_wrap, "iloc"):
++                output_values = np.asarray(data_to_wrap.iloc[:, idx])
++            else:
++                output_values = np.asarray(data_to_wrap[:, idx])
++
++            original_dtype = input_dtypes.loc[name]
++        except Exception:
++            continue
++
++        if hasattr(original_dtype, "iloc") and hasattr(original_dtype, "index"):
++            # ``name`` may refer to duplicated columns in the input.
++            original_dtype = original_dtype.iloc[0]
++
++        if output_values.shape != original_values.shape:
++            continue
++
++        try:
++            if pd is not None:
++                original_is_na = pd.isna(original_values)
++                output_is_na = pd.isna(output_values)
++                if not np.array_equal(original_is_na, output_is_na):
++                    continue
++                original_values = original_values[~original_is_na]
++                output_values = output_values[~output_is_na]
++
++            if np.array_equal(original_values, output_values):
++                dtypes[name] = original_dtype
++        except Exception:
++            continue
++
++    return dtypes or None
++
++
+ def _wrap_data_with_container(method, data_to_wrap, original_input, estimator):
+     """Wrap output with container based on an estimator's or global config.
+ 
+@@ -127,10 +221,21 @@ def _wrap_data_with_container(method, data_to_wrap, original_input, estimator):
+         return data_to_wrap
+ 
+     # dense_config == "pandas"
++    dtypes = None
++    if hasattr(original_input, "dtypes"):
++        try:
++            feature_names_out = estimator.get_feature_names_out()
++        except Exception:
++            feature_names_out = None
++        dtypes = _get_dtypes_to_preserve(
++            data_to_wrap, original_input, feature_names_out
++        )
++
+     return _wrap_in_pandas_container(
+         data_to_wrap=data_to_wrap,
+         index=getattr(original_input, "index", None),
+         columns=estimator.get_feature_names_out,
++        dtypes=dtypes,
+     )
+2026-10-04 14:07:06,658 - INFO - Grading answer for scikit-learn__scikit-learn-25102...
+2026-10-04 14:07:06,660 - INFO - report: {'scikit-learn__scikit-learn-25102': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['sklearn/feature_selection/tests/test_base.py::test_output_dataframe', 'sklearn/feature_selection/tests/test_feature_select.py::test_dataframe_output_dtypes'], 'failure': []}, 'PASS_TO_PASS': {'success': ['sklearn/feature_selection/tests/test_base.py::test_transform_dense', 'sklearn/feature_selection/tests/test_base.py::test_transform_sparse', 'sklearn/feature_selection/tests/test_base.py::test_inverse_transform_dense', 'sklearn/feature_selection/tests/test_base.py::test_inverse_transform_sparse', 'sklearn/feature_selection/tests/test_base.py::test_get_support', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_oneway_vs_scipy_stats', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_oneway_ints', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_classif', 'sklearn/feature_selection/tests/test_feature_select.py::test_r_regression[True]', 'sklearn/feature_selection/tests/test_feature_select.py::test_r_regression[False]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_input_dtype', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_center', 'sklearn/feature_selection/tests/test_feature_select.py::test_r_regression_force_finite[X0-y0-expected_corr_coef0-True]', 'sklearn/feature_selection/tests/test_feature_select.py::test_r_regression_force_finite[X1-y1-expected_corr_coef1-True]', 'sklearn/feature_selection/tests/test_feature_select.py::test_r_regression_force_finite[X2-y2-expected_corr_coef2-False]', 'sklearn/feature_selection/tests/test_feature_select.py::test_r_regression_force_finite[X3-y3-expected_corr_coef3-False]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_corner_case[X0-y0-expected_f_statistic0-expected_p_values0-True]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_corner_case[X1-y1-expected_f_statistic1-expected_p_values1-True]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_corner_case[X2-y2-expected_f_statistic2-expected_p_values2-True]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_corner_case[X3-y3-expected_f_statistic3-expected_p_values3-True]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_corner_case[X4-y4-expected_f_statistic4-expected_p_values4-False]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_corner_case[X5-y5-expected_f_statistic5-expected_p_values5-False]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_corner_case[X6-y6-expected_f_statistic6-expected_p_values6-False]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_regression_corner_case[X7-y7-expected_f_statistic7-expected_p_values7-False]', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_classif_multi_class', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_percentile_classif', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_percentile_classif_sparse', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_kbest_classif', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_kbest_all', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_kbest_zero[float32]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_kbest_zero[float64]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_heuristics_classif', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_percentile_regression', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_percentile_regression_full', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_kbest_regression', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_heuristics_regression', 'sklearn/feature_selection/tests/test_feature_select.py::test_boundary_case_ch2', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[1-0.001]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[1-0.01]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[1-0.1]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[5-0.001]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[5-0.01]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[5-0.1]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[10-0.001]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[10-0.01]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fdr_regression[10-0.1]', 'sklearn/feature_selection/tests/test_feature_select.py::test_select_fwe_regression', 'sklearn/feature_selection/tests/test_feature_select.py::test_selectkbest_tiebreaking', 'sklearn/feature_selection/tests/test_feature_select.py::test_selectpercentile_tiebreaking', 'sklearn/feature_selection/tests/test_feature_select.py::test_tied_pvalues', 'sklearn/feature_selection/tests/test_feature_select.py::test_scorefunc_multilabel', 'sklearn/feature_selection/tests/test_feature_select.py::test_tied_scores', 'sklearn/feature_selection/tests/test_feature_select.py::test_nans', 'sklearn/feature_selection/tests/test_feature_select.py::test_invalid_k', 'sklearn/feature_selection/tests/test_feature_select.py::test_f_classif_constant_feature', 'sklearn/feature_selection/tests/test_feature_select.py::test_no_feature_selected', 'sklearn/feature_selection/tests/test_feature_select.py::test_mutual_info_classif', 'sklearn/feature_selection/tests/test_feature_select.py::test_mutual_info_regression'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for scikit-learn__scikit-learn-25102: resolved: True
+2026-10-04 14:07:06,661 - INFO - Attempting to stop container sweb.eval.scikit-learn__scikit-learn-25102.scikit-learn__baseline...
+2026-10-04 14:07:22,096 - INFO - Container sweb.eval.scikit-learn__scikit-learn-25102.scikit-learn__baseline stopped successfully.
+2026-10-04 14:07:22,096 - INFO - Attempting to remove container sweb.eval.scikit-learn__scikit-learn-25102.scikit-learn__baseline...
+2026-10-04 14:07:22,276 - INFO - Container sweb.eval.scikit-learn__scikit-learn-25102.scikit-learn__baseline removed successfully.

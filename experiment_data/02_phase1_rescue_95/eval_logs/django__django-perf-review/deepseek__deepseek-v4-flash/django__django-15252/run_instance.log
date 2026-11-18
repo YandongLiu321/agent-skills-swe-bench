@@ -1,0 +1,256 @@
+2026-10-07 00:23:19,104 - INFO - Creating container for django__django-15252...
+2026-10-07 00:23:19,148 - INFO - Container for django__django-15252 created: c1f03c82342a40f40f4441e8ee61eb730e3bbf7d5eb68f2a14652d574c2b9002
+2026-10-07 00:23:19,271 - INFO - Container for django__django-15252 started: c1f03c82342a40f40f4441e8ee61eb730e3bbf7d5eb68f2a14652d574c2b9002
+2026-10-07 00:23:19,272 - INFO - Intermediate patch for django__django-15252 written to logs\run_evaluation\django__django-perf-review\deepseek__deepseek-v4-flash\django__django-15252\patch.diff, now applying to container...
+2026-10-07 00:23:19,352 - INFO - >>>>> Applied Patch:
+Checking patch django/db/migrations/executor.py...
+Applied patch django/db/migrations/executor.py cleanly.
+
+2026-10-07 00:23:20,486 - INFO - Git diff before:
+diff --git a/django/db/migrations/executor.py b/django/db/migrations/executor.py
+index aa2fe0883b..056136bd3b 100755
+--- a/django/db/migrations/executor.py
++++ b/django/db/migrations/executor.py
+@@ -95,10 +95,6 @@ class MigrationExecutor:
+         Django first needs to create all project states before a migration is
+         (un)applied and in a second step run all the database operations.
+         """
+-        # The django_migrations table must be present to record applied
+-        # migrations.
+-        self.recorder.ensure_schema()
+-
+         if plan is None:
+             plan = self.migration_plan(targets)
+         # Create the forwards plan Django would follow on an empty database
+@@ -219,9 +215,65 @@ class MigrationExecutor:
+ 
+         return state
+ 
++    def _models_in_migration(self, migration):
++        """
++        Yield the lowercased names of the models referenced by the migration's
++        operations.
++        """
++        def models_for_operation(operation):
++            if isinstance(operation, migrations.SeparateDatabaseAndState):
++                for database_operation in operation.database_operations:
++                    yield from models_for_operation(database_operation)
++                return
++            if isinstance(operation, migrations.RenameModel):
++                yield operation.old_name_lower
++                yield operation.new_name_lower
++                return
++            model_name = getattr(operation, 'model_name', None)
++            if model_name is not None:
++                yield model_name.lower()
++                return
++            if hasattr(operation, 'references_model') and not hasattr(operation, 'hints'):
++                name = getattr(operation, 'name', None)
++                if name is not None:
++                    yield name.lower()
++                    return
++            for state_operation in getattr(operation, 'state_operations', None) or ():
++                yield from models_for_operation(state_operation)
++
++        for operation in migration.operations:
++            yield from models_for_operation(operation)
++            model_name = (getattr(operation, 'hints', None) or {}).get('model_name')
++            if model_name:
++                yield model_name.lower()
++
++    def _migration_is_allowed(self, state, migration):
++        """
++        Return whether the routers allow migrating at least one of the models
++        involved in the migration on this connection.
++        """
++        model_names = list(self._models_in_migration(migration))
++        if not model_names:
++            # Apps without models (e.g. data migrations) are handled by
++            # calling allow_migrate() without a model_name.
++            return router.allow_migrate(self.connection.alias, migration.app_label)
++        for model_name in model_names:
++            try:
++                model = state.apps.get_model(migration.app_label, model_name)
++            except LookupError:
++                allow = router.allow_migrate(
++                    self.connection.alias, migration.app_label, model_name=model_name,
++                )
++            else:
++                allow = router.allow_migrate_model(self.connection.alias, model)
++            if allow:
++                return True
++        return False
++
+     def apply_migration(self, state, migration, fake=False, fake_initial=False):
+         """Run a migration forwards."""
+         migration_recorded = False
++        record = self._migration_is_allowed(state, migration)
+         if self.progress_callback:
+             self.progress_callback("apply_start", migration, fake)
+         if not fake:
+@@ -235,9 +287,10 @@ class MigrationExecutor:
+                 with self.connection.schema_editor(atomic=migration.atomic) as schema_editor:
+                     state = migration.apply(state, schema_editor)
+                     if not schema_editor.deferred_sql:
+-                        self.record_migration(migration)
++                        if record:
++                            self.record_migration(migration)
+                         migration_recorded = True
+-        if not migration_recorded:
++        if not migration_recorded and record:
+             self.record_migration(migration)
+         # Report progress
+         if self.progress_callback:
+@@ -254,16 +307,18 @@ class MigrationExecutor:
+ 
+     def unapply_migration(self, state, migration, fake=False):
+         """Run a migration backwards."""
++        record = self._migration_is_allowed(state, migration)
+         if self.progress_callback:
+             self.progress_callback("unapply_start", migration, fake)
+         if not fake:
+             with self.connection.schema_editor(atomic=migration.atomic) as schema_editor:
+                 state = migration.unapply(state, schema_editor)
+-        # For replacement migrations, also record individual statuses.
+-        if migration.replaces:
+-            for app_label, name in migration.replaces:
+-                self.recorder.record_unapplied(app_label, name)
+-        self.recorder.record_unapplied(migration.app_label, migration.name)
++        if record:
++            # For replacement migrations, also record individual statuses.
++            if migration.replaces:
++                for app_label, name in migration.replaces:
++                    self.recorder.record_unapplied(app_label, name)
++            self.recorder.record_unapplied(migration.app_label, migration.name)
+         # Report progress
+         if self.progress_callback:
+             self.progress_callback("unapply_success", migration, fake)
+2026-10-07 00:23:20,487 - INFO - Eval script for django__django-15252 written to logs\run_evaluation\django__django-perf-review\deepseek__deepseek-v4-flash\django__django-15252\eval.sh; copying to container...
+2026-10-07 00:23:29,091 - INFO - Test runtime: 8.55 seconds
+2026-10-07 00:23:29,094 - INFO - Test output for django__django-15252 written to logs\run_evaluation\django__django-perf-review\deepseek__deepseek-v4-flash\django__django-15252\test_output.txt
+2026-10-07 00:23:29,130 - INFO - Git diff after:
+diff --git a/django/db/migrations/executor.py b/django/db/migrations/executor.py
+index aa2fe0883b..056136bd3b 100755
+--- a/django/db/migrations/executor.py
++++ b/django/db/migrations/executor.py
+@@ -95,10 +95,6 @@ class MigrationExecutor:
+         Django first needs to create all project states before a migration is
+         (un)applied and in a second step run all the database operations.
+         """
+-        # The django_migrations table must be present to record applied
+-        # migrations.
+-        self.recorder.ensure_schema()
+-
+         if plan is None:
+             plan = self.migration_plan(targets)
+         # Create the forwards plan Django would follow on an empty database
+@@ -219,9 +215,65 @@ class MigrationExecutor:
+ 
+         return state
+ 
++    def _models_in_migration(self, migration):
++        """
++        Yield the lowercased names of the models referenced by the migration's
++        operations.
++        """
++        def models_for_operation(operation):
++            if isinstance(operation, migrations.SeparateDatabaseAndState):
++                for database_operation in operation.database_operations:
++                    yield from models_for_operation(database_operation)
++                return
++            if isinstance(operation, migrations.RenameModel):
++                yield operation.old_name_lower
++                yield operation.new_name_lower
++                return
++            model_name = getattr(operation, 'model_name', None)
++            if model_name is not None:
++                yield model_name.lower()
++                return
++            if hasattr(operation, 'references_model') and not hasattr(operation, 'hints'):
++                name = getattr(operation, 'name', None)
++                if name is not None:
++                    yield name.lower()
++                    return
++            for state_operation in getattr(operation, 'state_operations', None) or ():
++                yield from models_for_operation(state_operation)
++
++        for operation in migration.operations:
++            yield from models_for_operation(operation)
++            model_name = (getattr(operation, 'hints', None) or {}).get('model_name')
++            if model_name:
++                yield model_name.lower()
++
++    def _migration_is_allowed(self, state, migration):
++        """
++        Return whether the routers allow migrating at least one of the models
++        involved in the migration on this connection.
++        """
++        model_names = list(self._models_in_migration(migration))
++        if not model_names:
++            # Apps without models (e.g. data migrations) are handled by
++            # calling allow_migrate() without a model_name.
++            return router.allow_migrate(self.connection.alias, migration.app_label)
++        for model_name in model_names:
++            try:
++                model = state.apps.get_model(migration.app_label, model_name)
++            except LookupError:
++                allow = router.allow_migrate(
++                    self.connection.alias, migration.app_label, model_name=model_name,
++                )
++            else:
++                allow = router.allow_migrate_model(self.connection.alias, model)
++            if allow:
++                return True
++        return False
++
+     def apply_migration(self, state, migration, fake=False, fake_initial=False):
+         """Run a migration forwards."""
+         migration_recorded = False
++        record = self._migration_is_allowed(state, migration)
+         if self.progress_callback:
+             self.progress_callback("apply_start", migration, fake)
+         if not fake:
+@@ -235,9 +287,10 @@ class MigrationExecutor:
+                 with self.connection.schema_editor(atomic=migration.atomic) as schema_editor:
+                     state = migration.apply(state, schema_editor)
+                     if not schema_editor.deferred_sql:
+-                        self.record_migration(migration)
++                        if record:
++                            self.record_migration(migration)
+                         migration_recorded = True
+-        if not migration_recorded:
++        if not migration_recorded and record:
+             self.record_migration(migration)
+         # Report progress
+         if self.progress_callback:
+@@ -254,16 +307,18 @@ class MigrationExecutor:
+ 
+     def unapply_migration(self, state, migration, fake=False):
+         """Run a migration backwards."""
++        record = self._migration_is_allowed(state, migration)
+         if self.progress_callback:
+             self.progress_callback("unapply_start", migration, fake)
+         if not fake:
+             with self.connection.schema_editor(atomic=migration.atomic) as schema_editor:
+                 state = migration.unapply(state, schema_editor)
+-        # For replacement migrations, also record individual statuses.
+-        if migration.replaces:
+-            for app_label, name in migration.replaces:
+-                self.recorder.record_unapplied(app_label, name)
+-        self.recorder.record_unapplied(migration.app_label, migration.name)
++        if record:
++            # For replacement migrations, also record individual statuses.
++            if migration.replaces:
++                for app_label, name in migration.replaces:
++                    self.recorder.record_unapplied(app_label, name)
++            self.recorder.record_unapplied(migration.app_label, migration.name)
+         # Report progress
+         if self.progress_callback:
+             self.progress_callback("unapply_success", migration, fake)
+2026-10-07 00:23:29,130 - INFO - Grading answer for django__django-15252...
+2026-10-07 00:23:29,137 - INFO - report: {'django__django-15252': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_migrate_test_setting_false_ensure_schema (backends.base.test_creation.TestDbCreationTests)', 'The django_migrations table is not created if there are no migrations'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_mark_expected_failures_and_skips (backends.base.test_creation.TestMarkTests)', 'test_custom_test_name (backends.base.test_creation.TestDbSignatureTests)', 'test_custom_test_name_with_test_prefix (backends.base.test_creation.TestDbSignatureTests)', 'test_default_name (backends.base.test_creation.TestDbSignatureTests)', 'If the current state satisfies the given target, do nothing.', 'Minimize unnecessary rollbacks in connected apps.', 'Minimize rollbacks when target has multiple in-app children.', "mark_expected_failures_and_skips() isn't called unless", 'test_migrate_test_setting_false (backends.base.test_creation.TestDbCreationTests)', 'test_migrate_test_setting_true (backends.base.test_creation.TestDbCreationTests)', 'test_circular_reference (backends.base.test_creation.TestDeserializeDbFromString)', 'test_circular_reference_with_natural_key (backends.base.test_creation.TestDeserializeDbFromString)', 'test_self_reference (backends.base.test_creation.TestDeserializeDbFromString)', 'test_serialize_db_to_string_base_manager (backends.base.test_creation.TestDeserializeDbFromString)', 'test_alter_id_type_with_fk (migrations.test_executor.ExecutorTests)', 'Applying all replaced migrations marks replacement as applied (#24628).', 'An atomic operation is properly rolled back inside a non-atomic', 'Regression test for #22325 - references to a custom user model defined in the', 'executor.detect_soft_applied() detects ManyToManyField tables from an', "Re-planning a full migration of a fully-migrated set doesn't", 'test_migrate_backward_to_squashed_migration (migrations.test_executor.ExecutorTests)', 'A new squash migration will be marked as applied even if all its', 'test_migrate_marks_replacement_unapplied (migrations.test_executor.ExecutorTests)', 'Migrations are applied and recorded atomically.', 'Migrations are not recorded if deferred SQL application fails.', 'Although the MigrationExecutor interfaces allows for mixed migration', 'Applying a non-atomic migration works as expected.', '#24129 - Tests callback process', 'Tests running a simple set of migrations.', 'Tests running a squashed migration from zero (should ignore what it replaces)', 'Tests detection of initial migrations already having been applied.', '#26647 - Unrelated applied migrations should be part of the final', '#24123 - All models of apps being unapplied which are', '#24123 - All models of apps already applied which are'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-15252: resolved: True
+2026-10-07 00:23:29,139 - INFO - Attempting to stop container sweb.eval.django__django-15252.django__django-perf-review...
+2026-10-07 00:23:44,420 - INFO - Container sweb.eval.django__django-15252.django__django-perf-review stopped successfully.
+2026-10-07 00:23:44,420 - INFO - Attempting to remove container sweb.eval.django__django-15252.django__django-perf-review...
+2026-10-07 00:23:44,502 - INFO - Container sweb.eval.django__django-15252.django__django-perf-review removed successfully.

@@ -1,0 +1,96 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..a1f72466 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -60,6 +60,69 @@ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+         raise astroid.exceptions.InferenceError()
+ 
+ 
++def _get_argument_annotation(arguments, name):
++    """Return the annotation node of the argument called ``name`` if any.
++
++    ``arguments`` is an ``astroid.Arguments`` node.  ``None`` is returned
++    when the argument does not exist or is not annotated.
++    """
++    for arg_names, annotations in (
++        (arguments.args, getattr(arguments, "annotations", ())),
++        (
++            getattr(arguments, "posonlyargs", ()),
++            getattr(arguments, "posonlyargs_annotations", ()),
++        ),
++        (
++            getattr(arguments, "kwonlyargs", ()),
++            getattr(arguments, "kwonlyargs_annotations", ()),
++        ),
++    ):
++        for index, arg_name in enumerate(arg_names):
++            if arg_name.name == name and index < len(annotations):
++                return annotations[index]
++    return None
++
++
++def _get_annotation(node):
++    """Return the type annotation node attached to ``node`` if any.
++
++    ``node`` is expected to be an ``astroid.AssignName`` or an
++    ``astroid.AssignAttr``.  Type hints can come from several places:
++
++    * an annotated assignment, as in ``name: type = value`` or ``name: type``
++    * a function argument, as in ``def function(name: type): ...``
++    * the assignment of an annotated function argument to an attribute, as in
++      ``self.name = name``
++    """
++    parent = node.parent
++    # annotated assignment
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    # function argument
++    if isinstance(parent, astroid.Arguments):
++        return _get_argument_annotation(parent, node.name)
++    # assignment of an annotated function argument to an attribute
++    if isinstance(parent, astroid.Assign) and isinstance(parent.value, astroid.Name):
++        frame = node.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            return _get_argument_annotation(frame.args, parent.value.name)
++    return None
++
++
++def _infer_annotation(annotation):
++    """Return the inferred type(s) of ``annotation``.
++
++    An empty set is returned when the annotation is missing or cannot be
++    inferred.
++    """
++    if annotation is None:
++        return set()
++    try:
++        return {inferred for inferred in annotation.infer()}
++    except astroid.InferenceError:
++        return set()
++
++
+ class IdGeneratorMixIn:
+     """Mixin adding the ability to generate integer uid."""
+ 
+@@ -218,7 +281,9 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _infer_annotation(_get_annotation(node))
++            if not values:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +295,9 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _infer_annotation(_get_annotation(node))
++            if not values:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:

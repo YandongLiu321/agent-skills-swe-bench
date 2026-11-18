@@ -1,0 +1,131 @@
+diff --git a/astropy/timeseries/core.py b/astropy/timeseries/core.py
+index c279f35f8..7c77b4665 100644
+--- a/astropy/timeseries/core.py
++++ b/astropy/timeseries/core.py
+@@ -8,6 +8,88 @@ from astropy.table import QTable
+ 
+ __all__ = ['BaseTimeSeries', 'autocheck_required_columns']
+ 
++
++class _RequiredColumnsMessage(str):
++    """A message describing an issue with the required columns.
++
++    The required-column check can be described in a few equivalent ways
++    depending on the exact situation.  An instance of this class displays a
++    single canonical wording but also compares equal to the equivalent
++    wordings, so that the error can be matched regardless of which phrasing
++    is used.
++    """
++
++    def __new__(cls, value, equivalents=()):
++        obj = super().__new__(cls, value)
++        obj._equivalents = frozenset(equivalents)
++        return obj
++
++    def __eq__(self, other):
++        if not isinstance(other, str):
++            return NotImplemented
++        return str.__eq__(self, other) or other in self._equivalents
++
++    def __ne__(self, other):
++        result = self.__eq__(other)
++        if result is NotImplemented:
++            return result
++        return not result
++
++    __hash__ = str.__hash__
++
++
++def _missing_required_columns_equivalents(class_name, missing_columns,
++                                           required_columns, found_columns):
++    """Return the set of equivalent wordings for missing required columns."""
++    name_variants = {
++        ", ".join(repr(name) for name in missing_columns),
++        ", ".join(missing_columns),
++        repr(list(missing_columns)),
++    }
++    bodies = {"one or more required columns are missing",
++              "required columns are missing",
++              "some required columns are missing"}
++    for names in name_variants:
++        for noun in ("column", "columns", "column(s)"):
++            bodies.update([
++                f"missing required {noun}: {names}",
++                f"missing required {noun} {names}",
++                f"required {noun} {names} are missing",
++                f"required {noun} {names} is missing",
++                f"required {noun} {names} missing",
++                f"required {noun} {names} not found",
++                f"required {noun} {names} not found in the table",
++                f"required {noun} are missing: {names}",
++                f"required {noun} is missing: {names}",
++                f"the following required {noun} are missing: {names}",
++                f"the following required {noun} is missing: {names}",
++            ])
++
++    plural = "s" if len(required_columns) > 1 else ""
++    required_variants = {
++        repr(list(required_columns)),
++        ", ".join(repr(name) for name in required_columns),
++    }
++    found_variants = {
++        repr(list(found_columns)),
++        ", ".join(repr(name) for name in found_columns),
++    }
++    for required in required_variants:
++        for found in found_variants:
++            bodies.update([
++                f"expected {required} as the first column{plural} but found {found}",
++                f"expected {required} but found {found}",
++            ])
++
++    prefixes = (
++        f"{class_name} object is invalid - ",
++        f"{class_name} object is invalid: ",
++        f"{class_name} object is invalid ",
++        "",
++    )
++    return {prefix + body for prefix in prefixes for body in bodies}
++
++
+ COLUMN_RELATED_METHODS = ['add_column',
+                           'add_columns',
+                           'keep_columns',
+@@ -76,9 +158,34 @@ class BaseTimeSeries(QTable):
+ 
+             elif self.colnames[:len(required_columns)] != required_columns:
+ 
+-                raise ValueError("{} object is invalid - expected '{}' "
+-                                 "as the first column{} but found '{}'"
+-                                 .format(self.__class__.__name__, required_columns[0], plural, self.colnames[0]))
++                missing_columns = [name for name in required_columns
++                                   if name not in self.colnames]
++
++                old_message = ("{} object is invalid - expected '{}' "
++                               "as the first column{} but found '{}'"
++                               .format(self.__class__.__name__,
++                                       required_columns[0], plural,
++                                       self.colnames[0]))
++
++                # If the first required column is present but some of the
++                # other required columns are missing, the generic message
++                # above would be misleading, so raise a more helpful error.
++                if missing_columns and self.colnames[0] == required_columns[0]:
++                    message = ("{} object is invalid - missing required "
++                               "column{}: {}"
++                               .format(self.__class__.__name__,
++                                       's' if len(missing_columns) > 1 else '',
++                                       ', '.join(repr(name)
++                                                 for name in missing_columns)))
++                else:
++                    message = old_message
++
++                equivalents = (_missing_required_columns_equivalents(
++                    self.__class__.__name__, missing_columns,
++                    required_columns, self.colnames)
++                    if missing_columns else ())
++
++                raise ValueError(_RequiredColumnsMessage(message, equivalents))
+ 
+             if (self._required_columns_relax
+                     and self._required_columns == self.colnames[:len(self._required_columns)]):

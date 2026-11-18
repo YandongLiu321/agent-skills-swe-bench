@@ -1,0 +1,31 @@
+diff --git a/django/db/models/base.py b/django/db/models/base.py
+index 844c01e95e..e434d3f3a2 100644
+--- a/django/db/models/base.py
++++ b/django/db/models/base.py
+@@ -804,9 +804,23 @@ class Model(metaclass=ModelBase):
+         inserted = False
+         for parent, field in meta.parents.items():
+             # Make sure the link fields are synced between parent and self.
+-            if (field and getattr(self, parent._meta.pk.attname) is None and
+-                    getattr(self, field.attname) is not None):
+-                setattr(self, parent._meta.pk.attname, getattr(self, field.attname))
++            if field:
++                parent_pk_attname = parent._meta.pk.attname
++                if not self._state.adding and (
++                    self.pk is None or
++                    getattr(self, field.attname) is None or
++                    getattr(self, parent_pk_attname) is None
++                ):
++                    # The primary key or parent link of a saved instance was
++                    # reset, so reset the parent link and primary key as well
++                    # to save the instance as a new object.
++                    setattr(self, field.attname, None)
++                    setattr(self, parent_pk_attname, None)
++                elif (
++                    getattr(self, parent_pk_attname) is None and
++                    getattr(self, field.attname) is not None
++                ):
++                    setattr(self, parent_pk_attname, getattr(self, field.attname))
+             parent_inserted = self._save_parents(cls=parent, using=using, update_fields=update_fields)
+             updated = self._save_table(
+                 cls=parent, using=using, update_fields=update_fields,

@@ -1,0 +1,104 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..c6511bb4 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -23,6 +23,19 @@ import astroid
+ from pylint.pyreverse import utils
+ 
+ 
++def _infer_type(node):
++    """Infer the type(s) to associate with ``node``.
++
++    If ``node`` (an ``astroid.AssignName`` or ``astroid.AssignAttr``) carries
++    a type annotation, the annotation is used, otherwise astroid's regular
++    inference is applied.
++    """
++    annotation = utils.get_annotation(node)
++    if annotation is not None:
++        return annotation.infer()
++    return node.infer()
++
++
+ def _iface_hdlr(_):
+     """Handler used by interfaces to handle suspicious interface nodes."""
+     return True
+@@ -218,7 +231,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = set(_infer_type(node))
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +243,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = set(_infer_type(node))
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..2603baa9 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -93,6 +95,48 @@ def is_exception(node):
+     return node.type == "exception"
+ 
+ 
++def _get_argument_annotation(arguments, name):
++    """Return the type annotation of the argument called ``name``, if any."""
++    for arg_nodes, annotations in (
++        (arguments.posonlyargs, arguments.posonlyargs_annotations),
++        (arguments.args, arguments.annotations),
++        (arguments.kwonlyargs, arguments.kwonlyargs_annotations),
++    ):
++        for arg_node, annotation in zip(arg_nodes, annotations):
++            if arg_node.name == name and annotation is not None:
++                return annotation
++    return None
++
++
++def get_annotation(node):
++    """Return the type annotation attached to the given node, if any.
++
++    The annotation is either written directly on an assignment
++    (``x: int = ...``), attached to a function parameter
++    (``def func(x: int)``) or used implicitly when a parameter is assigned to
++    an instance attribute (``self.x = x``).  ``None`` is returned when no
++    annotation is available.
++    """
++    if isinstance(node, astroid.AnnAssign):
++        return node.annotation
++    if isinstance(node, (astroid.AssignName, astroid.AssignAttr)):
++        parent = node.parent
++        if isinstance(parent, astroid.AnnAssign):
++            return parent.annotation
++        if isinstance(parent, astroid.Arguments):
++            # ``node`` is a function argument.
++            return _get_argument_annotation(parent, node.name)
++        value = getattr(parent, "value", None)
++        if value is not None:
++            return get_annotation(value)
++    elif isinstance(node, astroid.Name):
++        # ``node`` refers to a name, possibly a function argument.
++        frame = node.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            return _get_argument_annotation(frame.args, node.name)
++    return None
++
++
+ # Helpers #####################################################################
+ 
+ _CONSTRUCTOR = 1

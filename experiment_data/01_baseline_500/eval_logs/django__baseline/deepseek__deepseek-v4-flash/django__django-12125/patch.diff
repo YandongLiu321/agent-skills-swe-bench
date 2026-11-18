@@ -1,0 +1,33 @@
+diff --git a/django/db/migrations/serializer.py b/django/db/migrations/serializer.py
+index 7d226955d5..102e613b42 100755
+--- a/django/db/migrations/serializer.py
++++ b/django/db/migrations/serializer.py
+@@ -6,6 +6,7 @@ import enum
+ import functools
+ import math
+ import re
++import sys
+ import types
+ import uuid
+ 
+@@ -91,6 +92,11 @@ class DeconstructableSerializer(BaseSerializer):
+     @staticmethod
+     def _serialize_path(path):
+         module, name = path.rsplit(".", 1)
++        # The deconstructed path may point to a class that's nested inside
++        # another class, e.g. "myapp.models.Outer.Inner". Shorten the path
++        # until an imported module is found.
++        while module not in sys.modules and "." in module:
++            module, _, name = module.rpartition(".")
+         if module == "django.db.models":
+             imports = {"from django.db import models"}
+             name = "models.%s" % name
+@@ -269,7 +275,7 @@ class TypeSerializer(BaseSerializer):
+             if module == builtins.__name__:
+                 return self.value.__name__, set()
+             else:
+-                return "%s.%s" % (module, self.value.__name__), {"import %s" % module}
++                return "%s.%s" % (module, self.value.__qualname__), {"import %s" % module}
+ 
+ 
+ class UUIDSerializer(BaseSerializer):

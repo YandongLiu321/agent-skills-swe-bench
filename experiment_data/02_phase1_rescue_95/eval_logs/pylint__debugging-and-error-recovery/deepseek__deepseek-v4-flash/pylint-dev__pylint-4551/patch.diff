@@ -1,0 +1,96 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..a0373c67 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -60,6 +60,63 @@ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+         raise astroid.exceptions.InferenceError()
+ 
+ 
++def _get_argument_annotation(arguments, node):
++    """Return the annotation node for an argument, if any."""
++    for arg_nodes, annotations in (
++        (arguments.args, arguments.annotations),
++        (arguments.posonlyargs, arguments.posonlyargs_annotations),
++        (arguments.kwonlyargs, arguments.kwonlyargs_annotations),
++    ):
++        if node not in arg_nodes:
++            continue
++        index = arg_nodes.index(node)
++        if index < len(annotations):
++            return annotations[index]
++    if arguments.vararg == node.name:
++        return arguments.varargannotation
++    if arguments.kwarg == node.name:
++        return arguments.kwargannotation
++    return None
++
++
++def _get_annotation(node):
++    """Return the annotation node associated with an assignment target."""
++    try:
++        assigned_type = node.assign_type()
++    except AttributeError:
++        return None
++    if isinstance(assigned_type, astroid.AnnAssign):
++        return assigned_type.annotation
++    if isinstance(assigned_type, astroid.Arguments):
++        return _get_argument_annotation(assigned_type, node)
++    return None
++
++
++def _infer_annotation(node):
++    """Return the inferred types of the annotation associated with a node."""
++    annotation = _get_annotation(node)
++    if annotation is None:
++        return set()
++    try:
++        return set(annotation.infer())
++    except astroid.AstroidError:
++        return set()
++
++
++def _infer_annotation_from_value(value):
++    """Return annotations inferred from an assigned value if it is a name."""
++    if not isinstance(value, astroid.Name):
++        return set()
++    try:
++        _, assignments = value.lookup(value.name)
++    except astroid.AstroidError:
++        return set()
++    annotations = set()
++    for assignment in assignments:
++        annotations.update(_infer_annotation(assignment))
++    return annotations
++
++
+ class IdGeneratorMixIn:
+     """Mixin adding the ability to generate integer uid."""
+ 
+@@ -218,7 +275,9 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _infer_annotation(node)
++            if not values:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +289,15 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _infer_annotation(node)
++            try:
++                assigned_type = node.assign_type()
++            except AttributeError:
++                assigned_type = None
++            if isinstance(assigned_type, astroid.Assign):
++                values.update(_infer_annotation_from_value(assigned_type.value))
++            if not values:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:

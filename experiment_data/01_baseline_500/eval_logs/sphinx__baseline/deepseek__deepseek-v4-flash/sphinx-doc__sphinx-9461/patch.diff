@@ -1,0 +1,152 @@
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..e82699026 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -866,6 +867,8 @@ class PyProperty(PyObject):
+ 
+     def get_signature_prefix(self, sig: str) -> str:
+         prefix = ['property']
++        if 'classmethod' in self.options:
++            prefix.insert(0, 'class')
+         if 'abstractmethod' in self.options:
+             prefix.insert(0, 'abstract')
+ 
+@@ -883,7 +886,10 @@ class PyProperty(PyObject):
+             else:
+                 return name
+ 
+-        return _('%s (%s property)') % (attrname, clsname)
++        if 'classmethod' in self.options:
++            return _('%s (%s class property)') % (attrname, clsname)
++        else:
++            return _('%s (%s property)') % (attrname, clsname)
+ 
+ 
+ class PyDecoratorMixin:
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..2ca63ddb1 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -2663,6 +2663,30 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+                             ) -> bool:
+         return inspect.isproperty(member) and isinstance(parent, ClassDocumenter)
+ 
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++        if not ret:
++            return ret
++
++        # A classmethod wrapping a property returns the property value when
++        # accessed via the class.  Look up the descriptor from the class
++        # dictionary instead.
++        self._classmethod = False
++        for basecls in inspect.getmro(self.parent):
++            try:
++                obj = basecls.__dict__[self.object_name]
++            except (AttributeError, KeyError, TypeError):
++                continue
++
++            if inspect.isclassmethod(obj):
++                self._classmethod = True
++                obj = obj.__func__
++            if inspect.isproperty(obj):
++                self.object = obj
++            break
++
++        return ret
++
+     def document_members(self, all_members: bool = False) -> None:
+         pass
+ 
+@@ -2675,6 +2699,8 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         sourcename = self.get_sourcename()
+         if inspect.isabstractmethod(self.object):
+             self.add_line('   :abstractmethod:', sourcename)
++        if getattr(self, '_classmethod', False):
++            self.add_line('   :classmethod:', sourcename)
+ 
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..d1aeccd3b 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -11,14 +11,15 @@
+ import importlib
+ import traceback
+ import warnings
++from inspect import getattr_static
+ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+ 
+ from sphinx.deprecation import RemovedInSphinx50Warning
+ from sphinx.ext.autodoc.mock import ismock, undecorate
+ from sphinx.pycode import ModuleAnalyzer, PycodeError
+ from sphinx.util import logging
+-from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isenumclass,
+-                                 safe_getattr)
++from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isclassmethod,
++                                 isenumclass, isproperty, safe_getattr)
+ 
+ if False:
+     # For type annotation
+@@ -277,6 +278,16 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+             value = attrgetter(subject, name)
+             if ismock(value):
+                 value = undecorate(value)
++            elif not isproperty(value):
++                # A classmethod wrapping a property returns the property value
++                # when accessed via the class.  Fetch the descriptor statically
++                # to retrieve the appropriate member object.
++                try:
++                    raw = getattr_static(subject, name)
++                except AttributeError:
++                    raw = None
++                if isclassmethod(raw) and isproperty(raw):
++                    value = raw
+ 
+             unmangled = unmangle(subject, name)
+             if unmangled and unmangled not in members:
+diff --git a/sphinx/util/inspect.py b/sphinx/util/inspect.py
+index 23dd9e930..65bc8ceed 100644
+--- a/sphinx/util/inspect.py
++++ b/sphinx/util/inspect.py
+@@ -385,12 +385,17 @@ def iscoroutinefunction(obj: Any) -> bool:
+ 
+ def isproperty(obj: Any) -> bool:
+     """Check if the object is property."""
+-    if sys.version_info >= (3, 8):
++    if isinstance(obj, property):
++        return True
++    elif isclassmethod(obj):
++        # classmethod can wrap a property object since Python 3.9
++        return isproperty(obj.__func__)
++    elif sys.version_info >= (3, 8):
+         from functools import cached_property  # cached_property is available since py3.8
+         if isinstance(obj, cached_property):
+             return True
+ 
+-    return isinstance(obj, property)
++    return False
+ 
+ 
+ def isgenericalias(obj: Any) -> bool:
+@@ -837,6 +842,11 @@ def getdoc(obj: Any, attrgetter: Callable = safe_getattr,
+     * inherited docstring
+     * inherited decorated methods
+     """
++    if isclassmethod(obj):
++        # classmethod objects in Python 3.9 and before have the docstring of the
++        # classmethod builtin instead of the wrapped callable.
++        return getdoc(obj.__func__, attrgetter, allow_inherited, cls, name)
++
+     doc = attrgetter(obj, '__doc__', None)
+     if ispartial(obj) and doc == obj.__class__.__doc__:
+         return getdoc(obj.func)

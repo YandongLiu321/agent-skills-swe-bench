@@ -1,0 +1,56 @@
+diff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py
+index 8b21d9e3b..66f9ef898 100644
+--- a/sphinx/ext/graphviz.py
++++ b/sphinx/ext/graphviz.py
+@@ -234,10 +234,18 @@ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+             # not a relative link
+             continue
+ 
+-        old_path = path.join(self.builder.outdir, url)
++        # Relative links in the SVG are relative to the document from which
++        # the graph was generated.  Resolve them against that document's
++        # directory, then rewrite them relative to the image directory in
++        # which the SVG file itself lives.
++        old_path = path.join(
++            self.builder.outdir,
++            path.dirname(self.builder.current_docname),
++            url,
++        )
+         new_path = path.relpath(
+             old_path,
+-            start=path.join(self.builder.outdir, self.builder.imgpath),
++            start=path.join(self.builder.outdir, self.builder.imagedir),
+         )
+         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))
+ 
+diff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py
+index 6e3985512..70345b586 100644
+--- a/sphinx/ext/inheritance_diagram.py
++++ b/sphinx/ext/inheritance_diagram.py
+@@ -33,6 +33,7 @@ from __future__ import annotations
+ import builtins
+ import hashlib
+ import inspect
++import posixpath
+ import re
+ from collections.abc import Iterable
+ from importlib import import_module
+@@ -412,13 +413,13 @@ def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diag
+     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)
+     for child in pending_xrefs:
+         if child.get('refuri') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = "../" + child.get('refuri')
+-            else:
+-                urls[child['reftitle']] = child.get('refuri')
++            urls[child['reftitle']] = child.get('refuri')
+         elif child.get('refid') is not None:
+             if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = '../' + current_filename + '#' + child.get('refid')
++                # The diagram is embedded in a separate SVG file, so link to
++                # the current page rather than using a bare fragment.
++                urls[child['reftitle']] = (
++                    posixpath.basename(current_filename) + '#' + child.get('refid'))
+             else:
+                 urls[child['reftitle']] = '#' + child.get('refid')
+ 

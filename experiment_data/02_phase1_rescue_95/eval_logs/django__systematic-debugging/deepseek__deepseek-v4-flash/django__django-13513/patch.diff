@@ -1,0 +1,31 @@
+diff --git a/django/views/debug.py b/django/views/debug.py
+index 7a89f7bd15..144d38472a 100644
+--- a/django/views/debug.py
++++ b/django/views/debug.py
+@@ -406,7 +406,12 @@ class ExceptionReporter:
+         exc_value = self.exc_value
+         while exc_value:
+             exceptions.append(exc_value)
+-            exc_value = explicit_or_implicit_cause(exc_value)
++            if getattr(exc_value, '__suppress_context__', False):
++                # PEP 415: ``raise ... from None`` suppresses the implicit
++                # context, so only follow an explicitly set cause.
++                exc_value = getattr(exc_value, '__cause__', None)
++            else:
++                exc_value = explicit_or_implicit_cause(exc_value)
+             if exc_value in exceptions:
+                 warnings.warn(
+                     "Cycle in the exception chain detected: exception '%s' "
+@@ -445,7 +450,11 @@ class ExceptionReporter:
+                 context_line = '<source code not available>'
+                 post_context = []
+             frames.append({
+-                'exc_cause': explicit_or_implicit_cause(exc_value),
++                'exc_cause': (
++                    getattr(exc_value, '__cause__', None)
++                    if getattr(exc_value, '__suppress_context__', False)
++                    else explicit_or_implicit_cause(exc_value)
++                ),
+                 'exc_cause_explicit': getattr(exc_value, '__cause__', True),
+                 'tb': tb,
+                 'type': 'django' if module_name.startswith('django.') else 'user',

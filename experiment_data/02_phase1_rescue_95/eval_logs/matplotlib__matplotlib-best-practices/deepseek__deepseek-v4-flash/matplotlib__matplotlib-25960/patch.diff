@@ -1,0 +1,43 @@
+diff --git a/lib/matplotlib/figure.py b/lib/matplotlib/figure.py
+index dab2bc4a5a..a720366978 100644
+--- a/lib/matplotlib/figure.py
++++ b/lib/matplotlib/figure.py
+@@ -2274,17 +2274,32 @@ class SubFigure(FigureBase):
+             return
+         # need to figure out *where* this subplotspec is.
+         gs = self._subplotspec.get_gridspec()
++        nrows, ncols = gs.get_geometry()
+         wr = np.asarray(gs.get_width_ratios())
+         hr = np.asarray(gs.get_height_ratios())
+-        dx = wr[self._subplotspec.colspan].sum() / wr.sum()
+-        dy = hr[self._subplotspec.rowspan].sum() / hr.sum()
+-        x0 = wr[:self._subplotspec.colspan.start].sum() / wr.sum()
+-        y0 = 1 - hr[:self._subplotspec.rowspan.stop].sum() / hr.sum()
++        wspace = gs.get_subplot_params(self._parent).wspace
++        hspace = gs.get_subplot_params(self._parent).hspace
++
++        # The grid spans the whole parent box, and *wspace*/*hspace* are
++        # fractions of the average cell width/height.
++        cell_w = 1 / (ncols + wspace * (ncols - 1))
++        cell_h = 1 / (nrows + hspace * (nrows - 1))
++        sep_w = wspace * cell_w
++        sep_h = hspace * cell_h
++        widths = cell_w * ncols * wr / wr.sum()
++        heights = cell_h * nrows * hr / hr.sum()
++
++        colspan = self._subplotspec.colspan
++        rowspan = self._subplotspec.rowspan
++        x0 = widths[:colspan.start].sum() + sep_w * colspan.start
++        x1 = x0 + widths[colspan].sum() + sep_w * (len(colspan) - 1)
++        y0 = heights[rowspan.stop:].sum() + sep_h * (nrows - rowspan.stop)
++        y1 = y0 + heights[rowspan].sum() + sep_h * (len(rowspan) - 1)
+         if self.bbox_relative is None:
+-            self.bbox_relative = Bbox.from_bounds(x0, y0, dx, dy)
++            self.bbox_relative = Bbox.from_extents(x0, y0, x1, y1)
+         else:
+             self.bbox_relative.p0 = (x0, y0)
+-            self.bbox_relative.p1 = (x0 + dx, y0 + dy)
++            self.bbox_relative.p1 = (x1, y1)
+ 
+     def get_constrained_layout(self):
+         """

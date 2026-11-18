@@ -1,0 +1,116 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..7d2ad7f38 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -114,7 +114,7 @@ def _regex_transformer(value: str) -> Pattern[str]:
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in pylint_utils._splitstrip(value, respect_quotes=True):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 
+@@ -122,7 +122,7 @@ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions paths."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in pylint_utils._splitstrip(value, respect_quotes=True):
+         patterns.append(
+             re.compile(
+                 str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..d4e68e0ed 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -209,16 +209,31 @@ def register_plugins(linter: PyLinter, directory: str) -> None:
+                     imported[base] = 1
+ 
+ 
+-def _splitstrip(string: str, sep: str = ",") -> list[str]:
++def _splitstrip(
++    string: str, sep: str = ",", *, respect_quotes: bool = False
++) -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A `sep` escaped with a backslash (e.g. ``a\\,b``) is not used to split
++    the string and the backslash is removed from the resulting value. This
++    makes it possible to use a separator inside an option's value, for
++    instance inside a regular expression.
++
++    When ``respect_quotes`` is true, fields surrounded by single or double
++    quotes are kept together and the quotes are removed from the resulting
++    value.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+     >>> _splitstrip('a,\nb,\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip(r'a, b\\,c')
++    ['a', 'b,c']
++    >>> _splitstrip('a, "b,c"', respect_quotes=True)
++    ['a', 'b,c']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -226,10 +241,53 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :type sep: str or unicode
+     :param sep: field separator, default to the comma (',')
+ 
+-    :rtype: str or unicode
+-    :return: the unquoted string (or the input string if it wasn't quoted)
++    :rtype: list of str or unicode
++    :return: the list of unquoted and unescaped strings
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    words: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    escaped = False
++    at_field_start = True
++    for char in string:
++        if escaped:
++            # The separator is escaped: keep it but drop the backslash.
++            if char != sep:
++                current.append("\\")
++            current.append(char)
++            escaped = False
++            at_field_start = False
++        elif char == "\\":
++            escaped = True
++        elif quote is not None:
++            current.append(char)
++            if char == quote:
++                quote = None
++            at_field_start = False
++        elif respect_quotes and char in "\"'" and at_field_start:
++            quote = char
++            current.append(char)
++            at_field_start = False
++        elif char == sep:
++            word = "".join(current).strip()
++            if respect_quotes:
++                word = _unquote(word)
++            if word:
++                words.append(word)
++            current = []
++            at_field_start = True
++        else:
++            current.append(char)
++            if not char.isspace():
++                at_field_start = False
++    if escaped:
++        current.append("\\")
++    word = "".join(current).strip()
++    if respect_quotes:
++        word = _unquote(word)
++    if word:
++        words.append(word)
++    return words
+ 
+ 
+ def _unquote(string: str) -> str:

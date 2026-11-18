@@ -1,0 +1,242 @@
+diff --git a/django/contrib/contenttypes/fields.py b/django/contrib/contenttypes/fields.py
+index 5b327b6ae4..eff088747b 100644
+--- a/django/contrib/contenttypes/fields.py
++++ b/django/contrib/contenttypes/fields.py
+@@ -13,6 +13,11 @@ from django.db.models.fields.related import (
+     ReverseManyToOneDescriptor,
+     lazy_related_operation,
+ )
++from django.db.models.fields.related_descriptors import (
++    _apply_prefetch_slice,
++    _get_prefetch_ordering,
++    _get_prefetch_slice,
++)
+ from django.db.models.query_utils import PathInfo
+ from django.db.models.sql import AND
+ from django.db.models.sql.where import WhereNode
+@@ -626,6 +631,8 @@ def create_generic_related_manager(superclass, rel):
+ 
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
++            queryset, queryset_slice = _get_prefetch_slice(queryset)
++            ordering = _get_prefetch_ordering(queryset)
+             # Group instances by content types.
+             content_type_queries = [
+                 models.Q.create(
+@@ -644,8 +651,19 @@ def create_generic_related_manager(superclass, rel):
+             # instances' PK in order to match up instances:
+             object_id_converter = instances[0]._meta.pk.to_python
+             content_type_id_field_name = "%s_id" % self.content_type_field_name
++            queryset = queryset.filter(query)
++            if queryset_slice is not None:
++                queryset = _apply_prefetch_slice(
++                    queryset,
++                    queryset_slice,
++                    [
++                        models.F(content_type_id_field_name),
++                        models.F(self.object_id_field_name),
++                    ],
++                    ordering,
++                )
+             return (
+-                queryset.filter(query),
++                queryset,
+                 lambda relobj: (
+                     object_id_converter(getattr(relobj, self.object_id_field_name)),
+                     getattr(relobj, content_type_id_field_name),
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index b192df4fbf..332876623d 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -65,13 +65,80 @@ and two directions (forward and reverse) for a total of six combinations.
+ 
+ from django.core.exceptions import FieldError
+ from django.db import connections, router, transaction
+-from django.db.models import Q, signals
++from django.db.models import F, Q, Window, signals
++from django.db.models.expressions import RawSQL
++from django.db.models.functions import Random, RowNumber
+ from django.db.models.query import QuerySet
+ from django.db.models.query_utils import DeferredAttribute
+ from django.db.models.utils import resolve_callables
+ from django.utils.functional import cached_property
+ 
+ 
++def _get_prefetch_slice(queryset):
++    """
++    Return the queryset without limits along with its original limits, if any.
++    """
++    if not queryset.query.is_sliced:
++        return queryset, None
++    low_mark, high_mark = queryset.query.low_mark, queryset.query.high_mark
++    queryset = queryset._chain()
++    queryset.query.clear_limits()
++    return queryset, (low_mark, high_mark)
++
++
++def _get_prefetch_ordering(queryset):
++    """Return the ordering of the queryset as a list suitable for a window."""
++    query = queryset.query
++    if query.extra_order_by:
++        ordering = query.extra_order_by
++    elif not query.default_ordering:
++        ordering = query.order_by
++    elif query.order_by:
++        ordering = query.order_by
++    elif queryset.model._meta.ordering:
++        ordering = queryset.model._meta.ordering
++    else:
++        return None
++    if not ordering:
++        return None
++    ordering = [Random() if field == "?" else field for field in ordering]
++    if not query.standard_ordering:
++        reversed_ordering = []
++        for field in ordering:
++            if isinstance(field, str):
++                if field.startswith("-"):
++                    reversed_ordering.append(field[1:])
++                else:
++                    reversed_ordering.append("-" + field)
++            else:
++                reversed_ordering.append(field)
++        ordering = reversed_ordering
++    return ordering
++
++
++def _apply_prefetch_slice(queryset, slice_, partition_by, ordering=None):
++    """
++    Apply the limits from a sliced queryset to a prefetch queryset on a
++    per-instance basis using a window function.
++    """
++    if slice_ is None:
++        return queryset
++    low_mark, high_mark = slice_
++    queryset = queryset.alias(
++        _prefetch_related_slice=Window(
++            expression=RowNumber(),
++            partition_by=partition_by,
++            order_by=ordering,
++        )
++    )
++    filters = {}
++    if low_mark:
++        filters["_prefetch_related_slice__gt"] = low_mark
++    if high_mark is not None:
++        filters["_prefetch_related_slice__lte"] = high_mark
++    return queryset.filter(**filters)
++
++
+ class ForeignKeyDeferredAttribute(DeferredAttribute):
+     def __set__(self, instance, value):
+         if instance.__dict__.get(self.field.attname) != value and self.field.is_cached(
+@@ -125,6 +192,8 @@ class ForwardManyToOneDescriptor:
+         if queryset is None:
+             queryset = self.get_queryset()
+         queryset._add_hints(instance=instances[0])
++        queryset, queryset_slice = _get_prefetch_slice(queryset)
++        ordering = _get_prefetch_ordering(queryset)
+ 
+         rel_obj_attr = self.field.get_foreign_related_value
+         instance_attr = self.field.get_local_related_value
+@@ -146,6 +215,13 @@ class ForwardManyToOneDescriptor:
+         else:
+             query = {"%s__in" % self.field.related_query_name(): instances}
+         queryset = queryset.filter(**query)
++        if queryset_slice is not None:
++            queryset = _apply_prefetch_slice(
++                queryset,
++                queryset_slice,
++                [F(field.attname) for field in self.field.foreign_related_fields],
++                ordering,
++            )
+ 
+         # Since we're going to assign directly in the cache,
+         # we must manage the reverse relation cache manually.
+@@ -399,12 +475,21 @@ class ReverseOneToOneDescriptor:
+         if queryset is None:
+             queryset = self.get_queryset()
+         queryset._add_hints(instance=instances[0])
++        queryset, queryset_slice = _get_prefetch_slice(queryset)
++        ordering = _get_prefetch_ordering(queryset)
+ 
+         rel_obj_attr = self.related.field.get_local_related_value
+         instance_attr = self.related.field.get_foreign_related_value
+         instances_dict = {instance_attr(inst): inst for inst in instances}
+         query = {"%s__in" % self.related.field.name: instances}
+         queryset = queryset.filter(**query)
++        if queryset_slice is not None:
++            queryset = _apply_prefetch_slice(
++                queryset,
++                queryset_slice,
++                [F(field.attname) for field in self.related.field.local_related_fields],
++                ordering,
++            )
+ 
+         # Since we're going to assign directly in the cache,
+         # we must manage the reverse relation cache manually.
+@@ -714,12 +799,21 @@ def create_reverse_many_to_one_manager(superclass, rel):
+ 
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
++            queryset, queryset_slice = _get_prefetch_slice(queryset)
++            ordering = _get_prefetch_ordering(queryset)
+ 
+             rel_obj_attr = self.field.get_local_related_value
+             instance_attr = self.field.get_foreign_related_value
+             instances_dict = {instance_attr(inst): inst for inst in instances}
+             query = {"%s__in" % self.field.name: instances}
+             queryset = queryset.filter(**query)
++            if queryset_slice is not None:
++                queryset = _apply_prefetch_slice(
++                    queryset,
++                    queryset_slice,
++                    [F(field.attname) for field in self.field.local_related_fields],
++                    ordering,
++                )
+ 
+             # Since we just bypassed this class' get_queryset(), we must manage
+             # the reverse relation manually.
+@@ -1050,6 +1144,8 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+ 
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
++            queryset, queryset_slice = _get_prefetch_slice(queryset)
++            ordering = _get_prefetch_ordering(queryset)
+ 
+             query = {"%s__in" % self.query_field_name: instances}
+             queryset = queryset._next_is_sticky().filter(**query)
+@@ -1073,6 +1169,16 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+                     for f in fk.local_related_fields
+                 }
+             )
++            if queryset_slice is not None:
++                queryset = _apply_prefetch_slice(
++                    queryset,
++                    queryset_slice,
++                    [
++                        RawSQL("%s.%s" % (qn(join_table), qn(f.column)), [])
++                        for f in fk.local_related_fields
++                    ],
++                    ordering,
++                )
+             return (
+                 queryset,
+                 lambda result: tuple(
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index be0deb90b0..e8159c5e15 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -2520,7 +2520,11 @@ def prefetch_one_level(instances, prefetcher, lookup, level):
+             else:
+                 manager = getattr(obj, to_attr)
+                 if leaf and lookup.queryset is not None:
+-                    qs = manager._apply_rel_filters(lookup.queryset)
++                    queryset = lookup.queryset
++                    if queryset.query.is_sliced:
++                        queryset = queryset._chain()
++                        queryset.query.clear_limits()
++                    qs = manager._apply_rel_filters(queryset)
+                 else:
+                     qs = manager.get_queryset()
+                 qs._result_cache = vals

@@ -1,0 +1,186 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..be9b027f0a 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -250,6 +250,8 @@ class Query(BaseExpression):
+         self.where = WhereNode()
+         # Maps alias -> Annotation Expression.
+         self.annotations = {}
++        # Maps annotation aliases to the alias reference counts they added.
++        self._annotation_refcounts = {}
+         # These are for extensions. The contents are more or less appended
+         # verbatim to the appropriate clause.
+         self.extra = {}  # Maps col_alias -> (col_sql, params).
+@@ -323,6 +325,7 @@ class Query(BaseExpression):
+         # Clone attributes that can't use shallow copy.
+         obj.alias_refcount = self.alias_refcount.copy()
+         obj.alias_map = self.alias_map.copy()
++        obj._annotation_refcounts = self._annotation_refcounts.copy()
+         obj.external_aliases = self.external_aliases.copy()
+         obj.table_map = self.table_map.copy()
+         obj.where = self.where.clone()
+@@ -545,11 +548,124 @@ class Query(BaseExpression):
+ 
+         return dict(zip(outer_query.annotation_select, result))
+ 
++    def _get_used_annotation_aliases(self):
++        """
++        Return the aliases of annotations that are required by the query's
++        filters, ordering, grouping, distinct clause, selected values, or
++        other annotations.
++        """
++        annotations = self.annotations
++        if not annotations:
++            return set()
++
++        used = set()
++        visited = set()
++
++        def mark_expression(expression):
++            if expression is None:
++                return
++            if isinstance(expression, Node):
++                for child in expression.children:
++                    mark_expression(child)
++                return
++            expression_id = id(expression)
++            if expression_id in visited:
++                return
++            visited.add(expression_id)
++            if isinstance(expression, Ref):
++                if expression.refs in annotations:
++                    used.add(expression.refs)
++            elif isinstance(expression, F):
++                name = expression.name.split(LOOKUP_SEP, 1)[0]
++                if name in annotations:
++                    used.add(name)
++            elif isinstance(expression, BaseExpression):
++                for alias, annotation in annotations.items():
++                    if expression is annotation or expression == annotation:
++                        used.add(alias)
++            if hasattr(expression, "get_source_expressions"):
++                for source_expression in expression.get_source_expressions():
++                    mark_expression(source_expression)
++
++        mark_expression(self.where)
++        if self.has_select_fields:
++            for alias, annotation in self.annotation_select.items():
++                if (
++                    not getattr(annotation, "contains_aggregate", False)
++                    or self.distinct
++                    or not isinstance(self.group_by, tuple)
++                ):
++                    used.add(alias)
++        for expr in self.select:
++            mark_expression(expr)
++        if isinstance(self.group_by, tuple):
++            for expr in self.group_by:
++                if isinstance(expr, str):
++                    if expr in annotations:
++                        used.add(expr)
++                else:
++                    mark_expression(expr)
++        for order_by in chain(self.order_by, self.extra_order_by):
++            if isinstance(order_by, str):
++                name = order_by[1:] if order_by.startswith("-") else order_by
++                if name in annotations:
++                    used.add(name)
++            else:
++                mark_expression(order_by)
++        for distinct_field in self.distinct_fields:
++            if isinstance(distinct_field, str):
++                if distinct_field in annotations:
++                    used.add(distinct_field)
++            else:
++                mark_expression(distinct_field)
++
++        processed = set()
++        while True:
++            unprocessed = used - processed
++            if not unprocessed:
++                break
++            for alias in unprocessed:
++                mark_expression(annotations[alias])
++                processed.add(alias)
++        return used
++
+     def get_count(self, using):
+         """
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        unused_aliases = set(obj.annotations) - obj._get_used_annotation_aliases()
++        removed_aggregate = any(
++            getattr(obj.annotations[alias], "contains_aggregate", False)
++            for alias in unused_aliases
++        )
++        for alias in unused_aliases:
++            del obj.annotations[alias]
++            if obj.annotation_select_mask is not None:
++                obj.annotation_select_mask.discard(alias)
++            refcounts = obj._annotation_refcounts.pop(alias, None)
++            if refcounts:
++                for table_alias, count in refcounts.items():
++                    if table_alias in obj.alias_refcount:
++                        obj.unref_alias(table_alias, count)
++        if unused_aliases:
++            obj._annotation_select_cache = None
++            if obj.alias_map:
++                base_alias = obj.base_table
++                if obj.alias_refcount.get(base_alias, 0) < 1:
++                    obj.alias_refcount[base_alias] = 1
++            # An aggregate annotation forces grouping by the primary key when
++            # no explicit grouping is set. Preserve that grouping if removing
++            # it could otherwise count duplicate rows from a multi-valued join.
++            if removed_aggregate and obj.group_by is True:
++                for alias, join in obj.alias_map.items():
++                    if obj.alias_refcount.get(alias, 0) and getattr(
++                        getattr(join, "join_field", None), "multiple", False
++                    ):
++                        obj.group_by = (
++                            obj.model._meta.pk.get_col(obj.base_table),
++                        )
++                        break
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 
+@@ -909,6 +1025,13 @@ class Query(BaseExpression):
+             key: col.relabeled_clone(change_map)
+             for key, col in self.annotations.items()
+         }
++        self._annotation_refcounts = {
++            annotation_alias: {
++                change_map.get(table_alias, table_alias): count
++                for table_alias, count in refcounts.items()
++            }
++            for annotation_alias, refcounts in self._annotation_refcounts.items()
++        }
+ 
+         # 2. Rename the alias in the internal table/alias datastructures.
+         for old_alias, new_alias in change_map.items():
+@@ -1101,6 +1224,7 @@ class Query(BaseExpression):
+     def add_annotation(self, annotation, alias, is_summary=False, select=True):
+         """Add a single annotation expression to the Query."""
+         self.check_alias(alias)
++        refcounts_before = self.alias_refcount.copy()
+         annotation = annotation.resolve_expression(
+             self, allow_joins=True, reuse=None, summarize=is_summary
+         )
+@@ -1109,6 +1233,17 @@ class Query(BaseExpression):
+         else:
+             self.set_annotation_mask(set(self.annotation_select).difference({alias}))
+         self.annotations[alias] = annotation
++        previous_refcounts = self._annotation_refcounts.get(alias, {})
++        annotation_refcounts = {
++            table_alias: refcount - refcounts_before.get(table_alias, 0)
++            for table_alias, refcount in self.alias_refcount.items()
++            if refcount != refcounts_before.get(table_alias, 0)
++        }
++        for table_alias, count in previous_refcounts.items():
++            annotation_refcounts[table_alias] = (
++                annotation_refcounts.get(table_alias, 0) + count
++            )
++        self._annotation_refcounts[alias] = annotation_refcounts
+ 
+     def resolve_expression(self, query, *args, **kwargs):
+         clone = self.clone()

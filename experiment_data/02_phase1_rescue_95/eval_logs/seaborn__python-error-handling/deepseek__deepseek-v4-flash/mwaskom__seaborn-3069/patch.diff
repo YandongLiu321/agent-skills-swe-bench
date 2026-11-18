@@ -1,0 +1,78 @@
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..8ea0bda4 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1644,6 +1644,22 @@ class Plotter:
+                         hi = cast(float, hi) + 0.5
+                     ax.set(**{f"{axis}lim": (lo, hi)})
+ 
++                # Nominal scales should be drawn like categorical axes
++                if isinstance(self._scales.get(axis_key), Nominal):
++                    axis_obj = getattr(ax, f"{axis}axis")
++                    # The categorical axis never shows a grid, regardless of style
++                    axis_obj.grid(False)
++                    # Show a half-unit margin around the extreme categories, and
++                    # invert the axis when it is drawn vertically. Explicit limits
++                    # provided by the user take precedence over these defaults.
++                    if axis_key not in p._limits:
++                        n = len(getattr(ax, f"get_{axis}ticks")())
++                        if n:
++                            if axis == "x":
++                                ax.set_xlim(-.5, n - .5)
++                            else:
++                                ax.set_ylim(n - .5, -.5)
++
+         engine_default = None if p._target is not None else "tight"
+         layout_engine = p._layout_spec.get("engine", engine_default)
+         set_layout_engine(self._figure, layout_engine)
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..25aae8e5 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -184,6 +184,7 @@ class Nominal(Scale):
+                 # axis.set_major_formatter(major_formatter)
+ 
+         mpl_scale = CatScale(data.name)
++        axis_obj = None
+         if axis is None:
+             axis = PseudoAxis(mpl_scale)
+ 
+@@ -191,6 +192,8 @@ class Nominal(Scale):
+             # we use this to (A) set the padding we want for categorial plots
+             # and (B) allow the values parameter for a Coordinate to set xlim/ylim
+             axis.set_view_interval(0, len(units_seed) - 1)
++        else:
++            axis_obj = axis
+ 
+         new._matplotlib_scale = mpl_scale
+ 
+@@ -199,6 +202,20 @@ class Nominal(Scale):
+         # (i.e. if we have [1, 2.5], do we want [1.0, 2.5]? Unclear)
+         axis.update_units(stringify(np.array(units_seed)))
+ 
++        # We want a nominal axis to look like a categorical axis: draw a half
++        # unit margin beyond the extreme categories, hide the grid, and invert
++        # the axis when it is vertical. Matplotlib's autoscaling would otherwise
++        # apply a proportional margin, so we fix the limits explicitly here.
++        if axis_obj is not None:
++            axis_obj.grid(False)
++            n = len(units_seed)
++            if n:
++                ax = axis_obj.axes
++                if axis_obj.axis_name == "x":
++                    ax.set_xlim(-.5, n - .5)
++                else:
++                    ax.set_ylim(n - .5, -.5)
++
+         # TODO define this more centrally
+         def convert_units(x):
+             # TODO only do this with explicit order?

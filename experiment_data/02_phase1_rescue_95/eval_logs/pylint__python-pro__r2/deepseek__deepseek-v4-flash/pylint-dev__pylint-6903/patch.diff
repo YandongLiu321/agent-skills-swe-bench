@@ -1,0 +1,30 @@
+diff --git a/pylint/lint/run.py b/pylint/lint/run.py
+index a7e5d557..a5e5ffcd 100644
+--- a/pylint/lint/run.py
++++ b/pylint/lint/run.py
+@@ -58,6 +58,15 @@ def _query_cpu() -> int | None:
+             cpu_shares = int(file.read().rstrip())
+         # For AWS, gives correct value * 1024.
+         avail_cpu = int(cpu_shares / 1024)
++
++    # On systems with a single CPU, the cgroup values above result in
++    # ``avail_cpu`` being 1. In some containerized environments, though, they
++    # can result in ``avail_cpu`` being 0 (for example when ``cpu.shares`` is
++    # lower than 1024). The number of CPUs can never be 0, so return at least 1
++    # in that case. ``None`` is preserved to signal that no cgroup information
++    # was available and the caller should use its regular fallback.
++    if avail_cpu is not None:
++        return max(avail_cpu, 1)
+     return avail_cpu
+ 
+ 
+@@ -76,7 +85,8 @@ def _cpu_count() -> int:
+     else:
+         cpu_count = 1
+     if cpu_share is not None:
+-        return min(cpu_share, cpu_count)
++        # Multiprocessing requires at least one process.
++        return max(min(cpu_share, cpu_count), 1)
+     return cpu_count
+ 
+ 

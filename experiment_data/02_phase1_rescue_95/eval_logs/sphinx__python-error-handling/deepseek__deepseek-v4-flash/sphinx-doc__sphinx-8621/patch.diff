@@ -1,0 +1,87 @@
+diff --git a/sphinx/builders/html/transforms.py b/sphinx/builders/html/transforms.py
+index c91da57e9..419f0a553 100644
+--- a/sphinx/builders/html/transforms.py
++++ b/sphinx/builders/html/transforms.py
+@@ -8,8 +8,7 @@
+     :license: BSD, see LICENSE for details.
+ """
+ 
+-import re
+-from typing import Any, Dict
++from typing import Any, Dict, List
+ 
+ from docutils import nodes
+ 
+@@ -37,13 +36,13 @@ class KeyboardTransform(SphinxPostTransform):
+     """
+     default_priority = 400
+     builders = ('html',)
+-    pattern = re.compile(r'(-|\+|\^|\s+)')
++    separators = ('-', '+', '^')
+ 
+     def run(self, **kwargs: Any) -> None:
+         matcher = NodeMatcher(nodes.literal, classes=["kbd"])
+         for node in self.document.traverse(matcher):  # type: nodes.literal
+-            parts = self.pattern.split(node[-1].astext())
+-            if len(parts) == 1:
++            parts = self._split(node[-1].astext())
++            if len(parts) <= 1:
+                 continue
+ 
+             node.pop()
+@@ -58,6 +57,55 @@ class KeyboardTransform(SphinxPostTransform):
+                 except IndexError:
+                     pass
+ 
++    def _split(self, text: str) -> List[str]:
++        """Split *text* into keys and key separators.
++
++        Compound-key separators (``-``, ``+`` and ``^``) as well as
++        whitespace separate keys.  A separator character is, however, handled
++        as a key if it does not separate two keys (for example the standalone
++        keystrokes ``-``, ``+`` and ``^``, or the trailing ``+`` of
++        ``Shift-+``).
++        """
++        parts = []  # type: List[str]
++        key = ''
++        i = 0
++        while i < len(text):
++            char = text[i]
++            if char in self.separators:
++                # A separator must be preceded by a key and followed by more
++                # input.  Otherwise it is a keystroke itself.
++                if key and i + 1 < len(text):
++                    parts.append(key)
++                    parts.append(char)
++                    key = ''
++                else:
++                    key += char
++                i += 1
++            elif char.isspace():
++                j = i
++                while j < len(text) and text[j].isspace():
++                    j += 1
++                whitespace = text[i:j]
++                if key:
++                    parts.append(key)
++                    parts.append(whitespace)
++                    key = ''
++                elif parts:
++                    # Whitespace immediately after a separator.
++                    parts[-1] += whitespace
++                else:
++                    # Leading whitespace is a part of the first key.
++                    key = whitespace
++                i = j
++            else:
++                key += char
++                i += 1
++
++        if key:
++            parts.append(key)
++
++        return parts
++
+ 
+ def setup(app: Sphinx) -> Dict[str, Any]:
+     app.add_post_transform(KeyboardTransform)

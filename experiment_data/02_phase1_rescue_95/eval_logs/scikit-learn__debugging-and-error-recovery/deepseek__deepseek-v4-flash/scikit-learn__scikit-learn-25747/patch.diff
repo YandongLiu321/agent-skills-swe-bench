@@ -1,0 +1,34 @@
+diff --git a/sklearn/utils/_set_output.py b/sklearn/utils/_set_output.py
+index 335773c6a..6da84497f 100755
+--- a/sklearn/utils/_set_output.py
++++ b/sklearn/utils/_set_output.py
+@@ -34,7 +34,10 @@ def _wrap_in_pandas_container(
+         `range(n_features)`.
+ 
+     index : array-like, default=None
+-        Index for data.
++        Index for data. It is only used if its length matches the number of
++        rows of `data_to_wrap`. This is required for transformers that do not
++        preserve the number of samples (e.g. transformers that aggregate
++        samples), in which case the index of the original input is not valid.
+ 
+     Returns
+     -------
+@@ -52,6 +55,17 @@ def _wrap_in_pandas_container(
+ 
+     pd = check_pandas_support("Setting output container to 'pandas'")
+ 
++    if index is not None:
++        # Do not attempt to set the index when the number of samples changed,
++        # otherwise pandas raises a `ValueError` (or silently reindexes the
++        # output, introducing missing values).
++        try:
++            n_samples = len(data_to_wrap)
++        except TypeError:
++            n_samples = None
++        if n_samples is None or len(index) != n_samples:
++            index = None
++
+     if isinstance(data_to_wrap, pd.DataFrame):
+         if columns is not None:
+             data_to_wrap.columns = columns

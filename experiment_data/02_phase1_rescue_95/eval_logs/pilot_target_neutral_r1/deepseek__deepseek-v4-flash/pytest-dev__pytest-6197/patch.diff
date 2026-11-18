@@ -1,0 +1,27 @@
+diff --git a/src/_pytest/python.py b/src/_pytest/python.py
+index 306e5f217..76fc5bb5e 100644
+--- a/src/_pytest/python.py
++++ b/src/_pytest/python.py
+@@ -379,6 +379,14 @@ class PyCollector(PyobjMixin, nodes.Collector):
+                     res = [res]
+                 values.extend(res)
+         values.sort(key=lambda item: item.reportinfo()[:2])
++        if values:
++            # Package-level marks such as ``pytestmark`` are stored on the
++            # package collector itself, which lazily imports the package's
++            # ``__init__.py``.  Load them now that we know there are actual
++            # tests to collect, so packages without tests are not imported.
++            for parent in self.listchain():
++                if isinstance(parent, Package):
++                    parent._mount_obj_if_needed()
+         return values
+ 
+     def _makeitem(self, name, obj):
+@@ -639,7 +647,6 @@ class Package(Module):
+         return path in self.session._initialpaths
+ 
+     def collect(self):
+-        self._mount_obj_if_needed()
+         this_path = self.fspath.dirpath()
+         init_module = this_path.join("__init__.py")
+         if init_module.check(file=1) and path_matches_patterns(

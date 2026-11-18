@@ -1,0 +1,28 @@
+diff --git a/pylint/lint/run.py b/pylint/lint/run.py
+index a7e5d557..82c20b86 100644
+--- a/pylint/lint/run.py
++++ b/pylint/lint/run.py
+@@ -58,7 +58,13 @@ def _query_cpu() -> int | None:
+             cpu_shares = int(file.read().rstrip())
+         # For AWS, gives correct value * 1024.
+         avail_cpu = int(cpu_shares / 1024)
+-    return avail_cpu
++
++    # The number of CPUs must be at least 1, otherwise multiprocessing
++    # will fail to create a pool with a job count of 0.
++    # See https://github.com/PyCQA/pylint/issues/6779.
++    if avail_cpu is None:
++        return None
++    return max(avail_cpu, 1)
+ 
+ 
+ def _cpu_count() -> int:
+@@ -76,7 +82,7 @@ def _cpu_count() -> int:
+     else:
+         cpu_count = 1
+     if cpu_share is not None:
+-        return min(cpu_share, cpu_count)
++        return max(1, min(cpu_share, cpu_count))
+     return cpu_count
+ 
+ 

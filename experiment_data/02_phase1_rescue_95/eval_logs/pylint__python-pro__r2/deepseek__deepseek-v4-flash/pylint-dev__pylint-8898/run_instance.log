@@ -1,0 +1,206 @@
+2026-10-07 04:36:23,939 - INFO - Creating container for pylint-dev__pylint-8898...
+2026-10-07 04:36:23,992 - INFO - Container for pylint-dev__pylint-8898 created: a052652394a40aaebf5b0a82911fc770b429339643b444dd4c1f342d6ef6f3c7
+2026-10-07 04:36:24,106 - INFO - Container for pylint-dev__pylint-8898 started: a052652394a40aaebf5b0a82911fc770b429339643b444dd4c1f342d6ef6f3c7
+2026-10-07 04:36:24,107 - INFO - Intermediate patch for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-pro__r2\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\patch.diff, now applying to container...
+2026-10-07 04:36:24,194 - INFO - >>>>> Applied Patch:
+Checking patch pylint/config/utils.py...
+Checking patch pylint/utils/utils.py...
+Applied patch pylint/config/utils.py cleanly.
+Applied patch pylint/utils/utils.py cleanly.
+
+2026-10-07 04:36:24,372 - INFO - Git diff before:
+diff --git a/pylint/config/utils.py b/pylint/config/utils.py
+index 91e4ff86f..634fec826 100644
+--- a/pylint/config/utils.py
++++ b/pylint/config/utils.py
+@@ -134,7 +134,7 @@ def _convert_option_to_argument(
+ def _parse_rich_type_value(value: Any) -> str:
+     """Parse rich (toml) types into strings."""
+     if isinstance(value, (list, tuple)):
+-        return ",".join(_parse_rich_type_value(i) for i in value)
++        return ",".join(_parse_rich_type_value(i).replace(",", "\\,") for i in value)
+     if isinstance(value, re.Pattern):
+         return str(value.pattern)
+     if isinstance(value, dict):
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..a06c31db8 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,12 +213,19 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    The separator can be escaped with a backslash (``\\,``) or the whole field
++    can be quoted with double quotes, so that a field can contain the separator.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+-    >>> _splitstrip('a,\nb,\nc,')
++    >>> _splitstrip('a,\\nb,\\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip('a\\,b,c')
++    ['a,b', 'c']
++    >>> _splitstrip('"a,b",c')
++    ['a,b', 'c']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -229,7 +236,52 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    words: list[str] = []
++    word: list[str] = []
++    in_quotes = False
++    escaped = False
++    started = False
++    for character in string:
++        if escaped:
++            # Only the separator is used as an escape sequence, so that
++            # regular expressions keep their backslashes intact.
++            if character == sep:
++                word.append(character)
++            else:
++                word.append("\\")
++                word.append(character)
++            escaped = False
++            started = started or not character.isspace()
++            continue
++        if character == "\\":
++            escaped = True
++            continue
++        if in_quotes:
++            if character == '"':
++                in_quotes = False
++            else:
++                word.append(character)
++            continue
++        if character == sep:
++            stripped = "".join(word).strip()
++            if stripped:
++                words.append(stripped)
++            word = []
++            started = False
++            continue
++        if character == '"' and not started:
++            in_quotes = True
++            started = True
++            continue
++        word.append(character)
++        if not character.isspace():
++            started = True
++    if escaped:
++        word.append("\\")
++    stripped = "".join(word).strip()
++    if stripped:
++        words.append(stripped)
++    return words
+ 
+ 
+ def _unquote(string: str) -> str:
+2026-10-07 04:36:24,374 - INFO - Eval script for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-pro__r2\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\eval.sh; copying to container...
+2026-10-07 04:36:29,951 - INFO - Test runtime: 5.54 seconds
+2026-10-07 04:36:29,952 - INFO - Test output for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-pro__r2\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\test_output.txt
+2026-10-07 04:36:29,990 - INFO - Git diff after:
+diff --git a/pylint/config/utils.py b/pylint/config/utils.py
+index 91e4ff86f..634fec826 100644
+--- a/pylint/config/utils.py
++++ b/pylint/config/utils.py
+@@ -134,7 +134,7 @@ def _convert_option_to_argument(
+ def _parse_rich_type_value(value: Any) -> str:
+     """Parse rich (toml) types into strings."""
+     if isinstance(value, (list, tuple)):
+-        return ",".join(_parse_rich_type_value(i) for i in value)
++        return ",".join(_parse_rich_type_value(i).replace(",", "\\,") for i in value)
+     if isinstance(value, re.Pattern):
+         return str(value.pattern)
+     if isinstance(value, dict):
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..a06c31db8 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,12 +213,19 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    The separator can be escaped with a backslash (``\\,``) or the whole field
++    can be quoted with double quotes, so that a field can contain the separator.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+-    >>> _splitstrip('a,\nb,\nc,')
++    >>> _splitstrip('a,\\nb,\\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip('a\\,b,c')
++    ['a,b', 'c']
++    >>> _splitstrip('"a,b",c')
++    ['a,b', 'c']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -229,7 +236,52 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    words: list[str] = []
++    word: list[str] = []
++    in_quotes = False
++    escaped = False
++    started = False
++    for character in string:
++        if escaped:
++            # Only the separator is used as an escape sequence, so that
++            # regular expressions keep their backslashes intact.
++            if character == sep:
++                word.append(character)
++            else:
++                word.append("\\")
++                word.append(character)
++            escaped = False
++            started = started or not character.isspace()
++            continue
++        if character == "\\":
++            escaped = True
++            continue
++        if in_quotes:
++            if character == '"':
++                in_quotes = False
++            else:
++                word.append(character)
++            continue
++        if character == sep:
++            stripped = "".join(word).strip()
++            if stripped:
++                words.append(stripped)
++            word = []
++            started = False
++            continue
++        if character == '"' and not started:
++            in_quotes = True
++            started = True
++            continue
++        word.append(character)
++        if not character.isspace():
++            started = True
++    if escaped:
++        word.append("\\")
++    stripped = "".join(word).strip()
++    if stripped:
++        words.append(stripped)
++    return words
+ 
+ 
+ def _unquote(string: str) -> str:
+2026-10-07 04:36:29,991 - INFO - Grading answer for pylint-dev__pylint-8898...
+2026-10-07 04:36:29,991 - INFO - report: {'pylint-dev__pylint-8898': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/config/test_config.py::test_csv_regex_error']}, 'PASS_TO_PASS': {'success': ['tests/config/test_config.py::test_can_read_toml_env_variable', 'tests/config/test_config.py::test_unknown_message_id', 'tests/config/test_config.py::test_unknown_option_name', 'tests/config/test_config.py::test_unknown_short_option_name', 'tests/config/test_config.py::test_unknown_confidence', 'tests/config/test_config.py::test_empty_confidence', 'tests/config/test_config.py::test_unknown_yes_no', 'tests/config/test_config.py::test_unknown_py_version', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo-expected0]', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,bar-expected1]', 'tests/config/test_config.py::test_regex_error', 'tests/config/test_config.py::test_short_verbose', 'tests/config/test_config.py::test_argument_separator', 'tests/config/test_config.py::test_clear_cache_post_run', 'tests/config/test_config.py::test_enable_all_disable_all_mutually_exclusive', 'tests/config/test_config.py::test_disable_before_enable_all_takes_effect', 'tests/config/test_config.py::test_enable_before_disable_all_takes_effect'], 'failure': ['tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,']}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-8898: resolved: False
+2026-10-07 04:36:29,992 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-8898.pylint__python-pro__r2...
+2026-10-07 04:36:45,276 - INFO - Container sweb.eval.pylint-dev__pylint-8898.pylint__python-pro__r2 stopped successfully.
+2026-10-07 04:36:45,276 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-8898.pylint__python-pro__r2...
+2026-10-07 04:36:45,369 - INFO - Container sweb.eval.pylint-dev__pylint-8898.pylint__python-pro__r2 removed successfully.

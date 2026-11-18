@@ -1,0 +1,165 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..22fc2fbaf 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,87 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++def _split_regexp_csv(value: str) -> Sequence[str]:
++    """Split a comma separated list of regular expressions.
++
++    Commas inside balanced regular expression groups, character classes or
++    repetition quantifiers are not treated as separators. Commas can also be
++    escaped with a backslash or enclosed in quotes to prevent them from being
++    used as separators. The escaping backslash is removed from the resulting
++    patterns.
++    """
++    fields: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    escaped = False
++    parentheses = 0
++    brackets = 0
++    braces = 0
++
++    for character in value:
++        if escaped:
++            current.append(character)
++            if character == "[" and not brackets:
++                brackets = 1
++            elif character == "]" and brackets:
++                brackets -= 1
++            elif character == "(" and not brackets:
++                parentheses += 1
++            elif character == ")" and not brackets:
++                parentheses = max(parentheses - 1, 0)
++            elif character == "{" and not brackets:
++                braces += 1
++            elif character == "}" and not brackets:
++                braces = max(braces - 1, 0)
++            escaped = False
++            continue
++        if character == "\\":
++            current.append(character)
++            escaped = True
++            continue
++        if quote is not None:
++            if character == quote:
++                quote = None
++            current.append(character)
++            continue
++        if character in "\"'" and not "".join(current).strip():
++            quote = character
++        elif character == "[":
++            if not brackets:
++                brackets = 1
++        elif character == "]":
++            if brackets:
++                brackets -= 1
++        elif character == "(" and not brackets:
++            parentheses += 1
++        elif character == ")" and not brackets:
++            parentheses = max(parentheses - 1, 0)
++        elif character == "{" and not brackets:
++            braces += 1
++        elif character == "}" and not brackets:
++            braces = max(braces - 1, 0)
++        elif character == "," and not (parentheses or brackets or braces):
++            fields.append("".join(current))
++            current = []
++            continue
++        current.append(character)
++
++    fields.append("".join(current))
++    patterns: list[str] = []
++    for field in fields:
++        field = field.strip()
++        if not field:
++            continue
++        field = pylint_utils._unquote(field).replace("\\,", ",")
++        if field:
++            patterns.append(field)
++    return patterns
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regexp_csv(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 
+@@ -122,7 +199,7 @@ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions paths."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regexp_csv(value):
+         patterns.append(
+             re.compile(
+                 str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+diff --git a/pylint/config/utils.py b/pylint/config/utils.py
+index 91e4ff86f..74e05252d 100644
+--- a/pylint/config/utils.py
++++ b/pylint/config/utils.py
+@@ -134,7 +134,13 @@ def _convert_option_to_argument(
+ def _parse_rich_type_value(value: Any) -> str:
+     """Parse rich (toml) types into strings."""
+     if isinstance(value, (list, tuple)):
+-        return ",".join(_parse_rich_type_value(i) for i in value)
++        # Escape commas that are part of an item so that the list structure
++        # survives the conversion to a comma-separated string. This is
++        # necessary for options whose values can themselves contain commas,
++        # such as regular expressions (e.g. ``foo{1,3}``).
++        return ",".join(
++            _parse_rich_type_value(item).replace(",", "\\,") for item in value
++        )
+     if isinstance(value, re.Pattern):
+         return str(value.pattern)
+     if isinstance(value, dict):
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..2918527aa 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,6 +213,9 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A backslash can be used to escape `sep` so that it is not interpreted as
++    a separator. The backslash is removed from the resulting string.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+@@ -229,7 +232,28 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    if len(sep) != 1:
++        return [word.strip() for word in string.split(sep) if word.strip()]
++
++    result: list[str] = []
++    current: list[str] = []
++    escaped = False
++    for character in string:
++        if escaped:
++            current.append(character)
++            escaped = False
++        elif character == "\\":
++            current.append(character)
++            escaped = True
++        elif character == sep:
++            result.append("".join(current).strip())
++            current = []
++        else:
++            current.append(character)
++    result.append("".join(current).strip())
++
++    escaped_sep = f"\\{sep}"
++    return [word.replace(escaped_sep, sep) for word in result if word]
+ 
+ 
+ def _unquote(string: str) -> str:

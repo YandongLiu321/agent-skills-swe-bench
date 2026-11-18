@@ -1,0 +1,70 @@
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..101ea9387 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,12 +213,19 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    The splitting is not performed inside a bracket expression (``{}``,
++    ``[]`` or ``()``) so that regular expressions containing a comma can be
++    used in options expecting a comma separated list of regular expressions.
++    A separator can also be escaped with a backslash.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+     >>> _splitstrip('a,\nb,\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip('a{1,3},b')
++    ['a{1,3}', 'b']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -229,7 +236,44 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    result: list[str] = []
++    word: list[str] = []
++    depth = 0
++    escaped = False
++    index = 0
++    length = len(string)
++    while index < length:
++        char = string[index]
++        if escaped:
++            word.append(char)
++            escaped = False
++            index += 1
++        elif char == "\\":
++            word.append(char)
++            escaped = True
++            index += 1
++        elif char in "{[(":
++            depth += 1
++            word.append(char)
++            index += 1
++        elif char in "}])":
++            if depth > 0:
++                depth -= 1
++            word.append(char)
++            index += 1
++        elif depth == 0 and string.startswith(sep, index):
++            stripped = "".join(word).strip()
++            if stripped:
++                result.append(stripped)
++            word = []
++            index += len(sep)
++        else:
++            word.append(char)
++            index += 1
++    stripped = "".join(word).strip()
++    if stripped:
++        result.append(stripped)
++    return result
+ 
+ 
+ def _unquote(string: str) -> str:

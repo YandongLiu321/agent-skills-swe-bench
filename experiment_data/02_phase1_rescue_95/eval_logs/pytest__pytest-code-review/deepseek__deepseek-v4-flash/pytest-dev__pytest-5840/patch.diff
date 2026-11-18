@@ -1,0 +1,52 @@
+diff --git a/src/_pytest/config/__init__.py b/src/_pytest/config/__init__.py
+index 3a0eca546..fe71ed6b2 100644
+--- a/src/_pytest/config/__init__.py
++++ b/src/_pytest/config/__init__.py
+@@ -406,20 +406,18 @@ class PytestPluginManager(PluginManager):
+         else:
+             directory = path
+ 
+-        directory = unique_path(directory)
+-
+         # XXX these days we may rather want to use config.rootdir
+         # and allow users to opt into looking into the rootdir parent
+         # directories instead of requiring to specify confcutdir
+         clist = []
+-        for parent in directory.parts():
+-            if self._confcutdir and self._confcutdir.relto(parent):
++        for parent in directory.realpath().parts():
++            if self._confcutdir and self._confcutdir.relto(unique_path(parent)):
+                 continue
+             conftestpath = parent.join("conftest.py")
+             if conftestpath.isfile():
+                 mod = self._importconftest(conftestpath)
+                 clist.append(mod)
+-        self._dirpath2confmods[directory] = clist
++        self._dirpath2confmods[unique_path(directory)] = clist
+         return clist
+ 
+     def _rget_with_confmod(self, name, path):
+@@ -435,9 +433,10 @@ class PytestPluginManager(PluginManager):
+         # Use realpath to avoid loading the same conftest twice
+         # with build systems that create build directories containing
+         # symlinks to actual files.
+-        conftestpath = unique_path(conftestpath)
++        conftestpath = conftestpath.realpath()
++        unique = unique_path(conftestpath)
+         try:
+-            return self._conftestpath2mod[conftestpath]
++            return self._conftestpath2mod[unique]
+         except KeyError:
+             pkgpath = conftestpath.pypkgpath()
+             if pkgpath is None:
+@@ -454,8 +453,8 @@ class PytestPluginManager(PluginManager):
+                 raise ConftestImportFailure(conftestpath, sys.exc_info())
+ 
+             self._conftest_plugins.add(mod)
+-            self._conftestpath2mod[conftestpath] = mod
+-            dirpath = conftestpath.dirpath()
++            self._conftestpath2mod[unique] = mod
++            dirpath = unique_path(conftestpath.dirpath())
+             if dirpath in self._dirpath2confmods:
+                 for path, mods in self._dirpath2confmods.items():
+                     if path and path.relto(dirpath) or path == dirpath:

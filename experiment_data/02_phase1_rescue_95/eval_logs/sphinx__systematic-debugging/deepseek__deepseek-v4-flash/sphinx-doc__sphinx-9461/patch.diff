@@ -1,0 +1,95 @@
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..00a9cb4a1 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -868,6 +869,8 @@ class PyProperty(PyObject):
+         prefix = ['property']
+         if 'abstractmethod' in self.options:
+             prefix.insert(0, 'abstract')
++        if 'classmethod' in self.options:
++            prefix.insert(0, 'classmethod')
+ 
+         return ' '.join(prefix) + ' '
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..420b60b31 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -12,7 +12,7 @@
+ 
+ import re
+ import warnings
+-from inspect import Parameter, Signature
++from inspect import Parameter, Signature, getattr_static
+ from types import ModuleType
+ from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence,
+                     Set, Tuple, Type, TypeVar, Union)
+@@ -2663,6 +2663,21 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+                             ) -> bool:
+         return inspect.isproperty(member) and isinstance(parent, ClassDocumenter)
+ 
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++        if not ret:
++            return ret
++
++        # A classmethod wrapped property is evaluated when accessed through the
++        # class, so getattr() returns the property value instead of the property
++        # itself.  Fetch the descriptor statically to get the property object.
++        if self.parent is not None:
++            obj = getattr_static(self.parent, self.object_name, None)
++            if isinstance(obj, classmethod) and isinstance(obj.__func__, property):
++                self.object = obj.__func__
++
++        return ret
++
+     def document_members(self, all_members: bool = False) -> None:
+         pass
+ 
+@@ -2676,6 +2691,11 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         if inspect.isabstractmethod(self.object):
+             self.add_line('   :abstractmethod:', sourcename)
+ 
++        if self.parent is not None:
++            obj = getattr_static(self.parent, self.object_name, None)
++            if isinstance(obj, classmethod) and isinstance(obj.__func__, property):
++                self.add_line('   :classmethod:', sourcename)
++
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+                 signature = inspect.signature(self.object.fget,
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..171166500 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -11,6 +11,7 @@
+ import importlib
+ import traceback
+ import warnings
++from inspect import getattr_static
+ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+ 
+ from sphinx.deprecation import RemovedInSphinx50Warning
+@@ -278,6 +279,14 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+             if ismock(value):
+                 value = undecorate(value)
+ 
++            # A classmethod wrapped property is evaluated when accessed through
++            # the class, hiding the property object itself.  Use the descriptor
++            # from the class dictionary to keep the property and its docstring.
++            descriptor = getattr_static(subject, name, None)
++            if (isinstance(descriptor, classmethod) and
++                    isinstance(descriptor.__func__, property)):
++                value = descriptor.__func__
++
+             unmangled = unmangle(subject, name)
+             if unmangled and unmangled not in members:
+                 if name in obj_dict:

@@ -1,0 +1,118 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..8fc6b1dd 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -23,6 +23,64 @@ import astroid
+ from pylint.pyreverse import utils
+ 
+ 
++def _get_annotation(node):
++    """Return the type annotation node of the given assignment, if any.
++
++    This takes annotated assignments (PEP 526) as well as instance
++    attributes assigned from an annotated argument of the enclosing function
++    into account, e.g.::
++
++        class C:
++            def __init__(self, a: str = None):
++                self.a = a
++    """
++    assignment = node.parent
++    if isinstance(assignment, astroid.AnnAssign):
++        return assignment.annotation
++    if isinstance(assignment, astroid.Assign) and isinstance(
++        assignment.value, astroid.Name
++    ):
++        frame = node.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            return _get_argument_annotation(frame.args, assignment.value.name)
++    return None
++
++
++def _get_argument_annotation(arguments, name):
++    """Return the annotation of the function argument called ``name`` if any."""
++    for args, annotations in (
++        (arguments.args, arguments.annotations),
++        (arguments.posonlyargs, arguments.posonlyargs_annotations),
++        (arguments.kwonlyargs, arguments.kwonlyargs_annotations),
++    ):
++        for arg, annotation in zip(args, annotations):
++            if arg.name == name:
++                return annotation
++    if arguments.vararg == name:
++        return arguments.varargannotation
++    if arguments.kwarg == name:
++        return arguments.kwargannotation
++    return None
++
++
++def _infer_assignment_values(node):
++    """Return the values assigned to ``node``.
++
++    When the assignment is annotated, the annotation takes precedence over
++    the inferred value so that for instance ``a: str = None`` is resolved to
++    ``str`` rather than to ``NoneType``.
++    """
++    annotation = _get_annotation(node)
++    if annotation is not None:
++        try:
++            values = set(annotation.infer())
++        except astroid.InferenceError:
++            values = set()
++        if values and not all(value is astroid.Uninferable for value in values):
++            return values
++    return set(node.infer())
++
++
+ def _iface_hdlr(_):
+     """Handler used by interfaces to handle suspicious interface nodes."""
+     return True
+@@ -218,7 +276,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _infer_assignment_values(node)
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +288,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _infer_assignment_values(node)
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..8433da9e 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -51,6 +53,17 @@ PRIVATE = re.compile(r"^__(_*[^\W_])+_?$")
+ PROTECTED = re.compile(r"^_\w*$")
+ 
+ 
++def get_annotation_label(annotation):
++    """Return the label for the given annotation.
++
++    The label is the name of the annotation when it is a simple name, and its
++    string representation otherwise.
++    """
++    if isinstance(annotation, astroid.Name):
++        return annotation.name
++    return annotation.as_string()
++
++
+ def get_visibility(name):
+     """return the visibility from a name: public, protected, private or special"""
+     if SPECIAL.match(name):

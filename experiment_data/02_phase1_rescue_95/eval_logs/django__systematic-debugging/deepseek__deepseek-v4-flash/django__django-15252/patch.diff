@@ -1,0 +1,65 @@
+diff --git a/django/db/migrations/executor.py b/django/db/migrations/executor.py
+index aa2fe0883b..94941cabbf 100755
+--- a/django/db/migrations/executor.py
++++ b/django/db/migrations/executor.py
+@@ -88,6 +88,33 @@ class MigrationExecutor:
+                     migration.mutate_state(state, preserve=False)
+         return state
+ 
++    def _router_allows_migrations(self, full_plan, app_labels):
++        """
++        Return True if the database router allows migrating at least one of
++        the models touched by the migrations in ``full_plan`` for the apps in
++        ``app_labels``.
++        """
++        models = {}
++        state = ProjectState(real_apps=self.loader.unmigrated_apps)
++        for migration, _ in full_plan:
++            for operation in migration.operations:
++                operation.state_forwards(migration.app_label, state)
++            if migration.app_label in app_labels:
++                for model in state.apps.get_models():
++                    if model._meta.app_label in app_labels:
++                        models[model._meta.label_lower] = model
++        if models:
++            return any(
++                router.allow_migrate_model(self.connection.alias, model)
++                for model in models.values()
++            )
++        # Fall back to the app-level check for migrations that don't touch any
++        # model (e.g. data migrations).
++        return any(
++            router.allow_migrate(self.connection.alias, app_label)
++            for app_label in app_labels
++        )
++
+     def migrate(self, targets, plan=None, state=None, fake=False, fake_initial=False):
+         """
+         Migrate the database up to the given targets.
+@@ -95,15 +122,22 @@ class MigrationExecutor:
+         Django first needs to create all project states before a migration is
+         (un)applied and in a second step run all the database operations.
+         """
+-        # The django_migrations table must be present to record applied
+-        # migrations.
+-        self.recorder.ensure_schema()
+-
+         if plan is None:
+             plan = self.migration_plan(targets)
+         # Create the forwards plan Django would follow on an empty database
+         full_plan = self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True)
+ 
++        # The django_migrations table must be present to record applied
++        # migrations, but don't create it if there are no migrations to apply
++        # or if the database router disallows all of them.
++        if not plan:
++            if not self.recorder.has_table():
++                return self._create_project_state(with_applied_migrations=False)
++        elif not self._router_allows_migrations(full_plan, {m.app_label for m, _ in plan}):
++            return self._create_project_state(with_applied_migrations=False)
++        else:
++            self.recorder.ensure_schema()
++
+         all_forwards = all(not backwards for mig, backwards in plan)
+         all_backwards = all(backwards for mig, backwards in plan)
+ 

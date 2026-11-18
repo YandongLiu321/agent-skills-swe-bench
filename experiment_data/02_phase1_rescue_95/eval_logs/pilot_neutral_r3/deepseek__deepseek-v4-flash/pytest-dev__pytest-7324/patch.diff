@@ -1,0 +1,39 @@
+diff --git a/src/_pytest/mark/expression.py b/src/_pytest/mark/expression.py
+index 04c73411a..90f5f0600 100644
+--- a/src/_pytest/mark/expression.py
++++ b/src/_pytest/mark/expression.py
+@@ -39,6 +39,13 @@ __all__ = [
+ ]
+ 
+ 
++# Identifiers like "True", "False" and "None" cannot be represented by an
++# ast.Name node, since the compiler treats them as constants.  Prefix them
++# with a character which the expression grammar cannot produce, and strip it
++# again when looking up the matcher.
++_MATCH_EXPRESSION_IDENT_PREFIX = "@"
++
++
+ class TokenType(enum.Enum):
+     LPAREN = "left parenthesis"
+     RPAREN = "right parenthesis"
+@@ -161,7 +168,10 @@ def not_expr(s: Scanner) -> ast.expr:
+         return ret
+     ident = s.accept(TokenType.IDENT)
+     if ident:
+-        return ast.Name(ident.value, ast.Load())
++        name = ident.value
++        if name in ("True", "False", "None"):
++            name = _MATCH_EXPRESSION_IDENT_PREFIX + name
++        return ast.Name(name, ast.Load())
+     s.reject((TokenType.NOT, TokenType.LPAREN, TokenType.IDENT))
+ 
+ 
+@@ -172,6 +182,8 @@ class MatcherAdapter(Mapping[str, bool]):
+         self.matcher = matcher
+ 
+     def __getitem__(self, key: str) -> bool:
++        if key.startswith(_MATCH_EXPRESSION_IDENT_PREFIX):
++            key = key[len(_MATCH_EXPRESSION_IDENT_PREFIX) :]
+         return self.matcher(key)
+ 
+     def __iter__(self) -> Iterator[str]:

@@ -1,0 +1,116 @@
+diff --git a/sympy/printing/latex.py b/sympy/printing/latex.py
+index 8253b2f68..bb3a7ba5a 100644
+--- a/sympy/printing/latex.py
++++ b/sympy/printing/latex.py
+@@ -1477,9 +1477,25 @@ def _print_Adjoint(self, expr):
+             return r"%s^\dagger" % self._print(mat)
+ 
+     def _print_MatAdd(self, expr):
+-        terms = list(expr.args)
+-        tex = " + ".join(map(self._print, terms))
+-        return tex
++        s = None
++        for item in expr.args:
++            if item.is_MatMul and item.args[0].is_Number and item.args[0].is_negative:
++                coeff, mmul = item.as_coeff_mmul()
++                pos = (-coeff)*mmul
++                pform = self._print(pos)
++                if pos.is_MatAdd or pos.is_Add:
++                    pform = r"\left(%s\right)" % pform
++                if s is None:
++                    s = '-' + pform
++                else:
++                    s = '%s - %s' % (s, pform)
++            else:
++                pform = self._print(item)
++                if s is None:
++                    s = pform
++                else:
++                    s = '%s + %s' % (s, pform)
++        return s
+ 
+     def _print_MatMul(self, expr):
+         from sympy import Add, MatAdd, HadamardProduct
+@@ -1488,6 +1504,8 @@ def parens(x):
+             if isinstance(x, (Add, MatAdd, HadamardProduct)):
+                 return r"\left(%s\right)" % self._print(x)
+             return self._print(x)
++        if expr.args[0] == -1:
++            return '-' + ' '.join(map(parens, expr.args[1:]))
+         return ' '.join(map(parens, expr.args))
+ 
+     def _print_Mod(self, expr, exp=None):
+diff --git a/sympy/printing/pretty/pretty.py b/sympy/printing/pretty/pretty.py
+index db24f4c61..ae2484d35 100644
+--- a/sympy/printing/pretty/pretty.py
++++ b/sympy/printing/pretty/pretty.py
+@@ -819,7 +819,28 @@ def _print_BlockMatrix(self, B):
+         return self._print(B.blocks)
+ 
+     def _print_MatAdd(self, expr):
+-        return self._print_seq(expr.args, None, None, ' + ')
++        pforms = []
++        for i, item in enumerate(expr.args):
++            if item.is_MatMul and item.args[0].is_Number and item.args[0].is_negative:
++                coeff, mmul = item.as_coeff_mmul()
++                pform = self._print((-coeff)*mmul)
++                if (i == 0 and pform.height() > 1):
++                    neg = '- '
++                elif i == 0:
++                    neg = '-'
++                else:
++                    neg = ' - '
++                if (pform.binding > prettyForm.NEG
++                        or pform.binding == prettyForm.ADD):
++                    p = stringPict(*pform.parens())
++                else:
++                    p = pform
++                p = stringPict.next(neg, p)
++                pform = prettyForm(binding=prettyForm.NEG, *p)
++            else:
++                pform = self._print(item)
++            pforms.append(pform)
++        return prettyForm.__add__(*pforms)
+ 
+     def _print_MatMul(self, expr):
+         args = list(expr.args)
+diff --git a/sympy/printing/str.py b/sympy/printing/str.py
+index 0baefe0f7..95edb3862 100644
+--- a/sympy/printing/str.py
++++ b/sympy/printing/str.py
+@@ -304,6 +304,10 @@ def _print_Mul(self, expr):
+             return sign + '*'.join(a_str) + "/(%s)" % '*'.join(b_str)
+ 
+     def _print_MatMul(self, expr):
++        args = list(expr.args)
++        if args[0] == -1:
++            return '-' + '*'.join([self.parenthesize(arg, precedence(expr))
++                for arg in args[1:]])
+         return '*'.join([self.parenthesize(arg, precedence(expr))
+             for arg in expr.args])
+ 
+@@ -312,8 +316,22 @@ def _print_HadamardProduct(self, expr):
+             for arg in expr.args])
+ 
+     def _print_MatAdd(self, expr):
+-        return ' + '.join([self.parenthesize(arg, precedence(expr))
+-            for arg in expr.args])
++        s = None
++        for item in expr.args:
++            if item.is_MatMul and item.args[0].is_Number and item.args[0].is_negative:
++                coeff, mmul = item.as_coeff_mmul()
++                pform = self.parenthesize((-coeff)*mmul, precedence(expr))
++                if s is None:
++                    s = '-' + pform
++                else:
++                    s = '%s - %s' % (s, pform)
++            else:
++                pform = self.parenthesize(item, precedence(expr))
++                if s is None:
++                    s = pform
++                else:
++                    s = '%s + %s' % (s, pform)
++        return s
+ 
+     def _print_NaN(self, expr):
+         return 'nan'

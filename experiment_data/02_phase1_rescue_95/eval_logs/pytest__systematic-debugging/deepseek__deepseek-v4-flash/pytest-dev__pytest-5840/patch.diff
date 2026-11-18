@@ -1,0 +1,56 @@
+diff --git a/src/_pytest/config/__init__.py b/src/_pytest/config/__init__.py
+index 3a0eca546..59ebac50e 100644
+--- a/src/_pytest/config/__init__.py
++++ b/src/_pytest/config/__init__.py
+@@ -406,7 +406,13 @@ class PytestPluginManager(PluginManager):
+         else:
+             directory = path
+ 
+-        directory = unique_path(directory)
++        # Keep the casing of the directory as stored in the file system:
++        # the names of the imported conftest modules are derived from it, so
++        # lower-casing it breaks importing packages whose name contains
++        # upper-case letters (#5836). ``unique_path`` is used only for the
++        # cache key, which needs to be unique on case-insensitive file
++        # systems.
++        directory = directory.realpath()
+ 
+         # XXX these days we may rather want to use config.rootdir
+         # and allow users to opt into looking into the rootdir parent
+@@ -419,7 +425,7 @@ class PytestPluginManager(PluginManager):
+             if conftestpath.isfile():
+                 mod = self._importconftest(conftestpath)
+                 clist.append(mod)
+-        self._dirpath2confmods[directory] = clist
++        self._dirpath2confmods[unique_path(directory)] = clist
+         return clist
+ 
+     def _rget_with_confmod(self, name, path):
+@@ -435,9 +441,14 @@ class PytestPluginManager(PluginManager):
+         # Use realpath to avoid loading the same conftest twice
+         # with build systems that create build directories containing
+         # symlinks to actual files.
+-        conftestpath = unique_path(conftestpath)
++        conftestpath = conftestpath.realpath()
++        # ``unique_path`` lower-cases the path on case-insensitive file
++        # systems; it is used only as a cache key. The module itself is
++        # imported from ``conftestpath`` so its name keeps the correct casing
++        # (#5836).
++        unique_conftestpath = unique_path(conftestpath)
+         try:
+-            return self._conftestpath2mod[conftestpath]
++            return self._conftestpath2mod[unique_conftestpath]
+         except KeyError:
+             pkgpath = conftestpath.pypkgpath()
+             if pkgpath is None:
+@@ -454,8 +465,8 @@ class PytestPluginManager(PluginManager):
+                 raise ConftestImportFailure(conftestpath, sys.exc_info())
+ 
+             self._conftest_plugins.add(mod)
+-            self._conftestpath2mod[conftestpath] = mod
+-            dirpath = conftestpath.dirpath()
++            self._conftestpath2mod[unique_conftestpath] = mod
++            dirpath = unique_path(conftestpath.dirpath())
+             if dirpath in self._dirpath2confmods:
+                 for path, mods in self._dirpath2confmods.items():
+                     if path and path.relto(dirpath) or path == dirpath:

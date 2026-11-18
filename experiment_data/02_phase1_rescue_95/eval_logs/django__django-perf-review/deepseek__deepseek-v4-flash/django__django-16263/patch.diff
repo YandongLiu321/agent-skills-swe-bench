@@ -1,0 +1,161 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..5cf8806e0c 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -441,6 +441,7 @@ class Query(BaseExpression):
+         """
+         if not self.annotation_select:
+             return {}
++        self._strip_unused_annotations(set(added_aggregate_names))
+         existing_annotations = [
+             annotation
+             for alias, annotation in self.annotations.items()
+@@ -448,10 +449,10 @@ class Query(BaseExpression):
+         ]
+         # Decide if we need to use a subquery.
+         #
+-        # Existing annotations would cause incorrect results as get_aggregation()
+-        # must produce just one result and thus must not use GROUP BY. But we
+-        # aren't smart enough to remove the existing annotations from the
+-        # query, so those would force us to use GROUP BY.
++        # Annotations that are still referenced by the query would cause
++        # incorrect results as get_aggregation() must produce just one result
++        # and thus must not use GROUP BY. Those annotations would force us to
++        # use GROUP BY, so they have to be computed in a subquery.
+         #
+         # If the query has limit or distinct, or uses set operations, then
+         # those operations must be done in a subquery so that the query
+@@ -553,6 +554,133 @@ class Query(BaseExpression):
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 
++    def _strip_unused_annotations(self, added_aliases):
++        """
++        Remove annotations that are not required to compute the query.
++
++        An annotation is only kept if it is referenced by a filter, by the
++        ordering or grouping, or by another kept annotation (including the
++        aggregates in ``added_aliases``). Joins that were only introduced to
++        resolve removed annotations are dropped as well.
++        """
++
++        def walk(expression):
++            yield expression
++            for source in getattr(expression, "get_source_expressions", lambda: ())():
++                if source is not None:
++                    yield from walk(source)
++
++        annotations = self.annotations
++        if not annotations:
++            return
++        annotation_by_id = {
++            id(annotation): alias for alias, annotation in annotations.items()
++        }
++
++        def referenced_aliases(expression):
++            for node in walk(expression):
++                if isinstance(node, Ref):
++                    if node.refs in annotations:
++                        yield node.refs
++                else:
++                    alias = annotation_by_id.get(id(node))
++                    if alias is not None:
++                        yield alias
++
++        referenced = set(added_aliases) & set(annotations)
++        roots = [self.where]
++        for item in self.order_by:
++            if isinstance(item, str):
++                alias = item[1:] if item.startswith("-") else item
++                if alias in annotations:
++                    referenced.add(alias)
++            elif item is not None:
++                roots.append(item)
++        if isinstance(self.group_by, tuple):
++            roots.extend(self.group_by)
++        for alias in added_aliases:
++            annotation = annotations.get(alias)
++            if annotation is not None:
++                roots.append(annotation)
++        for expression in roots:
++            referenced.update(referenced_aliases(expression))
++
++        # Follow references between annotations.
++        pending = list(referenced)
++        while pending:
++            alias = pending.pop()
++            annotation = annotations.get(alias)
++            if annotation is None:
++                continue
++            for referenced_alias in referenced_aliases(annotation):
++                if referenced_alias not in referenced:
++                    referenced.add(referenced_alias)
++                    pending.append(referenced_alias)
++
++        removed = set(annotations) - referenced
++        if not removed:
++            return
++
++        def join_aliases(expressions):
++            aliases = set()
++            for expression in expressions:
++                for alias in self._gen_col_aliases([expression]):
++                    while alias in self.alias_map:
++                        aliases.add(alias)
++                        parent = self.alias_map[alias].parent_alias
++                        if parent is None or parent == alias:
++                            break
++                        alias = parent
++            return aliases
++
++        removed_aliases = join_aliases(
++            annotation for alias, annotation in annotations.items() if alias in removed
++        )
++        kept_aliases = {self.base_table}
++        kept_aliases.update(join_aliases([self.where]))
++        kept_aliases.update(
++            join_aliases(
++                annotation
++                for alias, annotation in annotations.items()
++                if alias not in removed
++            )
++        )
++        kept_aliases.update(
++            join_aliases(item for item in self.order_by if not isinstance(item, str))
++        )
++        if isinstance(self.group_by, tuple):
++            kept_aliases.update(join_aliases(self.group_by))
++        kept_aliases.update(join_aliases(self.select))
++        # A join is required as soon as one of its descendants is required.
++        for alias in list(kept_aliases):
++            while alias in self.alias_map:
++                parent = self.alias_map[alias].parent_alias
++                if parent is None or parent == alias:
++                    break
++                kept_aliases.add(parent)
++                alias = parent
++
++        for alias in removed_aliases:
++            if alias not in kept_aliases:
++                self.alias_refcount[alias] = 0
++        # A join cannot be included if the join it descends from is not.
++        changed = True
++        while changed:
++            changed = False
++            for alias in self.alias_map:
++                if not self.alias_refcount.get(alias, 0) or alias in kept_aliases:
++                    continue
++                parent = self.alias_map[alias].parent_alias
++                if parent is not None and not self.alias_refcount.get(parent, 0):
++                    self.alias_refcount[alias] = 0
++                    changed = True
++
++        for alias in removed:
++            del annotations[alias]
++        if self.annotation_select_mask is not None:
++            self.annotation_select_mask -= removed
++        self._annotation_select_cache = None
++
+     def has_filters(self):
+         return self.where
+ 

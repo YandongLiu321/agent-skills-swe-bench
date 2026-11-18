@@ -1,0 +1,84 @@
+diff --git a/lib/matplotlib/contour.py b/lib/matplotlib/contour.py
+index 144eadeae2..0e2e339055 100644
+--- a/lib/matplotlib/contour.py
++++ b/lib/matplotlib/contour.py
+@@ -1117,13 +1117,19 @@ class ContourSet(cm.ScalarMappable, ContourLabeler):
+ 
+         return lev[i0:i1]
+ 
+-    def _process_contour_level_args(self, args):
++    def _process_contour_level_args(self, args, z_dtype=None):
+         """
+         Determine the contour levels and store in self.levels.
+         """
+         if self.levels is None:
+             if len(args) == 0:
+-                levels_arg = 7  # Default, hard-wired.
++                if z_dtype == bool and self.locator is None:
++                    # For boolean arrays, the only sensible contour level is
++                    # between 0 and 1; for filled contours we need boundaries
++                    # around both values.
++                    levels_arg = [0, 0.5, 1] if self.filled else [0.5]
++                else:
++                    levels_arg = 7  # Default, hard-wired.
+             else:
+                 levels_arg = args[0]
+         else:
+@@ -1447,10 +1453,14 @@ class QuadContourSet(ContourSet):
+             fn = 'contour'
+         nargs = len(args)
+         if nargs <= 2:
+-            z = ma.asarray(args[0], dtype=np.float64)
++            z = args[0]
++            z_dtype = np.asarray(z).dtype
++            z = ma.asarray(z, dtype=np.float64)
+             x, y = self._initialize_x_y(z)
+             args = args[1:]
+         elif nargs <= 4:
++            z = args[2]
++            z_dtype = np.asarray(z).dtype
+             x, y, z = self._check_xyz(args[:3], kwargs)
+             args = args[3:]
+         else:
+@@ -1462,7 +1472,7 @@ class QuadContourSet(ContourSet):
+             z = ma.masked_where(z <= 0, z)
+             _api.warn_external('Log scale: values of z <= 0 have been masked')
+             self.zmin = float(z.min())
+-        self._process_contour_level_args(args)
++        self._process_contour_level_args(args, z_dtype)
+         return (x, y, z)
+ 
+     def _check_xyz(self, args, kwargs):
+@@ -1585,6 +1595,9 @@ levels : int or array-like, optional
+     If array-like, draw contour lines at the specified levels.
+     The values must be in increasing order.
+ 
++    If *Z* is a boolean array, the default levels are ``[0.5]`` for
++    `~.Axes.contour` and ``[0, 0.5, 1]`` for `~.Axes.contourf`.
++
+ Returns
+ -------
+ `~.contour.QuadContourSet`
+diff --git a/lib/matplotlib/tri/_tricontour.py b/lib/matplotlib/tri/_tricontour.py
+index c403ebae70..2f818f3263 100644
+--- a/lib/matplotlib/tri/_tricontour.py
++++ b/lib/matplotlib/tri/_tricontour.py
+@@ -74,7 +74,7 @@ class TriContourSet(ContourSet):
+         if self.logscale and self.zmin <= 0:
+             func = 'contourf' if self.filled else 'contour'
+             raise ValueError(f'Cannot {func} log of negative values.')
+-        self._process_contour_level_args(args[1:])
++        self._process_contour_level_args(args[1:], z.dtype)
+         return (tri, z)
+ 
+ 
+@@ -123,6 +123,9 @@ levels : int or array-like, optional
+     If array-like, draw contour lines at the specified levels.  The values must
+     be in increasing order.
+ 
++    If *z* is a boolean array, the default levels are ``[0.5]`` for
++    `~.Axes.tricontour` and ``[0, 0.5, 1]`` for `~.Axes.tricontourf`.
++
+ Returns
+ -------
+ `~matplotlib.tri.TriContourSet`

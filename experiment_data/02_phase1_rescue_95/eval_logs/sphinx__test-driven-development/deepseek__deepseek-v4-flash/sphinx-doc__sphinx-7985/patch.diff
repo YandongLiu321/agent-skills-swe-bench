@@ -1,0 +1,78 @@
+diff --git a/CHANGES b/CHANGES
+index bc932a7d4..0666fcabb 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -36,6 +36,7 @@ Features added
+   The warnings printed from this functionality can be suppressed by setting
+   :confval:`c_warn_on_allowed_pre_v3`` to ``True``.
+   The functionality is immediately deprecated.
++* linkcheck: Check local (relative) links in the document tree
+ 
+ Bugs fixed
+ ----------
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..f39ed451b 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -25,7 +25,7 @@ from requests.exceptions import HTTPError
+ from sphinx.application import Sphinx
+ from sphinx.builders import Builder
+ from sphinx.locale import __
+-from sphinx.util import encode_uri, requests, logging
++from sphinx.util import docname_join, encode_uri, requests, logging
+ from sphinx.util.console import (  # type: ignore
+     purple, red, darkgreen, darkgray, turquoise
+ )
+@@ -212,17 +212,22 @@ class CheckExternalLinksBuilder(Builder):
+             # check for various conditions without bothering the network
+             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+-            elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
++
++            for rex in self.to_ignore:
++                if rex.match(uri):
++                    return 'ignored', '', 0
++
++            if not uri.startswith(('http:', 'https:')):
++                if self.is_valid_local_link(uri, docname):
++                    return 'working', '', 0
++                else:
++                    return 'broken', 'local file not found', 0
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+                 return 'broken', self.broken[uri], 0
+             elif uri in self.redirected:
+                 return 'redirected', self.redirected[uri][0], self.redirected[uri][1]
+-            for rex in self.to_ignore:
+-                if rex.match(uri):
+-                    return 'ignored', '', 0
+ 
+             # need to actually check the URI
+             for _ in range(self.app.config.linkcheck_retries):
+@@ -246,6 +251,24 @@ class CheckExternalLinksBuilder(Builder):
+             status, info, code = check()
+             self.rqueue.put((uri, docname, lineno, status, info, code))
+ 
++    def is_valid_local_link(self, uri: str, docname: str) -> bool:
++        """Check whether a local (relative) link refers to a valid target."""
++        # ignore the anchor part of the link
++        uri = uri.split('#', 1)[0]
++        if not uri:
++            # an anchor to the current document
++            return True
++
++        uri = unquote(uri)
++
++        # a link to a document in the project?
++        if docname_join(docname, uri) in self.env.found_docs:
++            return True
++
++        # a link to a file in the source tree?
++        _, abspath = self.env.relfn2path(uri, docname)
++        return path.exists(abspath)
++
+     def process_result(self, result: Tuple[str, str, int, str, str, int]) -> None:
+         uri, docname, lineno, status, info, code = result
+ 

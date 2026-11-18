@@ -1,0 +1,75 @@
+diff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py
+index 8b21d9e3b..1ddfa7c07 100644
+--- a/sphinx/ext/graphviz.py
++++ b/sphinx/ext/graphviz.py
+@@ -218,13 +218,23 @@ class GraphvizSimple(SphinxDirective):
+ 
+ 
+ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+-    """Change relative links in generated svg files to be relative to imgpath."""
++    """Change relative links in generated svg files to be relative to imagedir."""
+     tree = ET.parse(filepath)  # NoQA: S314
+     root = tree.getroot()
+     ns = {'svg': 'http://www.w3.org/2000/svg', 'xlink': 'http://www.w3.org/1999/xlink'}
+     href_name = '{http://www.w3.org/1999/xlink}href'
+     modified = False
+ 
++    # The generated SVG file is stored in the image output directory, so the
++    # browser resolves any relative links it contains against that directory.
++    # The links themselves are relative to the document that contains the graph,
++    # so resolve them against the output directory of that document first.
++    doc_dir = path.join(
++        self.builder.outdir,
++        path.dirname(self.builder.get_target_uri(self.builder.current_docname)),
++    )
++    img_dir = path.join(self.builder.outdir, self.builder.imagedir)
++
+     for element in chain(
+         root.findall('.//svg:image[@xlink:href]', ns),
+         root.findall('.//svg:a[@xlink:href]', ns),
+@@ -234,11 +244,8 @@ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+             # not a relative link
+             continue
+ 
+-        old_path = path.join(self.builder.outdir, url)
+-        new_path = path.relpath(
+-            old_path,
+-            start=path.join(self.builder.outdir, self.builder.imgpath),
+-        )
++        old_path = path.join(doc_dir, url)
++        new_path = path.relpath(old_path, start=img_dir)
+         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))
+ 
+         element.set(href_name, modified_url)
+diff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py
+index 6e3985512..96faef22f 100644
+--- a/sphinx/ext/inheritance_diagram.py
++++ b/sphinx/ext/inheritance_diagram.py
+@@ -33,6 +33,7 @@ from __future__ import annotations
+ import builtins
+ import hashlib
+ import inspect
++import posixpath
+ import re
+ from collections.abc import Iterable
+ from importlib import import_module
+@@ -412,13 +413,14 @@ def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diag
+     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)
+     for child in pending_xrefs:
+         if child.get('refuri') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = "../" + child.get('refuri')
+-            else:
+-                urls[child['reftitle']] = child.get('refuri')
++            urls[child['reftitle']] = child.get('refuri')
+         elif child.get('refid') is not None:
+             if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = '../' + current_filename + '#' + child.get('refid')
++                # The graph is embedded from a separate SVG file, so a link
++                # to an anchor in the current document must also point to the
++                # document itself (relative to its own directory).
++                current_document = posixpath.basename(current_filename)
++                urls[child['reftitle']] = current_document + '#' + child.get('refid')
+             else:
+                 urls[child['reftitle']] = '#' + child.get('refid')
+ 

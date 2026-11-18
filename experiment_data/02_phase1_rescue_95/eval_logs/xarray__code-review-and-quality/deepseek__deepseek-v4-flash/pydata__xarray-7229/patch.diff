@@ -1,0 +1,48 @@
+diff --git a/xarray/core/computation.py b/xarray/core/computation.py
+index 3f7e8f74..8a0ee8e3 100644
+--- a/xarray/core/computation.py
++++ b/xarray/core/computation.py
+@@ -1860,7 +1860,19 @@ def where(cond, x, y, keep_attrs=None):
+     if keep_attrs is True:
+         # keep the attributes of x, the second parameter, by default to
+         # be consistent with the `where` method of `DataArray` and `Dataset`
+-        keep_attrs = lambda attrs, context: getattr(x, "attrs", {})
++        def _where_keep_attrs(attrs, context):
++            if context is not None:
++                # ``keep_attrs`` is also used when combining the attributes of
++                # the output coordinates, in which case ``context`` is the name
++                # of the coordinate: preserve its original attributes (from
++                # ``x`` when available) instead of overwriting them with the
++                # attributes of the data variable.
++                if hasattr(x, "coords") and context in x.coords:
++                    return dict(x.coords[context].attrs)
++                return dict(attrs[0]) if attrs else {}
++            return getattr(x, "attrs", {})
++
++        keep_attrs = _where_keep_attrs
+ 
+     # alignment for three arguments is complicated, so don't support it yet
+     return apply_ufunc(
+diff --git a/xarray/core/merge.py b/xarray/core/merge.py
+index 859b3aef..c809218a 100644
+--- a/xarray/core/merge.py
++++ b/xarray/core/merge.py
+@@ -294,6 +294,7 @@ def merge_collected(
+                 merged_vars[name].attrs = merge_attrs(
+                     [var.attrs for var, _ in indexed_elements],
+                     combine_attrs=combine_attrs,
++                    context=name,
+                 )
+                 merged_indexes[name] = index
+             else:
+@@ -310,7 +311,9 @@ def merge_collected(
+ 
+                 if name in merged_vars:
+                     merged_vars[name].attrs = merge_attrs(
+-                        [var.attrs for var in variables], combine_attrs=combine_attrs
++                        [var.attrs for var in variables],
++                        combine_attrs=combine_attrs,
++                        context=name,
+                     )
+ 
+     return merged_vars, merged_indexes

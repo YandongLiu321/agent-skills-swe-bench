@@ -1,0 +1,97 @@
+diff --git a/django/core/management/commands/migrate.py b/django/core/management/commands/migrate.py
+index 34fcb9bc58..79cdf8be2d 100755
+--- a/django/core/management/commands/migrate.py
++++ b/django/core/management/commands/migrate.py
+@@ -157,6 +157,11 @@ class Command(BaseCommand):
+             targets = executor.loader.graph.leaf_nodes()
+ 
+         plan = executor.migration_plan(targets)
++        # The database routers may disallow all migrations on this connection.
++        # In that case there is nothing to apply and the django_migrations
++        # table must not be created.
++        if plan and not executor._plan_has_allowed_operations(plan):
++            plan = []
+         exit_dry = plan and options['check_unapplied']
+ 
+         if options['plan']:
+diff --git a/django/db/migrations/executor.py b/django/db/migrations/executor.py
+index aa2fe0883b..4405ae5c8e 100755
+--- a/django/db/migrations/executor.py
++++ b/django/db/migrations/executor.py
+@@ -95,12 +95,20 @@ class MigrationExecutor:
+         Django first needs to create all project states before a migration is
+         (un)applied and in a second step run all the database operations.
+         """
+-        # The django_migrations table must be present to record applied
+-        # migrations.
+-        self.recorder.ensure_schema()
+-
+         if plan is None:
+             plan = self.migration_plan(targets)
++
++        # The django_migrations table must be present to record applied
++        # migrations, but don't create it if the database routers don't allow
++        # applying any migration on this connection.
++        if plan and not self._plan_has_allowed_operations(plan):
++            plan = []
++        if plan == []:
++            if not self.recorder.has_table():
++                return self._create_project_state(with_applied_migrations=False)
++        else:
++            self.recorder.ensure_schema()
++
+         # Create the forwards plan Django would follow on an empty database
+         full_plan = self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True)
+ 
+@@ -219,6 +227,51 @@ class MigrationExecutor:
+ 
+         return state
+ 
++    def _plan_has_allowed_operations(self, plan):
++        """
++        Return True if at least one operation in the migration plan is allowed
++        by the database routers on this connection.
++        """
++        return any(
++            self._migration_has_allowed_operations(migration)
++            for migration, backwards in plan
++        )
++
++    def _migration_has_allowed_operations(self, migration):
++        """Return True if any of the migration's operations may be applied."""
++        return any(
++            self._operation_is_allowed(operation, migration.app_label)
++            for operation in migration.operations
++        )
++
++    def _operation_is_allowed(self, operation, app_label):
++        """Return True if the router allows running the given operation."""
++        # ``SeparateDatabaseAndState`` stores the operations which actually
++        # touch the database.
++        database_operations = getattr(operation, 'database_operations', None)
++        if database_operations is not None:
++            if not database_operations:
++                # The migration only mutates the project state, so nothing can
++                # be prevented by the database routers.
++                return True
++            return any(
++                self._operation_is_allowed(op, app_label)
++                for op in database_operations
++            )
++        model_name = getattr(operation, 'model_name', None)
++        if model_name is None:
++            model_name = getattr(operation, 'new_name_lower', None)
++        if model_name is None:
++            model_name = getattr(operation, 'name_lower', None)
++        hints = dict(getattr(operation, 'hints', None) or {})
++        if model_name is not None:
++            hints.pop('model_name', None)
++            return router.allow_migrate(
++                self.connection.alias, app_label,
++                model_name=model_name, **hints,
++            )
++        return router.allow_migrate(self.connection.alias, app_label, **hints)
++
+     def apply_migration(self, state, migration, fake=False, fake_initial=False):
+         """Run a migration forwards."""
+         migration_recorded = False

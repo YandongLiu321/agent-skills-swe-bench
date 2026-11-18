@@ -1,0 +1,127 @@
+diff --git a/sympy/concrete/summations.py b/sympy/concrete/summations.py
+index 372487664..d5b088e2f 100755
+--- a/sympy/concrete/summations.py
++++ b/sympy/concrete/summations.py
+@@ -195,6 +195,23 @@ def doit(self, **hints):
+                     return self.func(f, *self.limits[n:])
+             f = newf
+ 
++            # eval_sum can return a Piecewise expression whose condition
++            # involves variables that are summed over by later limits.  If
++            # such a condition is known to hold throughout the range of a
++            # remaining limit, then the corresponding branch can be used.
++            if isinstance(f, Piecewise) and n + 1 < len(self.limits):
++                remaining = dict((lim[0], lim[1:]) for lim in
++                                 self.limits[n + 1:])
++                previous_false = True
++                for expr, cond in f.args:
++                    if cond == True:
++                        break
++                    if previous_false and _is_condition_true_over_limits(
++                            cond, remaining):
++                        f = expr
++                        break
++                    previous_false = previous_false and cond == False
++
+         if hints.get('deep', True):
+             # eval_sum could return partially unevaluated
+             # result with Piecewise.  In this case we won't
+@@ -843,6 +860,73 @@ def telescopic(L, R, limits):
+         return telescopic_direct(L, R, s, (i, a, b))
+ 
+ 
++def _is_condition_true_over_range(cond, i, a, b):
++    """Return True if ``cond`` is known to hold for all integers in
++    ``a <= i <= b``.  This is a conservative test for piecewise conditions
++    that depend on a summation variable.
++    """
++    from sympy.core.relational import Relational, Ge, Gt, Le, Lt
++    from sympy.logic.boolalg import Or
++
++    if cond == True:
++        return True
++    if isinstance(cond, And):
++        return all(_is_condition_true_over_range(c, i, a, b)
++                   for c in cond.args)
++    if isinstance(cond, Or):
++        return any(_is_condition_true_over_range(c, i, a, b)
++                   for c in cond.args)
++
++    if not isinstance(cond, Relational):
++        return False
++
++    expr = cond.lhs - cond.rhs
++    if i not in expr.free_symbols:
++        return cond == True
++
++    if a == b:
++        return cond.subs(i, a) == True
++
++    # For a relation that is linear in the summation variable, checking the
++    # endpoints is sufficient.  The relation must be an inequality: an
++    # equality can only be identically true, and an inequality of the form
++    # Ne can be false at an interior point.
++    try:
++        if expr.diff(i).has(i) or expr.diff(i, 2) != 0:
++            return False
++    except (AttributeError, TypeError):
++        return False
++    if cond.func not in (Ge, Gt, Le, Lt):
++        return False
++    return cond.subs(i, a) == True and cond.subs(i, b) == True
++
++
++def _is_condition_true_over_limits(cond, limits):
++    """Check a piecewise condition against the remaining summation limits.
++
++    ``limits`` maps summation variables to their (lower, upper) bounds.
++    The condition is only accepted when it depends on exactly one of the
++    remaining summation variables; other symbols are treated as parameters.
++    """
++    from sympy.logic.boolalg import Or
++
++    if cond == True:
++        return True
++    if isinstance(cond, And):
++        return all(_is_condition_true_over_limits(c, limits)
++                   for c in cond.args)
++    if isinstance(cond, Or):
++        return any(_is_condition_true_over_limits(c, limits)
++                   for c in cond.args)
++
++    variables = cond.free_symbols & set(limits)
++    if len(variables) != 1:
++        return False
++    i = variables.pop()
++    a, b = limits[i]
++    return _is_condition_true_over_range(cond, i, a, b)
++
++
+ def eval_sum(f, limits):
+     from sympy.concrete.delta import deltasummation, _has_simple_delta
+     from sympy.functions import KroneckerDelta
+diff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py
+index b4d759836..374f75597 100755
+--- a/sympy/matrices/expressions/matexpr.py
++++ b/sympy/matrices/expressions/matexpr.py
+@@ -6,7 +6,7 @@
+ from sympy.core.decorators import call_highest_priority
+ from sympy.core.compatibility import range
+ from sympy.core.sympify import SympifyError, sympify
+-from sympy.functions import conjugate, adjoint
++from sympy.functions import conjugate, adjoint, KroneckerDelta
+ from sympy.matrices import ShapeError
+ from sympy.simplify import simplify
+ 
+@@ -476,10 +476,7 @@ def conjugate(self):
+         return self
+ 
+     def _entry(self, i, j):
+-        if i == j:
+-            return S.One
+-        else:
+-            return S.Zero
++        return KroneckerDelta(i, j)
+ 
+     def _eval_determinant(self):
+         return S.One

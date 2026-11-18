@@ -1,0 +1,276 @@
+2026-10-07 02:03:21,136 - INFO - Creating container for sphinx-doc__sphinx-7985...
+2026-10-07 02:03:21,183 - INFO - Container for sphinx-doc__sphinx-7985 created: 9902066f967738a19aa60947dd4e98c3c1dea66b842a34b7e05f7e4a8b1f69cf
+2026-10-07 02:03:21,296 - INFO - Container for sphinx-doc__sphinx-7985 started: 9902066f967738a19aa60947dd4e98c3c1dea66b842a34b7e05f7e4a8b1f69cf
+2026-10-07 02:03:21,297 - INFO - Intermediate patch for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__sphinx-build\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\patch.diff, now applying to container...
+2026-10-07 02:03:21,378 - INFO - >>>>> Applied Patch:
+Checking patch sphinx/builders/linkcheck.py...
+Applied patch sphinx/builders/linkcheck.py cleanly.
+
+2026-10-07 02:03:21,550 - INFO - Git diff before:
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..19618fda3 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -9,6 +9,7 @@
+ """
+ 
+ import json
++import posixpath
+ import queue
+ import re
+ import socket
+@@ -25,7 +26,7 @@ from requests.exceptions import HTTPError
+ from sphinx.application import Sphinx
+ from sphinx.builders import Builder
+ from sphinx.locale import __
+-from sphinx.util import encode_uri, requests, logging
++from sphinx.util import docname_join, encode_uri, requests, logging
+ from sphinx.util.console import (  # type: ignore
+     purple, red, darkgreen, darkgray, turquoise
+ )
+@@ -212,8 +213,6 @@ class CheckExternalLinksBuilder(Builder):
+             # check for various conditions without bothering the network
+             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+-            elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+@@ -224,11 +223,15 @@ class CheckExternalLinksBuilder(Builder):
+                 if rex.match(uri):
+                     return 'ignored', '', 0
+ 
+-            # need to actually check the URI
+-            for _ in range(self.app.config.linkcheck_retries):
+-                status, info, code = check_uri()
+-                if status != "broken":
+-                    break
++            if not uri.startswith(('http:', 'https:')):
++                # local link
++                status, info, code = self.check_local(docname, uri)
++            else:
++                # need to actually check the URI
++                for _ in range(self.app.config.linkcheck_retries):
++                    status, info, code = check_uri()
++                    if status != "broken":
++                        break
+ 
+             if status == "working":
+                 self.good.add(uri)
+@@ -246,6 +249,77 @@ class CheckExternalLinksBuilder(Builder):
+             status, info, code = check()
+             self.rqueue.put((uri, docname, lineno, status, info, code))
+ 
++    def check_local(self, docname: str, uri: str) -> Tuple[str, str, int]:
++        """Check a local (internal) link.
++
++        The link is resolved relative to the document which contains it.  It
++        is considered valid if it points to a known document or to an existing
++        file in the source directory.  If the link has an anchor, its existence
++        is also verified for documents (unless anchor checking is disabled).
++        """
++        # split off anchor
++        if '#' in uri:
++            target, anchor = uri.split('#', 1)
++        else:
++            target = uri
++            anchor = None
++
++        target = unquote(target)
++
++        # resolve the target document name relative to the current document
++        todocname = None
++        if target:
++            candidate = docname_join(docname, target)
++            if candidate in self.env.found_docs:
++                todocname = candidate
++            else:
++                # the link may point to a document with an explicit suffix
++                base, ext = path.splitext(candidate)
++                if ext and base in self.env.found_docs:
++                    todocname = base
++        else:
++            todocname = docname
++
++        if todocname is not None:
++            if anchor and self.app.config.linkcheck_anchors:
++                anchor = unquote(anchor)
++                for rex in self.anchors_ignore:
++                    if rex.match(anchor):
++                        break
++                else:
++                    doctree = self.env.get_doctree(todocname)
++                    if anchor not in doctree.ids:
++                        return 'broken', __("Anchor '%s' not found") % anchor, 0
++
++            return 'working', '', 0
++
++        # the link may point to a non-document file in the source directory
++        if self.local_file_exists(docname, target):
++            return 'working', '', 0
++
++        return 'broken', __("'%s' does not exist") % uri, 0
++
++    def local_file_exists(self, docname: str, target: str) -> bool:
++        """Check whether *target* points to a file relative to *docname*."""
++        if not target:
++            return False
++
++        if target.startswith('/'):
++            relpath = target[1:]
++        else:
++            relpath = posixpath.normpath(posixpath.join(posixpath.dirname(docname),
++                                                         target))
++
++        filename = path.join(self.srcdir, *relpath.split('/'))
++        if path.isfile(filename):
++            return True
++
++        for suffix in self.config.source_suffix:
++            if path.isfile(filename + suffix):
++                return True
++
++        return False
++
+     def process_result(self, result: Tuple[str, str, int, str, str, int]) -> None:
+         uri, docname, lineno, status, info, code = result
+2026-10-07 02:03:21,551 - INFO - Eval script for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__sphinx-build\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\eval.sh; copying to container...
+2026-10-07 02:03:28,633 - INFO - Test runtime: 7.04 seconds
+2026-10-07 02:03:28,634 - INFO - Test output for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__sphinx-build\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\test_output.txt
+2026-10-07 02:03:28,670 - INFO - Git diff after:
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..19618fda3 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -9,6 +9,7 @@
+ """
+ 
+ import json
++import posixpath
+ import queue
+ import re
+ import socket
+@@ -25,7 +26,7 @@ from requests.exceptions import HTTPError
+ from sphinx.application import Sphinx
+ from sphinx.builders import Builder
+ from sphinx.locale import __
+-from sphinx.util import encode_uri, requests, logging
++from sphinx.util import docname_join, encode_uri, requests, logging
+ from sphinx.util.console import (  # type: ignore
+     purple, red, darkgreen, darkgray, turquoise
+ )
+@@ -212,8 +213,6 @@ class CheckExternalLinksBuilder(Builder):
+             # check for various conditions without bothering the network
+             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+-            elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+@@ -224,11 +223,15 @@ class CheckExternalLinksBuilder(Builder):
+                 if rex.match(uri):
+                     return 'ignored', '', 0
+ 
+-            # need to actually check the URI
+-            for _ in range(self.app.config.linkcheck_retries):
+-                status, info, code = check_uri()
+-                if status != "broken":
+-                    break
++            if not uri.startswith(('http:', 'https:')):
++                # local link
++                status, info, code = self.check_local(docname, uri)
++            else:
++                # need to actually check the URI
++                for _ in range(self.app.config.linkcheck_retries):
++                    status, info, code = check_uri()
++                    if status != "broken":
++                        break
+ 
+             if status == "working":
+                 self.good.add(uri)
+@@ -246,6 +249,77 @@ class CheckExternalLinksBuilder(Builder):
+             status, info, code = check()
+             self.rqueue.put((uri, docname, lineno, status, info, code))
+ 
++    def check_local(self, docname: str, uri: str) -> Tuple[str, str, int]:
++        """Check a local (internal) link.
++
++        The link is resolved relative to the document which contains it.  It
++        is considered valid if it points to a known document or to an existing
++        file in the source directory.  If the link has an anchor, its existence
++        is also verified for documents (unless anchor checking is disabled).
++        """
++        # split off anchor
++        if '#' in uri:
++            target, anchor = uri.split('#', 1)
++        else:
++            target = uri
++            anchor = None
++
++        target = unquote(target)
++
++        # resolve the target document name relative to the current document
++        todocname = None
++        if target:
++            candidate = docname_join(docname, target)
++            if candidate in self.env.found_docs:
++                todocname = candidate
++            else:
++                # the link may point to a document with an explicit suffix
++                base, ext = path.splitext(candidate)
++                if ext and base in self.env.found_docs:
++                    todocname = base
++        else:
++            todocname = docname
++
++        if todocname is not None:
++            if anchor and self.app.config.linkcheck_anchors:
++                anchor = unquote(anchor)
++                for rex in self.anchors_ignore:
++                    if rex.match(anchor):
++                        break
++                else:
++                    doctree = self.env.get_doctree(todocname)
++                    if anchor not in doctree.ids:
++                        return 'broken', __("Anchor '%s' not found") % anchor, 0
++
++            return 'working', '', 0
++
++        # the link may point to a non-document file in the source directory
++        if self.local_file_exists(docname, target):
++            return 'working', '', 0
++
++        return 'broken', __("'%s' does not exist") % uri, 0
++
++    def local_file_exists(self, docname: str, target: str) -> bool:
++        """Check whether *target* points to a file relative to *docname*."""
++        if not target:
++            return False
++
++        if target.startswith('/'):
++            relpath = target[1:]
++        else:
++            relpath = posixpath.normpath(posixpath.join(posixpath.dirname(docname),
++                                                         target))
++
++        filename = path.join(self.srcdir, *relpath.split('/'))
++        if path.isfile(filename):
++            return True
++
++        for suffix in self.config.source_suffix:
++            if path.isfile(filename + suffix):
++                return True
++
++        return False
++
+     def process_result(self, result: Tuple[str, str, int, str, str, int]) -> None:
+         uri, docname, lineno, status, info, code = result
+2026-10-07 02:03:28,670 - INFO - Grading answer for sphinx-doc__sphinx-7985...
+2026-10-07 02:03:28,674 - INFO - report: {'sphinx-doc__sphinx-7985': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_build_linkcheck.py::test_defaults', 'tests/test_build_linkcheck.py::test_anchors_ignored'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/test_build_linkcheck.py::test_defaults_json', 'tests/test_build_linkcheck.py::test_auth', 'tests/test_build_linkcheck.py::test_linkcheck_request_headers'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-7985: resolved: True
+2026-10-07 02:03:28,675 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-7985.sphinx__sphinx-build...
+2026-10-07 02:03:43,930 - INFO - Container sweb.eval.sphinx-doc__sphinx-7985.sphinx__sphinx-build stopped successfully.
+2026-10-07 02:03:43,930 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-7985.sphinx__sphinx-build...
+2026-10-07 02:03:44,010 - INFO - Container sweb.eval.sphinx-doc__sphinx-7985.sphinx__sphinx-build removed successfully.

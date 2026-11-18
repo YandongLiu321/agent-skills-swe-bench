@@ -1,0 +1,143 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..0e29fbbfcb 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -250,6 +250,9 @@ class Query(BaseExpression):
+         self.where = WhereNode()
+         # Maps alias -> Annotation Expression.
+         self.annotations = {}
++        # Maps annotation alias -> {table alias: refcount contributed by the
++        # annotation}. Used to remove the joins of unused annotations.
++        self.annotation_refcounts = {}
+         # These are for extensions. The contents are more or less appended
+         # verbatim to the appropriate clause.
+         self.extra = {}  # Maps col_alias -> (col_sql, params).
+@@ -327,6 +330,7 @@ class Query(BaseExpression):
+         obj.table_map = self.table_map.copy()
+         obj.where = self.where.clone()
+         obj.annotations = self.annotations.copy()
++        obj.annotation_refcounts = self.annotation_refcounts.copy()
+         if self.annotation_select_mask is not None:
+             obj.annotation_select_mask = self.annotation_select_mask.copy()
+         if self.combined_queries:
+@@ -545,11 +549,89 @@ class Query(BaseExpression):
+ 
+         return dict(zip(outer_query.annotation_select, result))
+ 
++    def _get_used_annotation_aliases(self):
++        """
++        Return the aliases of annotations that are referenced by filters,
++        other annotations, or ordering.
++
++        Annotations that aren't referenced by any of those don't affect the
++        result of an aggregate query such as COUNT() and can be removed to
++        avoid unnecessary joins and/or a subquery.
++        """
++        annotations = self.annotations
++        if not annotations:
++            return set()
++        annotation_ids = {
++            id(annotation): alias for alias, annotation in annotations.items()
++        }
++        used = set()
++        stack = [self.where]
++
++        def add_alias(alias):
++            if alias in annotations:
++                stack.append(annotations[alias])
++
++        # Annotations referenced by filtering are found by inspecting the
++        # WHERE tree below.
++        # Annotations referenced by ordering.
++        for term in self.order_by:
++            if isinstance(term, str):
++                add_alias(term.lstrip("-"))
++            else:
++                stack.append(term)
++        # Annotations referenced by a DISTINCT ON clause.
++        for alias in self.distinct_fields:
++            add_alias(alias)
++        # Non-aggregate annotations selected through values()/values_list()
++        # are referenced by the GROUP BY clause using their alias, so they
++        # must be kept as removing them would change the grouping.
++        if isinstance(self.group_by, tuple):
++            stack.extend(self.group_by)
++
++        seen = set()
++        while stack:
++            expression = stack.pop()
++            alias = annotation_ids.get(id(expression))
++            if alias is not None:
++                used.add(alias)
++            if id(expression) in seen:
++                continue
++            seen.add(id(expression))
++            # F()/Ref() objects store the referenced annotation alias as a
++            # string rather than referencing the annotation expression itself.
++            for attr in ("name", "refs"):
++                ref = getattr(expression, attr, None)
++                if isinstance(ref, str):
++                    add_alias(ref)
++            get_source_expressions = getattr(
++                expression, "get_source_expressions", None
++            )
++            if get_source_expressions is not None:
++                stack.extend(get_source_expressions())
++        return used
++
+     def get_count(self, using):
+         """
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        unused_annotations = set(obj.annotations) - obj._get_used_annotation_aliases()
++        if unused_annotations:
++            for alias in unused_annotations:
++                del obj.annotations[alias]
++                for table_alias, refcount in obj.annotation_refcounts.pop(
++                    alias, {}
++                ).items():
++                    obj.unref_alias(table_alias, refcount)
++            if obj.annotation_select_mask is not None:
++                obj.set_annotation_mask(
++                    obj.annotation_select_mask - unused_annotations
++                )
++            else:
++                obj.set_annotation_mask(None)
++            # The removed annotations may have been the only reference to the
++            # base table.
++            obj.get_initial_alias()
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 
+@@ -909,6 +991,13 @@ class Query(BaseExpression):
+             key: col.relabeled_clone(change_map)
+             for key, col in self.annotations.items()
+         }
++        self.annotation_refcounts = {
++            key: {
++                change_map.get(table_alias, table_alias): refcount
++                for table_alias, refcount in refcounts.items()
++            }
++            for key, refcounts in self.annotation_refcounts.items()
++        }
+ 
+         # 2. Rename the alias in the internal table/alias datastructures.
+         for old_alias, new_alias in change_map.items():
+@@ -1101,9 +1190,16 @@ class Query(BaseExpression):
+     def add_annotation(self, annotation, alias, is_summary=False, select=True):
+         """Add a single annotation expression to the Query."""
+         self.check_alias(alias)
++        refcounts_before = self.alias_refcount.copy()
+         annotation = annotation.resolve_expression(
+             self, allow_joins=True, reuse=None, summarize=is_summary
+         )
++        refcounts = dict(self.annotation_refcounts.get(alias, {}))
++        for table_alias, refcount in self.alias_refcount.items():
++            delta = refcount - refcounts_before.get(table_alias, 0)
++            if delta:
++                refcounts[table_alias] = refcounts.get(table_alias, 0) + delta
++        self.annotation_refcounts[alias] = refcounts
+         if select:
+             self.append_annotation_mask([alias])
+         else:

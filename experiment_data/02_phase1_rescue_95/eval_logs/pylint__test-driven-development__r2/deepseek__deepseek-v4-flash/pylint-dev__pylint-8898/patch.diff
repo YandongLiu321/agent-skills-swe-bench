@@ -1,0 +1,110 @@
+diff --git a/pylint/config/utils.py b/pylint/config/utils.py
+index 91e4ff86f..886aacc34 100644
+--- a/pylint/config/utils.py
++++ b/pylint/config/utils.py
+@@ -131,10 +131,22 @@ def _convert_option_to_argument(
+     )
+ 
+ 
++def _quote_csv_value(value: str) -> str:
++    """Quote a string so it can safely be part of a comma separated value.
++
++    A value is only quoted when it actually needs it (i.e. when it contains a
++    comma, a quote or a line break). Quoting a value allows it to contain the
++    separator without being split into several values.
++    """
++    if any(char in value for char in ',"\r\n'):
++        return '"' + value.replace('"', '""') + '"'
++    return value
++
++
+ def _parse_rich_type_value(value: Any) -> str:
+     """Parse rich (toml) types into strings."""
+     if isinstance(value, (list, tuple)):
+-        return ",".join(_parse_rich_type_value(i) for i in value)
++        return ",".join(_quote_csv_value(_parse_rich_type_value(i)) for i in value)
+     if isinstance(value, re.Pattern):
+         return str(value.pattern)
+     if isinstance(value, dict):
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..012acc04f 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,12 +213,20 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    The separator can be included in a value rather than splitting it by
++    quoting the whole value with double quotes, or by escaping the separator
++    with a backslash (e.g. ``\\,``).
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+-    >>> _splitstrip('a,\nb,\nc,')
++    >>> _splitstrip('a,\\nb,\\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip('"a,b",c')
++    ['a,b', 'c']
++    >>> _splitstrip('a\\,b,c')
++    ['a,b', 'c']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -226,10 +234,52 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :type sep: str or unicode
+     :param sep: field separator, default to the comma (',')
+ 
+-    :rtype: str or unicode
+-    :return: the unquoted string (or the input string if it wasn't quoted)
++    :rtype: list[str]
++    :return: the list of unquoted and unescaped values
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    values: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    index = 0
++    while index < len(string):
++        char = string[index]
++        if quote is None and char == "\\" and index + 1 < len(string):
++            # Escape the separator so that it is kept as part of the value.
++            if string[index + 1] == sep:
++                current.append(sep)
++                index += 2
++                continue
++        if quote is not None:
++            if char == quote:
++                # A doubled quote is an escaped quote (like the ``csv`` module).
++                if index + 1 < len(string) and string[index + 1] == quote:
++                    current.append(quote)
++                    index += 2
++                    continue
++                quote = None
++            else:
++                current.append(char)
++            index += 1
++            continue
++        if char == '"' and not "".join(current).strip():
++            # Only consider double quotes at the beginning of a value as
++            # delimiters. This matches the behaviour of the ``csv`` module.
++            quote = char
++            index += 1
++            continue
++        if char == sep:
++            value = "".join(current).strip()
++            if value:
++                values.append(value)
++            current = []
++            index += 1
++            continue
++        current.append(char)
++        index += 1
++    value = "".join(current).strip()
++    if value:
++        values.append(value)
++    return values
+ 
+ 
+ def _unquote(string: str) -> str:

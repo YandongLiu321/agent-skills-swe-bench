@@ -1,0 +1,52 @@
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..38bb7b61 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -1475,7 +1475,7 @@ class Plotter:
+ 
+                 axes_df = self._filter_subplot_data(df, view)
+ 
+-                with pd.option_context("mode.use_inf_as_null", True):
++                with pd.option_context("mode.use_inf_as_na", True):
+                     if keep_na:
+                         # The simpler thing to do would be x.dropna().reindex(x.index).
+                         # But that doesn't work with the way that the subset iteration
+@@ -1627,10 +1627,13 @@ class Plotter:
+ 
+     def _finalize_figure(self, p: Plot) -> None:
+ 
++        from seaborn._core.scales import Nominal
++
+         for sub in self._subplots:
+             ax = sub["ax"]
+             for axis in "xy":
+                 axis_key = sub[axis]
++                axis_obj = getattr(ax, f"{axis}axis")
+ 
+                 # Axis limits
+                 if axis_key in p._limits:
+@@ -1644,6 +1647,24 @@ class Plotter:
+                         hi = cast(float, hi) + 0.5
+                     ax.set(**{f"{axis}lim": (lo, hi)})
+ 
++                # Nominal scales get drawn like categorical axes
++                scale = self._scales.get(axis_key)
++                if isinstance(scale, Nominal):
++
++                    # Categorical axes do not have a grid by default
++                    axis_obj.grid(False)
++
++                    # Draw the scale to +/- .5 from the first and last category
++                    if axis_key not in p._limits:
++                        locs = axis_obj.get_majorticklocs()
++                        if len(locs):
++                            lo, hi = min(locs) - .5, max(locs) + .5
++                            if axis == "y":
++                                # Invert so that the first category is at the top
++                                ax.set_ylim(hi, lo)
++                            else:
++                                ax.set_xlim(lo, hi)
++
+         engine_default = None if p._target is not None else "tight"
+         layout_engine = p._layout_spec.get("engine", engine_default)
+         set_layout_engine(self._figure, layout_engine)

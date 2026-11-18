@@ -1,0 +1,923 @@
+
+##########################################################################################
+## [0253] django__django-15629 · django-verification | B=incomplete_patch
+files: patch=django/db/backends/base/schema.py;django/db/models/fields/related.py | gold=django/db/backends/base/schema.py;django/db/backends/oracle/features.py;django/db/backends/sqlite3/schema.py;django/db/models/fields/related.py | test=tests/migrations/test_base.py;tests/migrations/test_operations.py
+overlap: exact=False subset=True disjoint=False touched_gold=2/4 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 消息179-187最终仅提交 base/schema.py 与 fields/related.py：ForeignKey虽返回目标collation，相关列循环也比较old/new collation，但外层仍只在old_type != new_type时触发incoming FK重建，遗漏题目核心的同类型collation-only变化；同时没有成功run中的MySQL/SQLite后端修正。消息174全量测试的两项失败被正确判为root权限噪声，但这不证明隐藏迁移分支，最终resolved=0。
+F2P: AlterField operation of db_collation on primary keys changes any FKs | Creation of models with a FK to a PK with db_collation.
+--- FINAL PATCH ---
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
+index 696bfd7742..f3029a311a 100644
+--- a/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -1038,9 +1038,21 @@ class BaseDatabaseSchemaEditor:
+         for old_rel, new_rel in rels_to_update:
+             rel_db_params = new_rel.field.db_parameters(connection=self.connection)
+             rel_type = rel_db_params["type"]
+-            fragment, other_actions = self._alter_column_type_sql(
+-                new_rel.related_model, old_rel.field, new_rel.field, rel_type
++            rel_collation = rel_db_params.get("collation")
++            old_rel_db_params = old_rel.field.db_parameters(
++                connection=self.connection
+             )
++            old_rel_collation = old_rel_db_params.get("collation")
++            if old_rel_collation != rel_collation:
++                # Collation change handles also a type change.
++                fragment = self._alter_column_collation_sql(
++                    new_rel.related_model, new_rel.field, rel_type, rel_collation
++                )
++                other_actions = []
++            else:
++                fragment, other_actions = self._alter_column_type_sql(
++                    new_rel.related_model, old_rel.field, new_rel.field, rel_type
++                )
+             self.execute(
+                 self.sql_alter_column
+                 % {
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
+index fad5560486..d41946fc12 100644
+--- a/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -1180,7 +1180,11 @@ class ForeignKey(ForeignObject):
+         return self.target_field.rel_db_type(connection=connection)
+ 
+     def db_parameters(self, connection):
+-        return {"type": self.db_type(connection), "check": self.db_check(connection)}
++        return {
++            "type": self.db_type(connection),
++            "check": self.db_check(connection),
++            "collation": self.target_field.db_parameters(connection).get("collation"),
++        }
+ 
+     def convert_empty_strings(self, value, expression, connection):
+         if (not value) and isinstance(value, str):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -823,13 +823,15 @@ def _alter_field(
++        old_collation = old_db_params.get("collation")
++        new_collation = new_db_params.get("collation")
++            and ((old_type != new_type) or (old_collation != new_collation))
+@@ -914,8 +916,6 @@ def _alter_field(
+@@ -1038,9 +1038,22 @@ def _alter_field(
++            rel_collation = rel_db_params.get("collation")
++            old_rel_db_params = old_rel.field.db_parameters(connection=self.connection)
++            old_rel_collation = old_rel_db_params.get("collation")
++            if old_rel_collation != rel_collation:
++                # Collation change handles also a type change.
++                fragment = self._alter_column_collation_sql(
++                    new_rel.related_model,
++                    new_rel.field,
++                    rel_type,
++                    rel_collation,
++                )
++                other_actions = []
++            else:
++                fragment, other_actions = self._alter_column_type_sql(
++                    new_rel.related_model, old_rel.field, new_rel.field, rel_type
++                )
+diff --git a/django/db/backends/oracle/features.py b/django/db/backends/oracle/features.py
++++ b/django/db/backends/oracle/features.py
+@@ -104,6 +104,10 @@ class DatabaseFeatures(BaseDatabaseFeatures):
++        "Oracle doesn't support changing collations on indexed columns (#33671).": {
++            "migrations.test_operations.OperationTests."
++            "test_alter_field_pk_fk_db_collation",
++        },
+diff --git a/django/db/backends/sqlite3/schema.py b/django/db/backends/sqlite3/schema.py
++++ b/django/db/backends/sqlite3/schema.py
+@@ -455,7 +455,11 @@ def _alter_field(
++        old_collation = old_db_params.get("collation")
++        new_collation = new_db_params.get("collation")
++        if new_field.unique and (
++            old_type != new_type or old_collation != new_collation
++        ):
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -1180,7 +1180,12 @@ def db_type(self, connection):
++        target_db_parameters = self.target_field.db_parameters(connection)
++        return {
++            "type": self.db_type(connection),
++            "check": self.db_check(connection),
++            "collation": target_db_parameters.get("collation"),
++        }
+--- TEST (headers/+ lines) ---
+diff --git a/tests/migrations/test_base.py b/tests/migrations/test_base.py
+@@ -65,6 +65,16 @@ def assertColumnNull(self, table, column, using="default"):
++    def _get_column_collation(self, table, column, using):
++        return next(
++            f.collation
++            for f in self.get_table_description(table, using=using)
++            if f.name == column
++        )
++
++    def assertColumnCollation(self, table, column, collation, using="default"):
++        self.assertEqual(self._get_column_collation(table, column, using), collation)
++
+diff --git a/tests/migrations/test_operations.py b/tests/migrations/test_operations.py
+@@ -260,6 +260,66 @@ def test_create_model_m2m(self):
++    @skipUnlessDBFeature("supports_collation_on_charfield", "supports_foreign_keys")
++    def test_create_fk_models_to_pk_field_db_collation(self):
++        """Creation of models with a FK to a PK with db_collation."""
++        collation = connection.features.test_collations.get("non_default")
++        if not collation:
++            self.skipTest("Language collations are not supported.")
++
++        app_label = "test_cfkmtopkfdbc"
++        operations = [
++            migrations.CreateModel(
++                "Pony",
++                [
++                    (
++                        "id",
++                        models.CharField(
++                            primary_key=True,
++                            max_length=10,
++                            db_collation=collation,
++                        ),
++                    ),
++                ],
++            )
++        ]
++        project_state = self.apply_operations(app_label, ProjectState(), operations)
++        # ForeignKey.
++        new_state = project_state.clone()
++        operation = migrations.CreateModel(
++            "Rider",
++            [
++                ("id", models.AutoField(primary_key=True)),
++                ("pony", models.ForeignKey("Pony", models.CASCADE)),
++            ],
++        )
++        operation.state_forwards(app_label, new_state)
++        with connection.schema_editor() as editor:
++            operation.database_forwards(app_label, editor, project_state, new_state)
++        self.assertColumnCollation(f"{app_label}_rider", "pony_id", collation)
++        # Reversal.
++        with connection.schema_editor() as editor:
++            operation.database_backwards(app_label, editor, new_state, project_state)
++        # OneToOneField.
++        new_state = project_state.clone()
++        operation = migrations.CreateM
+...[truncated 3011 chars]
+
+##########################################################################################
+## [0254] django__django-15629 · systematic-debugging | B=incomplete_patch
+files: patch=django/db/backends/base/schema.py;django/db/models/fields/related.py | gold=django/db/backends/base/schema.py;django/db/backends/oracle/features.py;django/db/backends/sqlite3/schema.py;django/db/models/fields/related.py | test=tests/migrations/test_base.py;tests/migrations/test_operations.py
+overlap: exact=False subset=True disjoint=False touched_gold=2/4 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 消息205临时测试明确失败，说明同类型PK collation变化未传播；虽然后续消息219-227修到自建/1937项测试通过，消息231-240最终仍只含 base/schema.py 与 fields/related.py，并未把collation差异纳入外层drop_foreign_keys判定，也未处理MySQL/SQLite专用SQL。该缺口与同实例成功四文件补丁直接相对，最终resolved=0。
+F2P: AlterField operation of db_collation on primary keys changes any FKs | Creation of models with a FK to a PK with db_collation.
+--- FINAL PATCH ---
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
+index 696bfd7742..653022f0a4 100644
+--- a/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -1038,9 +1038,22 @@ class BaseDatabaseSchemaEditor:
+         for old_rel, new_rel in rels_to_update:
+             rel_db_params = new_rel.field.db_parameters(connection=self.connection)
+             rel_type = rel_db_params["type"]
+-            fragment, other_actions = self._alter_column_type_sql(
+-                new_rel.related_model, old_rel.field, new_rel.field, rel_type
+-            )
++            rel_collation = rel_db_params.get("collation")
++            old_rel_db_params = old_rel.field.db_parameters(connection=self.connection)
++            old_rel_collation = old_rel_db_params.get("collation")
++            if old_rel_collation != rel_collation:
++                # Collation change handles also a type change.
++                fragment = self._alter_column_collation_sql(
++                    new_rel.related_model,
++                    new_rel.field,
++                    rel_type,
++                    rel_collation,
++                )
++                other_actions = []
++            else:
++                fragment, other_actions = self._alter_column_type_sql(
++                    new_rel.related_model, old_rel.field, new_rel.field, rel_type
++                )
+             self.execute(
+                 self.sql_alter_column
+                 % {
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
+index fad5560486..d41946fc12 100644
+--- a/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -1180,7 +1180,11 @@ class ForeignKey(ForeignObject):
+         return self.target_field.rel_db_type(connection=connection)
+ 
+     def db_parameters(self, connection):
+-        return {"type": self.db_type(connection), "check": self.db_check(connection)}
++        return {
++            "type": self.db_type(connection),
++            "check": self.db_check(connection),
++            "collation": self.target_field.db_parameters(connection).get("collation"),
++        }
+ 
+     def convert_empty_strings(self, value, expression, connection):
+         if (not value) and isinstance(value, str):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -823,13 +823,15 @@ def _alter_field(
++        old_collation = old_db_params.get("collation")
++        new_collation = new_db_params.get("collation")
++            and ((old_type != new_type) or (old_collation != new_collation))
+@@ -914,8 +916,6 @@ def _alter_field(
+@@ -1038,9 +1038,22 @@ def _alter_field(
++            rel_collation = rel_db_params.get("collation")
++            old_rel_db_params = old_rel.field.db_parameters(connection=self.connection)
++            old_rel_collation = old_rel_db_params.get("collation")
++            if old_rel_collation != rel_collation:
++                # Collation change handles also a type change.
++                fragment = self._alter_column_collation_sql(
++                    new_rel.related_model,
++                    new_rel.field,
++                    rel_type,
++                    rel_collation,
++                )
++                other_actions = []
++            else:
++                fragment, other_actions = self._alter_column_type_sql(
++                    new_rel.related_model, old_rel.field, new_rel.field, rel_type
++                )
+diff --git a/django/db/backends/oracle/features.py b/django/db/backends/oracle/features.py
++++ b/django/db/backends/oracle/features.py
+@@ -104,6 +104,10 @@ class DatabaseFeatures(BaseDatabaseFeatures):
++        "Oracle doesn't support changing collations on indexed columns (#33671).": {
++            "migrations.test_operations.OperationTests."
++            "test_alter_field_pk_fk_db_collation",
++        },
+diff --git a/django/db/backends/sqlite3/schema.py b/django/db/backends/sqlite3/schema.py
++++ b/django/db/backends/sqlite3/schema.py
+@@ -455,7 +455,11 @@ def _alter_field(
++        old_collation = old_db_params.get("collation")
++        new_collation = new_db_params.get("collation")
++        if new_field.unique and (
++            old_type != new_type or old_collation != new_collation
++        ):
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -1180,7 +1180,12 @@ def db_type(self, connection):
++        target_db_parameters = self.target_field.db_parameters(connection)
++        return {
++            "type": self.db_type(connection),
++            "check": self.db_check(connection),
++            "collation": target_db_parameters.get("collation"),
++        }
+--- TEST (headers/+ lines) ---
+diff --git a/tests/migrations/test_base.py b/tests/migrations/test_base.py
+@@ -65,6 +65,16 @@ def assertColumnNull(self, table, column, using="default"):
++    def _get_column_collation(self, table, column, using):
++        return next(
++            f.collation
++            for f in self.get_table_description(table, using=using)
++            if f.name == column
++        )
++
++    def assertColumnCollation(self, table, column, collation, using="default"):
++        self.assertEqual(self._get_column_collation(table, column, using), collation)
++
+diff --git a/tests/migrations/test_operations.py b/tests/migrations/test_operations.py
+@@ -260,6 +260,66 @@ def test_create_model_m2m(self):
++    @skipUnlessDBFeature("supports_collation_on_charfield", "supports_foreign_keys")
++    def test_create_fk_models_to_pk_field_db_collation(self):
++        """Creation of models with a FK to a PK with db_collation."""
++        collation = connection.features.test_collations.get("non_default")
++        if not collation:
++            self.skipTest("Language collations are not supported.")
++
++        app_label = "test_cfkmtopkfdbc"
++        operations = [
++            migrations.CreateModel(
++                "Pony",
++                [
++                    (
++                        "id",
++                        models.CharField(
++                            primary_key=True,
++                            max_length=10,
++                            db_collation=collation,
++                        ),
++                    ),
++                ],
++            )
++        ]
++        project_state = self.apply_operations(app_label, ProjectState(), operations)
++        # ForeignKey.
++        new_state = project_state.clone()
++        operation = migrations.CreateModel(
++            "Rider",
++            [
++                ("id", models.AutoField(primary_key=True)),
++                ("pony", models.ForeignKey("Pony", models.CASCADE)),
++            ],
++        )
++        operation.state_forwards(app_label, new_state)
++        with connection.schema_editor() as editor:
++            operation.database_forwards(app_label, editor, project_state, new_state)
++        self.assertColumnCollation(f"{app_label}_rider", "pony_id", collation)
++        # Reversal.
++        with connection.schema_editor() as editor:
++            operation.database_backwards(app_label, editor, new_state, project_state)
++        # OneToOneField.
++        new_state = project_state.clone()
++        operation = migrations.CreateM
+...[truncated 3011 chars]
+
+##########################################################################################
+## [0259] django__django-15629 · test-driven-development | B=incomplete_patch
+files: patch=django/db/backends/base/schema.py;django/db/models/fields/related.py | gold=django/db/backends/base/schema.py;django/db/backends/oracle/features.py;django/db/backends/sqlite3/schema.py;django/db/models/fields/related.py | test=tests/migrations/test_base.py;tests/migrations/test_operations.py
+overlap: exact=False subset=True disjoint=False touched_gold=2/4 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 消息149-156最终两文件补丁仅让ForeignKey暴露target db_collation，并在已经发生related column type alteration时把COLLATE拼入rel_type；它没有修改base schema中old_type != new_type的外层条件，所以题目中的varchar长度不变、只改变PK collation时不会启动相关FK重建。消息127的1087项及后续直接复现未覆盖这一触发缺口，最终resolved=0。
+F2P: AlterField operation of db_collation on primary keys changes any FKs | Creation of models with a FK to a PK with db_collation.
+--- FINAL PATCH ---
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
+index 696bfd7742..2b950eca9c 100644
+--- a/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -1038,6 +1038,9 @@ class BaseDatabaseSchemaEditor:
+         for old_rel, new_rel in rels_to_update:
+             rel_db_params = new_rel.field.db_parameters(connection=self.connection)
+             rel_type = rel_db_params["type"]
++            rel_collation = rel_db_params.get("collation")
++            if rel_collation:
++                rel_type = " ".join([rel_type, self._collate_sql(rel_collation)])
+             fragment, other_actions = self._alter_column_type_sql(
+                 new_rel.related_model, old_rel.field, new_rel.field, rel_type
+             )
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
+index fad5560486..45f5c7152f 100644
+--- a/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -1180,7 +1180,11 @@ class ForeignKey(ForeignObject):
+         return self.target_field.rel_db_type(connection=connection)
+ 
+     def db_parameters(self, connection):
+-        return {"type": self.db_type(connection), "check": self.db_check(connection)}
++        return {
++            "type": self.db_type(connection),
++            "check": self.db_check(connection),
++            "collation": getattr(self.target_field, "db_collation", None),
++        }
+ 
+     def convert_empty_strings(self, value, expression, connection):
+         if (not value) and isinstance(value, str):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -823,13 +823,15 @@ def _alter_field(
++        old_collation = old_db_params.get("collation")
++        new_collation = new_db_params.get("collation")
++            and ((old_type != new_type) or (old_collation != new_collation))
+@@ -914,8 +916,6 @@ def _alter_field(
+@@ -1038,9 +1038,22 @@ def _alter_field(
++            rel_collation = rel_db_params.get("collation")
++            old_rel_db_params = old_rel.field.db_parameters(connection=self.connection)
++            old_rel_collation = old_rel_db_params.get("collation")
++            if old_rel_collation != rel_collation:
++                # Collation change handles also a type change.
++                fragment = self._alter_column_collation_sql(
++                    new_rel.related_model,
++                    new_rel.field,
++                    rel_type,
++                    rel_collation,
++                )
++                other_actions = []
++            else:
++                fragment, other_actions = self._alter_column_type_sql(
++                    new_rel.related_model, old_rel.field, new_rel.field, rel_type
++                )
+diff --git a/django/db/backends/oracle/features.py b/django/db/backends/oracle/features.py
++++ b/django/db/backends/oracle/features.py
+@@ -104,6 +104,10 @@ class DatabaseFeatures(BaseDatabaseFeatures):
++        "Oracle doesn't support changing collations on indexed columns (#33671).": {
++            "migrations.test_operations.OperationTests."
++            "test_alter_field_pk_fk_db_collation",
++        },
+diff --git a/django/db/backends/sqlite3/schema.py b/django/db/backends/sqlite3/schema.py
++++ b/django/db/backends/sqlite3/schema.py
+@@ -455,7 +455,11 @@ def _alter_field(
++        old_collation = old_db_params.get("collation")
++        new_collation = new_db_params.get("collation")
++        if new_field.unique and (
++            old_type != new_type or old_collation != new_collation
++        ):
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -1180,7 +1180,12 @@ def db_type(self, connection):
++        target_db_parameters = self.target_field.db_parameters(connection)
++        return {
++            "type": self.db_type(connection),
++            "check": self.db_check(connection),
++            "collation": target_db_parameters.get("collation"),
++        }
+--- TEST (headers/+ lines) ---
+diff --git a/tests/migrations/test_base.py b/tests/migrations/test_base.py
+@@ -65,6 +65,16 @@ def assertColumnNull(self, table, column, using="default"):
++    def _get_column_collation(self, table, column, using):
++        return next(
++            f.collation
++            for f in self.get_table_description(table, using=using)
++            if f.name == column
++        )
++
++    def assertColumnCollation(self, table, column, collation, using="default"):
++        self.assertEqual(self._get_column_collation(table, column, using), collation)
++
+diff --git a/tests/migrations/test_operations.py b/tests/migrations/test_operations.py
+@@ -260,6 +260,66 @@ def test_create_model_m2m(self):
++    @skipUnlessDBFeature("supports_collation_on_charfield", "supports_foreign_keys")
++    def test_create_fk_models_to_pk_field_db_collation(self):
++        """Creation of models with a FK to a PK with db_collation."""
++        collation = connection.features.test_collations.get("non_default")
++        if not collation:
++            self.skipTest("Language collations are not supported.")
++
++        app_label = "test_cfkmtopkfdbc"
++        operations = [
++            migrations.CreateModel(
++                "Pony",
++                [
++                    (
++                        "id",
++                        models.CharField(
++                            primary_key=True,
++                            max_length=10,
++                            db_collation=collation,
++                        ),
++                    ),
++                ],
++            )
++        ]
++        project_state = self.apply_operations(app_label, ProjectState(), operations)
++        # ForeignKey.
++        new_state = project_state.clone()
++        operation = migrations.CreateModel(
++            "Rider",
++            [
++                ("id", models.AutoField(primary_key=True)),
++                ("pony", models.ForeignKey("Pony", models.CASCADE)),
++            ],
++        )
++        operation.state_forwards(app_label, new_state)
++        with connection.schema_editor() as editor:
++            operation.database_forwards(app_label, editor, project_state, new_state)
++        self.assertColumnCollation(f"{app_label}_rider", "pony_id", collation)
++        # Reversal.
++        with connection.schema_editor() as editor:
++            operation.database_backwards(app_label, editor, new_state, project_state)
++        # OneToOneField.
++        new_state = project_state.clone()
++        operation = migrations.CreateM
+...[truncated 3011 chars]
+
+##########################################################################################
+## [0289] pydata__xarray-6992 · code-review-and-quality | B=incomplete_patch
+files: patch=xarray/core/dataset.py | gold=xarray/core/dataset.py;xarray/core/indexes.py | test=xarray/tests/test_dataarray.py;xarray/tests/test_dataset.py;xarray/tests/test_groupby.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=5 is=1 in=1 raises=1 new_tests_in_f2p=some conflict=False status=patch
+evidence: 消息139的原始 repr/reset 场景通过、消息147相关测试通过，但消息138/149最终仅在 Dataset.reset_index 调整 coord_names 并改用 _replace_with_new_dims。它未覆盖 DatasetCoordinates._maybe_drop_multiindex 等另一条产生悬空 _coord_names 的路径，属于不完整修复。
+F2P: xarray/tests/test_dataarray.py::TestDataArray::test_reset_index | xarray/tests/test_dataset.py::TestDataset::test_reset_index | xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_dims | xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[foo-False-dropped0-converted0-renamed0] | xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[foo-True-dropped1-converted1-renamed1] | xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[x-False-dropped2-converted2-renamed2] | xarray/tests/test_dataset.py::TestDataset::test_reset_inde
+...[truncated 569 chars]
+--- FINAL PATCH ---
+diff --git a/xarray/core/dataset.py b/xarray/core/dataset.py
+index 620f32f8..395bd20e 100644
+--- a/xarray/core/dataset.py
++++ b/xarray/core/dataset.py
+@@ -4177,9 +4177,11 @@ class Dataset(
+         }
+         variables.update(new_variables)
+ 
+-        coord_names = set(new_variables) | self._coord_names
++        coord_names = set(new_variables) | (self._coord_names - set(drop_variables))
+ 
+-        return self._replace(variables, coord_names=coord_names, indexes=indexes)
++        return self._replace_with_new_dims(
++            variables, coord_names=coord_names, indexes=indexes
++        )
+ 
+     def reorder_levels(
+         self: T_Dataset,
+
+--- GOLD (headers/+ lines) ---
+diff --git a/xarray/core/dataset.py b/xarray/core/dataset.py
++++ b/xarray/core/dataset.py
+@@ -4026,10 +4026,11 @@ def set_index(
++        new_variables: dict[Hashable, Variable] = {}
++        drop_indexes: set[Hashable] = set()
++        drop_variables: set[Hashable] = set()
++        all_var_names: set[Hashable] = set()
+@@ -4044,16 +4045,19 @@ def set_index(
++            all_var_names.update(var_names)
++            drop_variables.update(var_names)
++            # drop any pre-existing index involved and its corresponding coordinates
++            index_coord_names = self.xindexes.get_all_coords(dim, errors="ignore")
++            all_index_coord_names = set(index_coord_names)
++                all_index_coord_names.update(
++            drop_indexes.update(all_index_coord_names)
++            drop_variables.update(all_index_coord_names)
+@@ -4065,10 +4069,14 @@ def set_index(
++
++                # trick to preserve coordinate order in this case
++                if dim in self._coord_names:
++                    drop_variables.remove(dim)
++                        k: self._variables[k] for k in index_coord_names
+@@ -4083,8 +4091,17 @@ def set_index(
++        # re-add deindexed coordinates (convert to base variables)
++        for k in drop_variables:
++            if (
++                k not in new_variables
++                and k not in all_var_names
++                and k in self._coord_names
++            ):
++                new_variables[k] = self._variables[k].to_base_variable()
++
++            k: v for k, v in self._indexes.items() if k not in drop_indexes
+@@ -4099,7 +4116,7 @@ def set_index(
++        coord_names = self._coord_names - drop_variables | set(new_variables)
+@@ -4139,35 +4156,60 @@ def reset_index(
++        drop_indexes: set[Hashable] = set()
++        drop_variables: set[Hashable] = set()
++        seen: set[Index] = set()
++        new_variables: dict[Hashable, Variable] = {}
++
++        def drop_or_convert(var_names):
++            if drop:
++                drop_variables.update(var_names)
++            else:
++                base_vars = {
++                    k: self._variables[k].to_base_variable() for k in var_names
++                }
++                new_variables.update(base_vars)
++            if index in seen:
++                continue
++            seen.add(index)
++
++            idx_var_names = set(self.xindexes.get_all_coords(name))
++            drop_indexes.update(idx_var_names)
++
++            if isinstance(index, PandasMultiIndex):
++               
+...[truncated 2003 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/xarray/tests/test_dataarray.py b/xarray/tests/test_dataarray.py
+@@ -2007,7 +2007,6 @@ def test_set_index(self) -> None:
+@@ -2018,16 +2017,19 @@ def test_reset_index(self) -> None:
++        assert len(obj.xindexes) == 0
++        coords = {
++            "x": ("x", self.mindex.droplevel("level_1")),
++            "level_1": ("x", self.mindex.get_level_values("level_1")),
++        }
++        assert list(obj.xindexes) == ["x"]
++        assert type(obj.xindexes["x"]) is PandasIndex
++        expected = DataArray(self.mda.values, dims="x")
+@@ -2038,14 +2040,16 @@ def test_reset_index(self) -> None:
++        print(obj.x.variable)
++        print(array.x.variable)
++        assert_equal(obj.x.variable, array.x.variable.to_base_variable())
++        assert obj.coord_1.attrs == da.coord_1.attrs
+diff --git a/xarray/tests/test_dataset.py b/xarray/tests/test_dataset.py
+@@ -3237,12 +3237,31 @@ def test_set_index(self) -> None:
++    def test_set_index_deindexed_coords(self) -> None:
++        # test de-indexed coordinates are converted to base variable
++        # https://github.com/pydata/xarray/issues/6969
++        one = ["a", "a", "b", "b"]
++        two = [1, 2, 1, 2]
++        three = ["c", "c", "d", "d"]
++        four = [3, 4, 3, 4]
++
++        mindex_12 = pd.MultiIndex.from_arrays([one, two], names=["one", "two"])
++        mindex_34 = pd.MultiIndex.from_arrays([three, four], names=["three", "four"])
++
++        ds = xr.Dataset(
++            coords={"x": mindex_12, "three": ("x", three), "four": ("x", four)}
++        )
++        actual = ds.set_index(x=["three", "four"])
++        expected = xr.Dataset(
++            coords={"x": mindex_34, "one": ("x", one), "two": ("x", two)}
++        )
++        assert_identical(actual, expected)
++
+@@ -3257,9 +3276,45 @@ def test_reset_index_keep_attrs(self) -> None:
++        assert ds.coord_1.attrs == obj.coord_1.attrs
++    def test_reset_index_drop_dims(self) -> None:
++        ds = Dataset(coords={"x": [1, 2]})
++        reset = ds.reset_index("x", drop=True)
++        assert len(reset.dims) == 0
++
++    @pytest.mark.parametrize(
++        "arg,drop,dropped,converted,renamed",
++        [
++            ("foo", False, [], [], {"bar": "x"}),
++            ("foo", True, ["foo"], [], {"bar": "x"}),
++            ("x", False, ["x"], ["foo", "bar"], {}),
++            ("x", True, ["x", "foo", "bar"], [], {}),
++            (["foo", "bar"], False, ["x"], ["foo", "bar"], {}),
++            (["foo", "bar"], True, ["x", "foo", "bar"], [], {}),
++     
+...[truncated 1190 chars]
+
+##########################################################################################
+## [0290] pydata__xarray-6992 · debugging-and-error-recovery | B=wrong_fix
+files: patch=xarray/core/dataset.py | gold=xarray/core/dataset.py;xarray/core/indexes.py | test=xarray/tests/test_dataarray.py;xarray/tests/test_dataset.py;xarray/tests/test_groupby.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=5 is=1 in=1 raises=1 new_tests_in_f2p=some conflict=False status=patch
+evidence: 消息46通过68项测试，但消息53/61最终一方面在 reset_index 清理 coord_names，另一方面把 DataVariables.__len__ 改成与 variables.keys() 取交集，后者掩盖而非恢复内部不变量；消息55还运行了不存在的 test_coordinates.py，未覆盖其他悬空坐标路径。
+F2P: xarray/tests/test_dataarray.py::TestDataArray::test_reset_index | xarray/tests/test_dataset.py::TestDataset::test_reset_index | xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_dims | xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[foo-False-dropped0-converted0-renamed0] | xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[foo-True-dropped1-converted1-renamed1] | xarray/tests/test_dataset.py::TestDataset::test_reset_index_drop_convert[x-False-dropped2-converted2-renamed2] | xarray/tests/test_dataset.py::TestDataset::test_reset_inde
+...[truncated 569 chars]
+--- FINAL PATCH ---
+diff --git a/xarray/core/dataset.py b/xarray/core/dataset.py
+index 620f32f8..848a0251 100644
+--- a/xarray/core/dataset.py
++++ b/xarray/core/dataset.py
+@@ -365,7 +365,9 @@ class DataVariables(Mapping[Any, "DataArray"]):
+         )
+ 
+     def __len__(self) -> int:
+-        return len(self._dataset._variables) - len(self._dataset._coord_names)
++        return len(self._dataset._variables) - len(
++            self._dataset._coord_names & self._dataset._variables.keys()
++        )
+ 
+     def __contains__(self, key: Hashable) -> bool:
+         return key in self._dataset._variables and key not in self._dataset._coord_names
+@@ -4177,7 +4179,7 @@ class Dataset(
+         }
+         variables.update(new_variables)
+ 
+-        coord_names = set(new_variables) | self._coord_names
++        coord_names = self._coord_names - set(drop_variables) | set(new_variables)
+ 
+         return self._replace(variables, coord_names=coord_names, indexes=indexes)
+ 
+
+--- GOLD (headers/+ lines) ---
+diff --git a/xarray/core/dataset.py b/xarray/core/dataset.py
++++ b/xarray/core/dataset.py
+@@ -4026,10 +4026,11 @@ def set_index(
++        new_variables: dict[Hashable, Variable] = {}
++        drop_indexes: set[Hashable] = set()
++        drop_variables: set[Hashable] = set()
++        all_var_names: set[Hashable] = set()
+@@ -4044,16 +4045,19 @@ def set_index(
++            all_var_names.update(var_names)
++            drop_variables.update(var_names)
++            # drop any pre-existing index involved and its corresponding coordinates
++            index_coord_names = self.xindexes.get_all_coords(dim, errors="ignore")
++            all_index_coord_names = set(index_coord_names)
++                all_index_coord_names.update(
++            drop_indexes.update(all_index_coord_names)
++            drop_variables.update(all_index_coord_names)
+@@ -4065,10 +4069,14 @@ def set_index(
++
++                # trick to preserve coordinate order in this case
++                if dim in self._coord_names:
++                    drop_variables.remove(dim)
++                        k: self._variables[k] for k in index_coord_names
+@@ -4083,8 +4091,17 @@ def set_index(
++        # re-add deindexed coordinates (convert to base variables)
++        for k in drop_variables:
++            if (
++                k not in new_variables
++                and k not in all_var_names
++                and k in self._coord_names
++            ):
++                new_variables[k] = self._variables[k].to_base_variable()
++
++            k: v for k, v in self._indexes.items() if k not in drop_indexes
+@@ -4099,7 +4116,7 @@ def set_index(
++        coord_names = self._coord_names - drop_variables | set(new_variables)
+@@ -4139,35 +4156,60 @@ def reset_index(
++        drop_indexes: set[Hashable] = set()
++        drop_variables: set[Hashable] = set()
++        seen: set[Index] = set()
++        new_variables: dict[Hashable, Variable] = {}
++
++        def drop_or_convert(var_names):
++            if drop:
++                drop_variables.update(var_names)
++            else:
++                base_vars = {
++                    k: self._variables[k].to_base_variable() for k in var_names
++                }
++                new_variables.update(base_vars)
++            if index in seen:
++                continue
++            seen.add(index)
++
++            idx_var_names = set(self.xindexes.get_all_coords(name))
++            drop_indexes.update(idx_var_names)
++
++            if isinstance(index, PandasMultiIndex):
++               
+...[truncated 2003 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/xarray/tests/test_dataarray.py b/xarray/tests/test_dataarray.py
+@@ -2007,7 +2007,6 @@ def test_set_index(self) -> None:
+@@ -2018,16 +2017,19 @@ def test_reset_index(self) -> None:
++        assert len(obj.xindexes) == 0
++        coords = {
++            "x": ("x", self.mindex.droplevel("level_1")),
++            "level_1": ("x", self.mindex.get_level_values("level_1")),
++        }
++        assert list(obj.xindexes) == ["x"]
++        assert type(obj.xindexes["x"]) is PandasIndex
++        expected = DataArray(self.mda.values, dims="x")
+@@ -2038,14 +2040,16 @@ def test_reset_index(self) -> None:
++        print(obj.x.variable)
++        print(array.x.variable)
++        assert_equal(obj.x.variable, array.x.variable.to_base_variable())
++        assert obj.coord_1.attrs == da.coord_1.attrs
+diff --git a/xarray/tests/test_dataset.py b/xarray/tests/test_dataset.py
+@@ -3237,12 +3237,31 @@ def test_set_index(self) -> None:
++    def test_set_index_deindexed_coords(self) -> None:
++        # test de-indexed coordinates are converted to base variable
++        # https://github.com/pydata/xarray/issues/6969
++        one = ["a", "a", "b", "b"]
++        two = [1, 2, 1, 2]
++        three = ["c", "c", "d", "d"]
++        four = [3, 4, 3, 4]
++
++        mindex_12 = pd.MultiIndex.from_arrays([one, two], names=["one", "two"])
++        mindex_34 = pd.MultiIndex.from_arrays([three, four], names=["three", "four"])
++
++        ds = xr.Dataset(
++            coords={"x": mindex_12, "three": ("x", three), "four": ("x", four)}
++        )
++        actual = ds.set_index(x=["three", "four"])
++        expected = xr.Dataset(
++            coords={"x": mindex_34, "one": ("x", one), "two": ("x", two)}
++        )
++        assert_identical(actual, expected)
++
+@@ -3257,9 +3276,45 @@ def test_reset_index_keep_attrs(self) -> None:
++        assert ds.coord_1.attrs == obj.coord_1.attrs
++    def test_reset_index_drop_dims(self) -> None:
++        ds = Dataset(coords={"x": [1, 2]})
++        reset = ds.reset_index("x", drop=True)
++        assert len(reset.dims) == 0
++
++    @pytest.mark.parametrize(
++        "arg,drop,dropped,converted,renamed",
++        [
++            ("foo", False, [], [], {"bar": "x"}),
++            ("foo", True, ["foo"], [], {"bar": "x"}),
++            ("x", False, ["x"], ["foo", "bar"], {}),
++            ("x", True, ["x", "foo", "bar"], [], {}),
++            (["foo", "bar"], False, ["x"], ["foo", "bar"], {}),
++            (["foo", "bar"], True, ["x", "foo", "bar"], [], {}),
++     
+...[truncated 1190 chars]
+
+##########################################################################################
+## [0310] django__django-14376 · django-tdd | B=incomplete_patch
+files: patch=django/db/backends/mysql/base.py | gold=django/db/backends/mysql/base.py;django/db/backends/mysql/client.py | test=tests/dbshell/test_mysql.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 已把连接参数db/passwd替换为database/password，但遗漏mysql/client.py；参考新增测试要求dbshell选择database并在新旧键并存时优先新键。完整官方失败日志未匹配。 | 最终补丁第10行：+            kwargs['database'] = settings_dict['NAME']
+F2P: test_options_non_deprecated_keys_preferred (dbshell.test_mysql.MySqlDbshellCommandTestCase) | test_options_override_settings_proper_values (dbshell.test_mysql.MySqlDbshellCommandTestCase) | test_parameters (dbshell.test_mysql.MySqlDbshellCommandTestCase)
+--- FINAL PATCH ---
+diff --git a/django/db/backends/mysql/base.py b/django/db/backends/mysql/base.py
+index 2c62182d31..8b28a60485 100644
+--- a/django/db/backends/mysql/base.py
++++ b/django/db/backends/mysql/base.py
+@@ -200,9 +200,9 @@ class DatabaseWrapper(BaseDatabaseWrapper):
+         if settings_dict['USER']:
+             kwargs['user'] = settings_dict['USER']
+         if settings_dict['NAME']:
+-            kwargs['db'] = settings_dict['NAME']
++            kwargs['database'] = settings_dict['NAME']
+         if settings_dict['PASSWORD']:
+-            kwargs['passwd'] = settings_dict['PASSWORD']
++            kwargs['password'] = settings_dict['PASSWORD']
+         if settings_dict['HOST'].startswith('/'):
+             kwargs['unix_socket'] = settings_dict['HOST']
+         elif settings_dict['HOST']:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/db/backends/mysql/base.py b/django/db/backends/mysql/base.py
++++ b/django/db/backends/mysql/base.py
+@@ -200,9 +200,9 @@ def get_connection_params(self):
++            kwargs['database'] = settings_dict['NAME']
++            kwargs['password'] = settings_dict['PASSWORD']
+diff --git a/django/db/backends/mysql/client.py b/django/db/backends/mysql/client.py
++++ b/django/db/backends/mysql/client.py
+@@ -8,7 +8,10 @@ class DatabaseClient(BaseDatabaseClient):
++        database = settings_dict['OPTIONS'].get(
++            'database',
++            settings_dict['OPTIONS'].get('db', settings_dict['NAME']),
++        )
+@@ -51,7 +54,7 @@ def settings_to_cmd_args_env(cls, settings_dict, parameters):
++        if database:
++            args += [database]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/dbshell/test_mysql.py b/tests/dbshell/test_mysql.py
+@@ -50,41 +50,49 @@ def test_options_override_settings_proper_values(self):
++        for keys in [('database', 'password'), ('db', 'passwd')]:
++            with self.subTest(keys=keys):
++                database, password = keys
++                self.assertEqual(
++                    self.settings_to_cmd_args_env({
++                        'NAME': 'settingdbname',
++                        'USER': 'settinguser',
++                        'PASSWORD': 'settingpassword',
++                        'HOST': 'settinghost',
++                        'PORT': settings_port,
++                        'OPTIONS': {
++                            database: 'optiondbname',
++                            'user': 'optionuser',
++                            password: 'optionpassword',
++                            'host': 'optionhost',
++                            'port': options_port,
++                        },
++                    }),
++                    (expected_args, expected_env),
++                )
++    def test_options_non_deprecated_keys_preferred(self):
++            'optiondbname',
++                'NAME': 'settingdbname',
++                'OPTIONS': {
++                    'database': 'optiondbname',
++                    'db': 'deprecatedoptiondbname',
++                    'password': 'optionpassword',
++                    'passwd': 'deprecatedoptionpassword',
++                },
+
+##########################################################################################
+## [0321] django__django-14376 · test-driven-development | B=incomplete_patch
+files: patch=django/db/backends/mysql/base.py | gold=django/db/backends/mysql/base.py;django/db/backends/mysql/client.py | test=tests/dbshell/test_mysql.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 已把连接参数db/passwd替换为database/password，但遗漏mysql/client.py；参考新增测试要求dbshell选择database并在新旧键并存时优先新键。完整官方失败日志未匹配。 | 最终补丁第10行：+            kwargs['database'] = settings_dict['NAME']
+F2P: test_options_non_deprecated_keys_preferred (dbshell.test_mysql.MySqlDbshellCommandTestCase) | test_options_override_settings_proper_values (dbshell.test_mysql.MySqlDbshellCommandTestCase) | test_parameters (dbshell.test_mysql.MySqlDbshellCommandTestCase)
+--- FINAL PATCH ---
+diff --git a/django/db/backends/mysql/base.py b/django/db/backends/mysql/base.py
+index 2c62182d31..8b28a60485 100644
+--- a/django/db/backends/mysql/base.py
++++ b/django/db/backends/mysql/base.py
+@@ -200,9 +200,9 @@ class DatabaseWrapper(BaseDatabaseWrapper):
+         if settings_dict['USER']:
+             kwargs['user'] = settings_dict['USER']
+         if settings_dict['NAME']:
+-            kwargs['db'] = settings_dict['NAME']
++            kwargs['database'] = settings_dict['NAME']
+         if settings_dict['PASSWORD']:
+-            kwargs['passwd'] = settings_dict['PASSWORD']
++            kwargs['password'] = settings_dict['PASSWORD']
+         if settings_dict['HOST'].startswith('/'):
+             kwargs['unix_socket'] = settings_dict['HOST']
+         elif settings_dict['HOST']:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/db/backends/mysql/base.py b/django/db/backends/mysql/base.py
++++ b/django/db/backends/mysql/base.py
+@@ -200,9 +200,9 @@ def get_connection_params(self):
++            kwargs['database'] = settings_dict['NAME']
++            kwargs['password'] = settings_dict['PASSWORD']
+diff --git a/django/db/backends/mysql/client.py b/django/db/backends/mysql/client.py
++++ b/django/db/backends/mysql/client.py
+@@ -8,7 +8,10 @@ class DatabaseClient(BaseDatabaseClient):
++        database = settings_dict['OPTIONS'].get(
++            'database',
++            settings_dict['OPTIONS'].get('db', settings_dict['NAME']),
++        )
+@@ -51,7 +54,7 @@ def settings_to_cmd_args_env(cls, settings_dict, parameters):
++        if database:
++            args += [database]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/dbshell/test_mysql.py b/tests/dbshell/test_mysql.py
+@@ -50,41 +50,49 @@ def test_options_override_settings_proper_values(self):
++        for keys in [('database', 'password'), ('db', 'passwd')]:
++            with self.subTest(keys=keys):
++                database, password = keys
++                self.assertEqual(
++                    self.settings_to_cmd_args_env({
++                        'NAME': 'settingdbname',
++                        'USER': 'settinguser',
++                        'PASSWORD': 'settingpassword',
++                        'HOST': 'settinghost',
++                        'PORT': settings_port,
++                        'OPTIONS': {
++                            database: 'optiondbname',
++                            'user': 'optionuser',
++                            password: 'optionpassword',
++                            'host': 'optionhost',
++                            'port': options_port,
++                        },
++                    }),
++                    (expected_args, expected_env),
++                )
++    def test_options_non_deprecated_keys_preferred(self):
++            'optiondbname',
++                'NAME': 'settingdbname',
++                'OPTIONS': {
++                    'database': 'optiondbname',
++                    'db': 'deprecatedoptiondbname',
++                    'password': 'optionpassword',
++                    'passwd': 'deprecatedoptionpassword',
++                },

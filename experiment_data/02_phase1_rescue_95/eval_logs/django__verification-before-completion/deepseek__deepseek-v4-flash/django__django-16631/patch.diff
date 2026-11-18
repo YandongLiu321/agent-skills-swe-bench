@@ -1,0 +1,57 @@
+diff --git a/django/contrib/auth/__init__.py b/django/contrib/auth/__init__.py
+index 155330c596..11f70caeb6 100644
+--- a/django/contrib/auth/__init__.py
++++ b/django/contrib/auth/__init__.py
+@@ -1,5 +1,6 @@
+ import inspect
+ import re
++from itertools import chain
+ 
+ from django.apps import apps as django_apps
+ from django.conf import settings
+@@ -199,8 +200,15 @@ def get_user(request):
+             # Verify the session
+             if hasattr(user, "get_session_auth_hash"):
+                 session_hash = request.session.get(HASH_SESSION_KEY)
+-                session_hash_verified = session_hash and constant_time_compare(
+-                    session_hash, user.get_session_auth_hash()
++                session_auth_hashes = [user.get_session_auth_hash()]
++                if hasattr(user, "get_session_auth_fallback_hash"):
++                    session_auth_hashes = chain(
++                        session_auth_hashes,
++                        user.get_session_auth_fallback_hash(),
++                    )
++                session_hash_verified = session_hash and any(
++                    constant_time_compare(session_hash, session_auth_hash)
++                    for session_auth_hash in session_auth_hashes
+                 )
+                 if not session_hash_verified:
+                     request.session.flush()
+diff --git a/django/contrib/auth/base_user.py b/django/contrib/auth/base_user.py
+index 5ee30bf59c..913b91504d 100644
+--- a/django/contrib/auth/base_user.py
++++ b/django/contrib/auth/base_user.py
+@@ -5,6 +5,7 @@ not in INSTALLED_APPS.
+ import unicodedata
+ import warnings
+ 
++from django.conf import settings
+ from django.contrib.auth import password_validation
+ from django.contrib.auth.hashers import (
+     check_password,
+@@ -142,6 +143,15 @@ class AbstractBaseUser(models.Model):
+             algorithm="sha256",
+         ).hexdigest()
+ 
++    def get_session_auth_fallback_hash(self):
++        for fallback_secret in settings.SECRET_KEY_FALLBACKS:
++            yield salted_hmac(
++                "django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash",
++                self.password,
++                secret=fallback_secret,
++                algorithm="sha256",
++            ).hexdigest()
++
+     @classmethod
+     def get_email_field_name(cls):
+         try:

@@ -1,0 +1,134 @@
+diff --git a/pylint/pyreverse/diagrams.py b/pylint/pyreverse/diagrams.py
+index bf9f67af..258cf5ee 100644
+--- a/pylint/pyreverse/diagrams.py
++++ b/pylint/pyreverse/diagrams.py
+@@ -84,6 +84,7 @@ class ClassDiagram(Figure, FilterMixIn):
+             for n, m in node.items()
+             if isinstance(m, astroid.FunctionDef) and decorated_with_property(m)
+         ]
++        type_annotations = getattr(node, "type_annotations", {})
+         for node_name, associated_nodes in (
+             list(node.instance_attrs_type.items())
+             + list(node.locals_type.items())
+@@ -91,7 +92,10 @@ class ClassDiagram(Figure, FilterMixIn):
+         ):
+             if not self.show_attr(node_name):
+                 continue
+-            names = self.class_names(associated_nodes)
++            if node_name in type_annotations:
++                names = [type_annotations[node_name]]
++            else:
++                names = self.class_names(associated_nodes)
+             if names:
+                 node_name = "{} : {}".format(node_name, ", ".join(names))
+             attrs.append(node_name)
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..0c8da0b8 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -39,6 +39,68 @@ def _astroid_wrapper(func, modname):
+     return None
+ 
+ 
++def _annotation_as_string(annotation):
++    """Return the string representation of a type annotation."""
++    if annotation is None:
++        return None
++    if isinstance(annotation, astroid.Const) and isinstance(annotation.value, str):
++        return annotation.value
++    return annotation.as_string()
++
++
++def _get_argument_annotation(node):
++    """Return the annotation of a function argument node, if any."""
++    args = node.parent
++    if not isinstance(args, astroid.Arguments):
++        return None
++    for arg_nodes, annotations in (
++        (args.args, args.annotations),
++        (args.posonlyargs, args.posonlyargs_annotations),
++        (args.kwonlyargs, args.kwonlyargs_annotations),
++    ):
++        for arg, annotation in zip(arg_nodes, annotations):
++            if arg is node:
++                return _annotation_as_string(annotation)
++    return None
++
++
++def _get_annotation_from_value(value, seen):
++    """Return the annotation of the name used as an assignment value."""
++    if not isinstance(value, astroid.Name):
++        return None
++    try:
++        _, assignments = value.lookup(value.name)
++    except astroid.InferenceError:
++        return None
++    for assignment in assignments:
++        annotation = _get_annotation(assignment, seen)
++        if annotation is not None:
++            return annotation
++    return None
++
++
++def _get_annotation(node, seen=None):
++    """Return the type annotation associated with an assignment node.
++
++    The annotation may be attached directly to the node (PEP 526), or
++    inherited from an annotated function argument or another annotated
++    variable used as the assigned value.
++    """
++    if seen is None:
++        seen = set()
++    if id(node) in seen:
++        return None
++    seen.add(id(node))
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return _annotation_as_string(parent.annotation)
++    if isinstance(parent, astroid.Arguments):
++        return _get_argument_annotation(node)
++    if isinstance(parent, astroid.Assign):
++        return _get_annotation_from_value(parent.value, seen)
++    return None
++
++
+ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+     """Return an iterator on interfaces implemented by the given class node."""
+     try:
+@@ -151,8 +213,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         * optionally tag the node with a unique id
+         """
+         if hasattr(node, "locals_type"):
++            if not hasattr(node, "type_annotations"):
++                node.type_annotations = {}
+             return
+         node.locals_type = collections.defaultdict(list)
++        node.type_annotations = {}
+         if self.tag:
+             node.uid = self.generate_id()
+         # resolve ancestors
+@@ -217,6 +282,12 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                 else:
+                     self.visit_module(frame)
+ 
++            if isinstance(frame, astroid.ClassDef):
++                annotation = _get_annotation(node)
++                if annotation is not None:
++                    if not hasattr(frame, "type_annotations"):
++                        frame.type_annotations = {}
++                    frame.type_annotations[node.name] = annotation
+             current = frame.locals_type[node.name]
+             values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+@@ -229,6 +300,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+ 
+         handle instance_attrs_type
+         """
++        annotation = _get_annotation(node)
++        if annotation is not None:
++            if not hasattr(parent, "type_annotations"):
++                parent.type_annotations = {}
++            parent.type_annotations[node.attrname] = annotation
+         try:
+             values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])

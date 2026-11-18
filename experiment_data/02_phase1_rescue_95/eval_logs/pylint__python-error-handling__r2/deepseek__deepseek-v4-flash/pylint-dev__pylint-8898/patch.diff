@@ -1,0 +1,73 @@
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..ebe5606ea 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -213,12 +213,22 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A separator that is escaped with a backslash is not used to split the
++    string, which makes it possible to use a comma inside a value such as a
++    regular expression (for example ``(foo{1\\,3})``). Commas surrounded by
++    double quotes are kept as well and the quotes are removed so that a whole
++    value can be quoted (for example ``"(foo{1,3})"``).
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+     >>> _splitstrip('a,\nb,\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip('a,"b,c",d')
++    ['a', 'b,c', 'd']
++    >>> _splitstrip('(foo{1\\,3})')
++    ['(foo{1,3})']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -229,7 +239,44 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    result: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    escaped = False
++    at_field_start = True
++    for char in string:
++        if escaped:
++            # Keep every other escape sequence intact (e.g. '\d'), but
++            # unescape the separator so it can be part of a value.
++            if char == sep:
++                current.append(sep)
++            else:
++                current.append("\\")
++                current.append(char)
++            escaped = False
++            at_field_start = False
++        elif quote is not None:
++            if char == quote:
++                quote = None
++            else:
++                current.append(char)
++        elif char == "\\":
++            escaped = True
++        elif char == '"' and at_field_start:
++            quote = char
++            at_field_start = False
++        elif char == sep:
++            result.append("".join(current).strip())
++            current = []
++            at_field_start = True
++        else:
++            current.append(char)
++            if not char.isspace():
++                at_field_start = False
++    if escaped:
++        current.append("\\")
++    result.append("".join(current).strip())
++    return [word for word in result if word]
+ 
+ 
+ def _unquote(string: str) -> str:

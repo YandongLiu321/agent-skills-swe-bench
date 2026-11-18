@@ -1,0 +1,993 @@
+
+##########################################################################################
+## [0224] sympy__sympy-15017 · python-project-structure | B=incomplete_patch
+files: patch=sympy/tensor/array/ndim_array.py;sympy/tensor/array/sparse_ndim_array.py | gold=sympy/tensor/array/dense_ndim_array.py | test=sympy/tensor/array/tests/test_immutable_ndim_array.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=4 is=0 in=0 raises=0 new_tests_in_f2p=n/a conflict=False status=patch
+evidence: 只特判__len__，底层_loop_size仍为0，导致索引[0]越界；正式日志明确ValueError。 | 最终补丁第1行：diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py
+F2P: test_ndim_array_initiation
+--- FINAL PATCH ---
+diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py
+index 099b29116..2699da4aa 100644
+--- a/sympy/tensor/array/ndim_array.py
++++ b/sympy/tensor/array/ndim_array.py
+@@ -175,6 +175,8 @@ def __len__(self):
+         9
+ 
+         """
++        if self._rank == 0:
++            return 1
+         return self._loop_size
+ 
+     @property
+diff --git a/sympy/tensor/array/sparse_ndim_array.py b/sympy/tensor/array/sparse_ndim_array.py
+index 72b5d5129..d8a781fca 100644
+--- a/sympy/tensor/array/sparse_ndim_array.py
++++ b/sympy/tensor/array/sparse_ndim_array.py
+@@ -111,6 +111,9 @@ def tomatrix(self):
+ 
+     def __iter__(self):
+         def iterator():
++            if self._rank == 0:
++                yield self[()]
++                return
+             for i in range(self._loop_size):
+                 yield self[i]
+         return iterator()
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/tensor/array/dense_ndim_array.py b/sympy/tensor/array/dense_ndim_array.py
++++ b/sympy/tensor/array/dense_ndim_array.py
+@@ -149,7 +149,7 @@ def _new(cls, iterable, shape, **kwargs):
++        self._loop_size = functools.reduce(lambda x,y: x*y, shape, 1)
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/tensor/array/tests/test_immutable_ndim_array.py b/sympy/tensor/array/tests/test_immutable_ndim_array.py
+@@ -9,6 +9,10 @@
++    arr_with_no_elements = ImmutableDenseNDimArray([], shape=(0,))
++    assert len(arr_with_no_elements) == 0
++    assert arr_with_no_elements.rank() == 1
++
+@@ -73,11 +77,11 @@ def test_ndim_array_initiation():
++    assert len(rank_zero_array) == 1
++    assert rank_zero_array[0] == x
+
+##########################################################################################
+## [0251] django__django-15629 · django-tdd | B=incomplete_patch
+files: patch=django/db/backends/base/schema.py;django/db/models/fields/related.py | gold=django/db/backends/base/schema.py;django/db/backends/oracle/features.py;django/db/backends/sqlite3/schema.py;django/db/models/fields/related.py | test=tests/migrations/test_base.py;tests/migrations/test_operations.py
+overlap: exact=False subset=True disjoint=False touched_gold=2/4 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=none conflict=False status=patch
+evidence: 消息171-178最终只修改 base/schema.py 与 fields/related.py；补丁虽在已有 related-field alter 循环中按collation选择SQL，但没有像成功run那样把 old/new primary-key collation 差异加入 drop_foreign_keys 触发条件，也未补MySQL/SQLite后端处理。因此同类型仅collation变化时关键循环可能根本不执行。消息164、170的1266/310项测试未覆盖该迁移分支，最终 resolved=0。
+F2P: AlterField operation of db_collation on primary keys changes any FKs | Creation of models with a FK to a PK with db_collation.
+--- FINAL PATCH ---
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
+index 696bfd7742..8b6a83724d 100644
+--- a/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -1038,19 +1038,42 @@ class BaseDatabaseSchemaEditor:
+         for old_rel, new_rel in rels_to_update:
+             rel_db_params = new_rel.field.db_parameters(connection=self.connection)
+             rel_type = rel_db_params["type"]
+-            fragment, other_actions = self._alter_column_type_sql(
+-                new_rel.related_model, old_rel.field, new_rel.field, rel_type
+-            )
+-            self.execute(
+-                self.sql_alter_column
+-                % {
+-                    "table": self.quote_name(new_rel.related_model._meta.db_table),
+-                    "changes": fragment[0],
+-                },
+-                fragment[1],
+-            )
+-            for sql, params in other_actions:
+-                self.execute(sql, params)
++            rel_collation = rel_db_params.get("collation")
++            old_rel_db_params = old_rel.field.db_parameters(connection=self.connection)
++            old_rel_collation = old_rel_db_params.get("collation")
++            if old_rel_collation != rel_collation:
++                # Collation change handles also a type change.
++                fragment = self._alter_column_collation_sql(
++                    new_rel.related_model,
++                    new_rel.field,
++                    rel_type,
++                    rel_collation,
++                )
++                self.execute(
++                    self.sql_alter_column
++                    % {
++                        "table": self.quote_name(new_rel.related_model._meta.db_table),
++                        "changes": fragment[0],
++                    },
++                    fragment[1],
++                )
++            else:
++                fragment, other_actions = self._alter_column_type_sql(
++                    new_rel.related_model,
++                    old_rel.field,
++                    new_rel.field,
++                    rel_type,
++                )
++                self.execute(
++                    self.sql_alter_column
++                    % {
++                        "table": self.quote_name(new_rel.related_model._meta.db_table),
++                        "changes": fragment[0],
++                    },
++                    fragment[1],
++                )
++                for sql, params in other_actions:
++                    self.execute(sql, params)
+         # Does it have a foreign key?
+         if (
+             self.connection.features.supports_foreign_keys
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
+index fad5560486..4e5f79348e 100644
+--- a/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -1180,7 +1180,15 @@ class ForeignKey(ForeignObject):
+         return self.target_field.rel_db_type(connection=connection)
+ 
+     def db_parameters(self, connection):
+-        return {"type": self.db_type(connection), "check": self.db_check(connection)}
++        return {
++            "type": self.db_type(connection),
++            "check": self.db_check(connection),
++            "collation": self.db_collation,
++        }
++
++    @property
++    def db_collation(self):
++        return getattr(self.target_field, "db_collation", None)
+ 
+     def convert_empty_strings(self, value, expression, connection):
+         if (not value) and isinstance(value, str):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/db/backends/base/schema.py b/django/db/backends/base/schema.py
++++ b/django/db/backends/base/schema.py
+@@ -823,13 +823,15 @@ def _alter_field(
++        old_collation = old_db_params.get("collation")
++        new_collation = new_db_params.get("collation")
++            and ((old_type != new_type) or (old_collation != new_collation))
+@@ -914,8 +916,6 @@ def _alter_field(
+@@ -1038,9 +1038,22 @@ def _alter_field(
++            rel_collation = rel_db_params.get("collation")
++            old_rel_db_params = old_rel.field.db_parameters(connection=self.connection)
++            old_rel_collation = old_rel_db_params.get("collation")
++            if old_rel_collation != rel_collation:
++                # Collation change handles also a type change.
++                fragment = self._alter_column_collation_sql(
++                    new_rel.related_model,
++                    new_rel.field,
++                    rel_type,
++                    rel_collation,
++                )
++                other_actions = []
++            else:
++                fragment, other_actions = self._alter_column_type_sql(
++                    new_rel.related_model, old_rel.field, new_rel.field, rel_type
++                )
+diff --git a/django/db/backends/oracle/features.py b/django/db/backends/oracle/features.py
++++ b/django/db/backends/oracle/features.py
+@@ -104,6 +104,10 @@ class DatabaseFeatures(BaseDatabaseFeatures):
++        "Oracle doesn't support changing collations on indexed columns (#33671).": {
++            "migrations.test_operations.OperationTests."
++            "test_alter_field_pk_fk_db_collation",
++        },
+diff --git a/django/db/backends/sqlite3/schema.py b/django/db/backends/sqlite3/schema.py
++++ b/django/db/backends/sqlite3/schema.py
+@@ -455,7 +455,11 @@ def _alter_field(
++        old_collation = old_db_params.get("collation")
++        new_collation = new_db_params.get("collation")
++        if new_field.unique and (
++            old_type != new_type or old_collation != new_collation
++        ):
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -1180,7 +1180,12 @@ def db_type(self, connection):
++        target_db_parameters = self.target_field.db_parameters(connection)
++        return {
++            "type": self.db_type(connection),
++            "check": self.db_check(connection),
++            "collation": target_db_parameters.get("collation"),
++        }
+--- TEST (headers/+ lines) ---
+diff --git a/tests/migrations/test_base.py b/tests/migrations/test_base.py
+@@ -65,6 +65,16 @@ def assertColumnNull(self, table, column, using="default"):
++    def _get_column_collation(self, table, column, using):
++        return next(
++            f.collation
++            for f in self.get_table_description(table, using=using)
++            if f.name == column
++        )
++
++    def assertColumnCollation(self, table, column, collation, using="default"):
++        self.assertEqual(self._get_column_collation(table, column, using), collation)
++
+diff --git a/tests/migrations/test_operations.py b/tests/migrations/test_operations.py
+@@ -260,6 +260,66 @@ def test_create_model_m2m(self):
++    @skipUnlessDBFeature("supports_collation_on_charfield", "supports_foreign_keys")
++    def test_create_fk_models_to_pk_field_db_collation(self):
++        """Creation of models with a FK to a PK with db_collation."""
++        collation = connection.features.test_collations.get("non_default")
++        if not collation:
++            self.skipTest("Language collations are not supported.")
++
++        app_label = "test_cfkmtopkfdbc"
++        operations = [
++            migrations.CreateModel(
++                "Pony",
++                [
++                    (
++                        "id",
++                        models.CharField(
++                            primary_key=True,
++                            max_length=10,
++                            db_collation=collation,
++                        ),
++                    ),
++                ],
++            )
++        ]
++        project_state = self.apply_operations(app_label, ProjectState(), operations)
++        # ForeignKey.
++        new_state = project_state.clone()
++        operation = migrations.CreateModel(
++            "Rider",
++            [
++                ("id", models.AutoField(primary_key=True)),
++                ("pony", models.ForeignKey("Pony", models.CASCADE)),
++            ],
++        )
++        operation.state_forwards(app_label, new_state)
++        with connection.schema_editor() as editor:
++            operation.database_forwards(app_label, editor, project_state, new_state)
++        self.assertColumnCollation(f"{app_label}_rider", "pony_id", collation)
++        # Reversal.
++        with connection.schema_editor() as editor:
++            operation.database_backwards(app_label, editor, new_state, project_state)
++        # OneToOneField.
++        new_state = project_state.clone()
++        operation = migrations.CreateM
+...[truncated 3011 chars]
+
+##########################################################################################
+## [0306] django__django-13794 · django-security | B=wrong_location
+files: patch=django/template/defaultfilters.py | gold=django/utils/functional.py | test=tests/template_tests/filter_tests/test_add.py;tests/utils_tests/test_functional.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 仅在模板add过滤器将Promise转str，未修公共lazy.__add__/__radd__，惰性整数加法等入口仍未覆盖。 | patch L9: +from django.utils.functional import Promise | patch L17: +    if isinstance(value, Promise): | patch L18: +        value = str(value)
+F2P: test_lazy_add (utils_tests.test_functional.FunctionalTests) | test_add08 (template_tests.filter_tests.test_add.AddTests) | test_add09 (template_tests.filter_tests.test_add.AddTests)
+--- FINAL PATCH ---
+diff --git a/django/template/defaultfilters.py b/django/template/defaultfilters.py
+index 1c844580c6..5fe75d608c 100644
+--- a/django/template/defaultfilters.py
++++ b/django/template/defaultfilters.py
+@@ -11,6 +11,7 @@ from urllib.parse import quote
+ from django.utils import formats
+ from django.utils.dateformat import format, time_format
+ from django.utils.encoding import iri_to_uri
++from django.utils.functional import Promise
+ from django.utils.html import (
+     avoid_wrapping, conditional_escape, escape, escapejs,
+     json_script as _json_script, linebreaks, strip_tags, urlize as _urlize,
+@@ -674,6 +675,10 @@ def unordered_list(value, autoescape=True):
+ @register.filter(is_safe=False)
+ def add(value, arg):
+     """Add the arg to the value."""
++    if isinstance(value, Promise):
++        value = str(value)
++    if isinstance(arg, Promise):
++        arg = str(arg)
+     try:
+         return int(value) + int(arg)
+     except (ValueError, TypeError):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/utils/functional.py b/django/utils/functional.py
++++ b/django/utils/functional.py
+@@ -176,6 +176,12 @@ def __mod__(self, rhs):
++        def __add__(self, other):
++            return self.__cast() + other
++
++        def __radd__(self, other):
++            return other + self.__cast()
++
+--- TEST (headers/+ lines) ---
+diff --git a/tests/template_tests/filter_tests/test_add.py b/tests/template_tests/filter_tests/test_add.py
+@@ -2,6 +2,7 @@
++from django.utils.translation import gettext_lazy
+@@ -46,6 +47,22 @@ def test_add07(self):
++    @setup({'add08': '{{ s1|add:lazy_s2 }}'})
++    def test_add08(self):
++        output = self.engine.render_to_string(
++            'add08',
++            {'s1': 'string', 'lazy_s2': gettext_lazy('lazy')},
++        )
++        self.assertEqual(output, 'stringlazy')
++
++    @setup({'add09': '{{ lazy_s1|add:lazy_s2 }}'})
++    def test_add09(self):
++        output = self.engine.render_to_string(
++            'add09',
++            {'lazy_s1': gettext_lazy('string'), 'lazy_s2': gettext_lazy('lazy')},
++        )
++        self.assertEqual(output, 'stringlazy')
++
+diff --git a/tests/utils_tests/test_functional.py b/tests/utils_tests/test_functional.py
+@@ -184,6 +184,11 @@ class Foo:
++    def test_lazy_add(self):
++        lazy_4 = lazy(lambda: 4, int)
++        lazy_5 = lazy(lambda: 5, int)
++        self.assertEqual(lazy_4() + lazy_5(), 9)
++
+
+##########################################################################################
+## [0341] sympy__sympy-13091 · python-project-structure | B=incomplete_patch
+files: patch=sympy/core/basic.py;sympy/core/numbers.py;sympy/geometry/entity.py | gold=sympy/core/basic.py;sympy/core/exprtools.py;sympy/core/numbers.py;sympy/geometry/entity.py;sympy/physics/optics/medium.py;sympy/physics/vector/dyadic.py;sympy/physics/vector/frame.py;sympy/physics/vector/vector.py;sympy/polys/agca/modules.py;sympy/polys/domains/domain.py;sympy/polys/domains/expressiondomain.py;sympy/polys/domains/pythonrational.py;sympy/polys/domains/quotientring.py;sympy/polys/fields.py;sympy/polys/monomials.py;sympy/polys/polyclasses.py;sympy/polys/polytools.py;sympy/polys/rings.py;sympy/polys/rootoftools.py;sympy/tensor/array/ndim_array.py;sympy/utilities/enumerative.py | test=sympy/core/tests/test_basic.py;sympy/core/tests/test_numbers.py
+overlap: exact=False subset=True disjoint=False touched_gold=3/21 func_jaccard=0.3333333333333333
+signals: eq=22 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=False status=patch
+evidence: 修改__eq__/__ne__及_has，但未修改expr.py关系比较；issue明确包含__lt__/__ge__，不止给出的basic.py一行。 | 最终补丁第1行：diff --git a/sympy/core/basic.py b/sympy/core/basic.py
+F2P: test_equality | test_comparisons_with_unknown_type
+--- FINAL PATCH ---
+diff --git a/sympy/core/basic.py b/sympy/core/basic.py
+index db4e97184..f78c11e39 100644
+--- a/sympy/core/basic.py
++++ b/sympy/core/basic.py
+@@ -313,7 +313,7 @@ def __eq__(self, other):
+             try:
+                 other = _sympify(other)
+             except SympifyError:
+-                return False    # sympy != other
++                return NotImplemented    # sympy != other
+ 
+             if type(self) != type(other):
+                 return False
+@@ -329,7 +329,7 @@ def __ne__(self, other):
+ 
+            but faster
+         """
+-        return not self.__eq__(other)
++        return not (self == other)
+ 
+     def dummy_eq(self, other, symbol=None):
+         """
+@@ -1174,7 +1174,11 @@ def _has(self, pattern):
+ 
+         try:
+             match = pattern._has_matcher()
+-            return any(match(arg) for arg in preorder_traversal(self))
++            for arg in preorder_traversal(self):
++                res = match(arg)
++                if res is not NotImplemented and res:
++                    return True
++            return False
+         except AttributeError:
+             return any(arg == pattern for arg in preorder_traversal(self))
+ 
+diff --git a/sympy/core/numbers.py b/sympy/core/numbers.py
+index 864d05508..011c65cc4 100644
+--- a/sympy/core/numbers.py
++++ b/sympy/core/numbers.py
+@@ -1258,7 +1258,7 @@ def __eq__(self, other):
+         try:
+             other = _sympify(other)
+         except SympifyError:
+-            return False    # sympy != other  -->  not ==
++            return NotImplemented    # sympy != other  -->  not ==
+         if isinstance(other, NumberSymbol):
+             if other.is_irrational:
+                 return False
+@@ -1276,7 +1276,7 @@ def __eq__(self, other):
+         return False    # Float != non-Number
+ 
+     def __ne__(self, other):
+-        return not self.__eq__(other)
++        return not (self == other)
+ 
+     def __gt__(self, other):
+         try:
+@@ -1719,7 +1719,7 @@ def __eq__(self, other):
+         try:
+             other = _sympify(other)
+         except SympifyError:
+-            return False    # sympy != other  -->  not ==
++            return NotImplemented    # sympy != other  -->  not ==
+         if isinstance(other, NumberSymbol):
+             if other.is_irrational:
+                 return False
+@@ -1734,7 +1734,7 @@ def __eq__(self, other):
+         return False
+ 
+     def __ne__(self, other):
+-        return not self.__eq__(other)
++        return not (self == other)
+ 
+     def __gt__(self, other):
+         try:
+@@ -2112,7 +2112,7 @@ def __eq__(self, other):
+         return Rational.__eq__(self, other)
+ 
+     def __ne__(self, other):
+-        return not self.__eq__(other)
++        return not (self == other)
+ 
+     def __gt__(self, other):
+         try:
+@@ -3339,7 +3339,7 @@ def __eq__(self, other):
+         try:
+             other = _sympify(other)
+         except SympifyError:
+-            return False    # sympy != other  -->  not ==
++            return NotImplemented    # sympy != other  -->  not ==
+         if self is other:
+             return True
+         if isinstance(other, Number) and self.is_irrational:
+@@ -3348,7 +3348,7 @@ def __eq__(self, other):
+         return False    # NumberSymbol != non-(Number|self)
+ 
+     def __ne__(self, other):
+-        return not self.__eq__(other)
++        return not (self == other)
+ 
+     def __lt__(self, other):
+         try:
+diff --git a/sympy/geometry/entity.py b/sympy/geometry/entity.py
+index a9ce2f390..1c34af0bc 100644
+--- a/sympy/geometry/entity.py
++++ b/sympy/geometry/entity.py
+@@ -104,7 +104,7 @@ def __getnewargs__(self):
+ 
+     def __ne__(self, o):
+         """Test inequality of two geometrical entities."""
+-        return not self.__eq__(o)
++        return not (self == o)
+ 
+     def __new__(cls, *args, **kwargs):
+         # Points are sequences, but they should not
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/core/basic.py b/sympy/core/basic.py
++++ b/sympy/core/basic.py
+@@ -313,7 +313,7 @@ def __eq__(self, other):
++                return NotImplemented
+@@ -329,7 +329,7 @@ def __ne__(self, other):
++        return not self == other
+@@ -1180,7 +1180,7 @@ def _has(self, pattern):
++        return lambda other: self == other
+diff --git a/sympy/core/exprtools.py b/sympy/core/exprtools.py
++++ b/sympy/core/exprtools.py
+@@ -797,7 +797,7 @@ def __eq__(self, other):  # Factors
++        return not self == other
+@@ -909,7 +909,7 @@ def __eq__(self, other):  # Term
++        return not self == other
+diff --git a/sympy/core/numbers.py b/sympy/core/numbers.py
++++ b/sympy/core/numbers.py
+@@ -1258,7 +1258,7 @@ def __eq__(self, other):
++            return NotImplemented
+@@ -1276,7 +1276,7 @@ def __eq__(self, other):
++        return not self == other
+@@ -1284,7 +1284,7 @@ def __gt__(self, other):
++            return other.__lt__(self)
+@@ -1298,7 +1298,7 @@ def __ge__(self, other):
++            return other.__le__(self)
+@@ -1312,7 +1312,7 @@ def __lt__(self, other):
++            return other.__gt__(self)
+@@ -1326,7 +1326,7 @@ def __le__(self, other):
++            return other.__ge__(self)
+@@ -1719,7 +1719,7 @@ def __eq__(self, other):
++            return NotImplemented
+@@ -1734,7 +1734,7 @@ def __eq__(self, other):
++        return not self == other
+@@ -1742,7 +1742,7 @@ def __gt__(self, other):
++            return other.__lt__(self)
+@@ -1760,7 +1760,7 @@ def __ge__(self, other):
++            return other.__le__(self)
+@@ -1778,7 +1778,7 @@ def __lt__(self, other):
++            return other.__gt__(self)
+@@ -1797,7 +1797,7 @@ def __le__(self, other):
++            return other.__ge__(self)
+@@ -2112,7 +2112,7 @@ def __eq__(self, other):
++        return not self == other
+@@ -3339,7 +3339,7 @@ def __eq__(self, other):
++            return NotImplemented
+@@ -3348,7 +3348,7 @@ def __eq__(self, other):
++        return not self == other
+diff --git a/sympy/geometry/entity.py b/sympy/geometry/entity.py
++++ b/sympy/geometry/entity.py
+@@ -104,7 +104,7 @@ def __getnewargs__(self):
++        return not self == o
+diff --git a/sympy/physics/optics/medium.py b/sympy/physics/optics/medium.py
++++ b/sympy/physics/optics/medium.py
+@@ -183,10 +183,10 @@ def __lt__(self, other):
++        return not self < other
++        return not self == other
+diff --git a/sympy/physics/vector/dyadic.py b/sympy/physics/vector/dyadic.py
++++ b/sympy/physics/vector/dyadic.py
+@@ -147,7 +147,7 @@ def __mul__(self
+...[truncated 3557 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/core/tests/test_basic.py b/sympy/core/tests/test_basic.py
+@@ -38,6 +38,43 @@ def test_equality():
++    class Foo(object):
++        """
++        Class that is unaware of Basic, and relies on both classes returning
++        the NotImplemented singleton for equivalence to evaluate to False.
++
++        """
++
++    b = Basic()
++    foo = Foo()
++
++    assert b != foo
++    assert foo != b
++    assert not b == foo
++    assert not foo == b
++
++    class Bar(object):
++        """
++        Class that considers itself equal to any instance of Basic, and relies
++        on Basic returning the NotImplemented singleton in order to achieve
++        a symmetric equivalence relation.
++
++        """
++        def __eq__(self, other):
++            if isinstance(other, Basic):
++                return True
++            return NotImplemented
++
++        def __ne__(self, other):
++            return not self == other
++
++    bar = Bar()
++
++    assert b == bar
++    assert bar == b
++    assert not b != bar
++    assert not bar != b
++
+diff --git a/sympy/core/tests/test_numbers.py b/sympy/core/tests/test_numbers.py
+@@ -1653,3 +1653,87 @@ def test_mod_inverse():
++
++def test_comparisons_with_unknown_type():
++    class Foo(object):
++        """
++        Class that is unaware of Basic, and relies on both classes returning
++        the NotImplemented singleton for equivalence to evaluate to False.
++
++        """
++
++    ni, nf, nr = Integer(3), Float(1.0), Rational(1, 3)
++    foo = Foo()
++
++    for n in ni, nf, nr, oo, -oo, zoo, nan:
++        assert n != foo
++        assert foo != n
++        assert not n == foo
++        assert not foo == n
++        raises(TypeError, lambda: n < foo)
++        raises(TypeError, lambda: foo > n)
++        raises(TypeError, lambda: n > foo)
++        raises(TypeError, lambda: foo < n)
++        raises(TypeError, lambda: n <= foo)
++        raises(TypeError, lambda: foo >= n)
++        raises(TypeError, lambda: n >= foo)
++        raises(TypeError, lambda: foo <= n)
++
++    class Bar(object):
++        """
++        Class that considers itself equal to any instance of Number except
++        infinities and nans, and relies on sympy types returning the
++        NotImplemented singleton for symmetric equality relations.
++
++        """
++        def __eq__(self, other):
++            if other in (oo, -oo, zoo, nan):
++                return False
++            if isinstance(other, Number):
++                return True
++            return NotImplemented
++
++        de
+...[truncated 1353 chars]
+
+##########################################################################################
+## [0378] django__django-12406 · django-security | B=incomplete_patch
+files: patch=django/forms/models.py | gold=django/db/models/fields/related.py;django/forms/models.py | test=tests/model_forms/models.py;tests/model_forms/test_modelchoicefield.py;tests/model_forms/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.5
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=False status=patch
+evidence: 只按required与radio隐藏空项，遗漏ForeignKey.blank传递及ModelChoiceField.blank参数；参考新增测试显式传blank并要求True时保留空项。 | 最终补丁第10行：+        if required and (
+F2P: test_non_blank_foreign_key_with_radio (model_forms.tests.ModelFormBaseTest) | test_choices_radio_blank (model_forms.test_modelchoicefield.ModelChoiceFieldTests) | test_clean_model_instance (model_forms.test_modelchoicefield.ModelChoiceFieldTests)
+--- FINAL PATCH ---
+diff --git a/django/forms/models.py b/django/forms/models.py
+index dafc11f995..9669d86e66 100644
+--- a/django/forms/models.py
++++ b/django/forms/models.py
+@@ -1185,7 +1185,10 @@ class ModelChoiceField(ChoiceField):
+                  required=True, widget=None, label=None, initial=None,
+                  help_text='', to_field_name=None, limit_choices_to=None,
+                  **kwargs):
+-        if required and (initial is not None):
++        if required and (
++            initial is not None or
++            getattr(widget or self.widget, 'input_type', None) == 'radio'
++        ):
+             self.empty_label = None
+         else:
+             self.empty_label = empty_label
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -980,6 +980,7 @@ def formfield(self, *, using=None, **kwargs):
++            'blank': self.blank,
+diff --git a/django/forms/models.py b/django/forms/models.py
++++ b/django/forms/models.py
+@@ -13,7 +13,7 @@
++    HiddenInput, MultipleHiddenInput, RadioSelect, SelectMultiple,
+@@ -1184,18 +1184,20 @@ class ModelChoiceField(ChoiceField):
++                 blank=False, **kwargs):
++        if (
++            (required and initial is not None) or
++            (isinstance(self.widget, RadioSelect) and not blank)
++        ):
++            self.empty_label = None
++        else:
++            self.empty_label = empty_label
+--- TEST (headers/+ lines) ---
+diff --git a/tests/model_forms/models.py b/tests/model_forms/models.py
+@@ -393,6 +393,9 @@ class Character(models.Model):
++    def __str__(self):
++        return self.username
++
+diff --git a/tests/model_forms/test_modelchoicefield.py b/tests/model_forms/test_modelchoicefield.py
+@@ -139,6 +139,26 @@ def test_choices_bool_empty_label(self):
++    def test_choices_radio_blank(self):
++        choices = [
++            (self.c1.pk, 'Entertainment'),
++            (self.c2.pk, 'A test'),
++            (self.c3.pk, 'Third'),
++        ]
++        categories = Category.objects.all()
++        for widget in [forms.RadioSelect, forms.RadioSelect()]:
++            for blank in [True, False]:
++                with self.subTest(widget=widget, blank=blank):
++                    f = forms.ModelChoiceField(
++                        categories,
++                        widget=widget,
++                        blank=blank,
++                    )
++                    self.assertEqual(
++                        list(f.choices),
++                        [('', '---------')] + choices if blank else choices,
++                    )
++
+diff --git a/tests/model_forms/tests.py b/tests/model_forms/tests.py
+@@ -259,6 +259,37 @@ def __init__(self, *args, **kwargs):
++    def test_blank_foreign_key_with_radio(self):
++        class BookForm(forms.ModelForm):
++            class Meta:
++                model = Book
++                fields = ['author']
++                widgets = {'author': forms.RadioSelect()}
++
++        writer = Writer.objects.create(name='Joe Doe')
++        form = BookForm()
++        self.assertEqual(list(form.fields['author'].choices), [
++            ('', '---------'),
++            (writer.pk, 'Joe Doe'),
++        ])
++
++    def test_non_blank_foreign_key_with_radio(self):
++        class AwardForm(forms.ModelForm):
++            class Meta:
++                model = Award
++                fields = ['character']
++                widgets = {'character': forms.RadioSelect()}
++
++        character = Character.objects.create(
++            username='user',
++            last_action=datetime.datetime.today(),
++        )
++        form = AwardForm()
++        self.assertEqual(
++            list(form.fields['character'].choices),
++            [(character.pk, 'user')],
++        )
++
+
+##########################################################################################
+## [0386] django__django-12406 · django-verification | B=incomplete_patch
+files: patch=django/forms/models.py | gold=django/db/models/fields/related.py;django/forms/models.py | test=tests/model_forms/models.py;tests/model_forms/test_modelchoicefield.py;tests/model_forms/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.3333333333333333
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=False status=patch
+evidence: 只按required与radio隐藏空项，遗漏ForeignKey.blank传递及ModelChoiceField.blank参数；参考新增测试显式传blank并要求True时保留空项。 | 最终补丁第18行：+        if required and isinstance(self.widget, RadioSelect):
+F2P: test_non_blank_foreign_key_with_radio (model_forms.tests.ModelFormBaseTest) | test_choices_radio_blank (model_forms.test_modelchoicefield.ModelChoiceFieldTests) | test_clean_model_instance (model_forms.test_modelchoicefield.ModelChoiceFieldTests)
+--- FINAL PATCH ---
+diff --git a/django/forms/models.py b/django/forms/models.py
+index dafc11f995..444962a23a 100644
+--- a/django/forms/models.py
++++ b/django/forms/models.py
+@@ -13,7 +13,7 @@ from django.forms.forms import BaseForm, DeclarativeFieldsMetaclass
+ from django.forms.formsets import BaseFormSet, formset_factory
+ from django.forms.utils import ErrorList
+ from django.forms.widgets import (
+-    HiddenInput, MultipleHiddenInput, SelectMultiple,
++    HiddenInput, MultipleHiddenInput, RadioSelect, SelectMultiple,
+ )
+ from django.utils.text import capfirst, get_text_list
+ from django.utils.translation import gettext, gettext_lazy as _
+@@ -1196,6 +1196,11 @@ class ModelChoiceField(ChoiceField):
+             self, required=required, widget=widget, label=label,
+             initial=initial, help_text=help_text, **kwargs
+         )
++        if required and isinstance(self.widget, RadioSelect):
++            # An empty (unselected) state is inherent to a radio select, so
++            # don't include an empty choice if the field is required. It would
++            # look like a valid choice but isn't one.
++            self.empty_label = None
+         self.queryset = queryset
+         self.limit_choices_to = limit_choices_to   # limit the queryset later.
+         self.to_field_name = to_field_name
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/db/models/fields/related.py b/django/db/models/fields/related.py
++++ b/django/db/models/fields/related.py
+@@ -980,6 +980,7 @@ def formfield(self, *, using=None, **kwargs):
++            'blank': self.blank,
+diff --git a/django/forms/models.py b/django/forms/models.py
++++ b/django/forms/models.py
+@@ -13,7 +13,7 @@
++    HiddenInput, MultipleHiddenInput, RadioSelect, SelectMultiple,
+@@ -1184,18 +1184,20 @@ class ModelChoiceField(ChoiceField):
++                 blank=False, **kwargs):
++        if (
++            (required and initial is not None) or
++            (isinstance(self.widget, RadioSelect) and not blank)
++        ):
++            self.empty_label = None
++        else:
++            self.empty_label = empty_label
+--- TEST (headers/+ lines) ---
+diff --git a/tests/model_forms/models.py b/tests/model_forms/models.py
+@@ -393,6 +393,9 @@ class Character(models.Model):
++    def __str__(self):
++        return self.username
++
+diff --git a/tests/model_forms/test_modelchoicefield.py b/tests/model_forms/test_modelchoicefield.py
+@@ -139,6 +139,26 @@ def test_choices_bool_empty_label(self):
++    def test_choices_radio_blank(self):
++        choices = [
++            (self.c1.pk, 'Entertainment'),
++            (self.c2.pk, 'A test'),
++            (self.c3.pk, 'Third'),
++        ]
++        categories = Category.objects.all()
++        for widget in [forms.RadioSelect, forms.RadioSelect()]:
++            for blank in [True, False]:
++                with self.subTest(widget=widget, blank=blank):
++                    f = forms.ModelChoiceField(
++                        categories,
++                        widget=widget,
++                        blank=blank,
++                    )
++                    self.assertEqual(
++                        list(f.choices),
++                        [('', '---------')] + choices if blank else choices,
++                    )
++
+diff --git a/tests/model_forms/tests.py b/tests/model_forms/tests.py
+@@ -259,6 +259,37 @@ def __init__(self, *args, **kwargs):
++    def test_blank_foreign_key_with_radio(self):
++        class BookForm(forms.ModelForm):
++            class Meta:
++                model = Book
++                fields = ['author']
++                widgets = {'author': forms.RadioSelect()}
++
++        writer = Writer.objects.create(name='Joe Doe')
++        form = BookForm()
++        self.assertEqual(list(form.fields['author'].choices), [
++            ('', '---------'),
++            (writer.pk, 'Joe Doe'),
++        ])
++
++    def test_non_blank_foreign_key_with_radio(self):
++        class AwardForm(forms.ModelForm):
++            class Meta:
++                model = Award
++                fields = ['character']
++                widgets = {'character': forms.RadioSelect()}
++
++        character = Character.objects.create(
++            username='user',
++            last_action=datetime.datetime.today(),
++        )
++        form = AwardForm()
++        self.assertEqual(
++            list(form.fields['character'].choices),
++            [(character.pk, 'user')],
++        )
++
+
+##########################################################################################
+## [0400] matplotlib__matplotlib-24870 · matplotlib-pro | B=wrong_fix
+files: patch=lib/matplotlib/contour.py | gold=lib/matplotlib/contour.py;lib/matplotlib/tri/_tricontour.py | test=lib/matplotlib/tests/test_contour.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=10 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 消息56及66-70最终补丁把bool filled contour默认levels设为[0,1]，缺少0.5分界；两个边界只能形成一个填充带，不能像成功run的[0,0.5,1]那样分别表示False与True。消息46/48/49及63虽有65、37、91和大范围测试通过，但消息58只打印普通整数levels，未断言bool contourf的两个区域，最终resolved=0。
+F2P: lib/matplotlib/tests/test_contour.py::test_bool_autolevel
+--- FINAL PATCH ---
+diff --git a/lib/matplotlib/contour.py b/lib/matplotlib/contour.py
+index 144eadeae2..2532ebc66c 100644
+--- a/lib/matplotlib/contour.py
++++ b/lib/matplotlib/contour.py
+@@ -1117,15 +1117,20 @@ class ContourSet(cm.ScalarMappable, ContourLabeler):
+ 
+         return lev[i0:i1]
+ 
+-    def _process_contour_level_args(self, args):
++    def _process_contour_level_args(self, args, z_dtype):
+         """
+         Determine the contour levels and store in self.levels.
+         """
+         if self.levels is None:
+-            if len(args) == 0:
+-                levels_arg = 7  # Default, hard-wired.
+-            else:
++            if args:
+                 levels_arg = args[0]
++            elif np.issubdtype(z_dtype, bool):
++                if self.filled:
++                    levels_arg = [0, 1]
++                else:
++                    levels_arg = [0.5]
++            else:
++                levels_arg = 7  # Default, hard-wired.
+         else:
+             levels_arg = self.levels
+         if isinstance(levels_arg, Integral):
+@@ -1447,7 +1452,7 @@ class QuadContourSet(ContourSet):
+             fn = 'contour'
+         nargs = len(args)
+         if nargs <= 2:
+-            z = ma.asarray(args[0], dtype=np.float64)
++            z = ma.asarray(args[0])
+             x, y = self._initialize_x_y(z)
+             args = args[1:]
+         elif nargs <= 4:
+@@ -1462,7 +1467,7 @@ class QuadContourSet(ContourSet):
+             z = ma.masked_where(z <= 0, z)
+             _api.warn_external('Log scale: values of z <= 0 have been masked')
+             self.zmin = float(z.min())
+-        self._process_contour_level_args(args)
++        self._process_contour_level_args(args, z.dtype)
+         return (x, y, z)
+ 
+     def _check_xyz(self, args, kwargs):
+@@ -1475,7 +1480,7 @@ class QuadContourSet(ContourSet):
+ 
+         x = np.asarray(x, dtype=np.float64)
+         y = np.asarray(y, dtype=np.float64)
+-        z = ma.asarray(args[2], dtype=np.float64)
++        z = ma.asarray(args[2])
+ 
+         if z.ndim != 2:
+             raise TypeError(f"Input z must be 2D, not {z.ndim}D")
+@@ -1585,6 +1590,9 @@ levels : int or array-like, optional
+     If array-like, draw contour lines at the specified levels.
+     The values must be in increasing order.
+ 
++    If *Z* is a boolean array, the default levels are ``[0.5]`` for
++    `.contour` and ``[0, 1]`` for `.contourf`.
++
+ Returns
+ -------
+ `~.contour.QuadContourSet`
+
+--- GOLD (headers/+ lines) ---
+diff --git a/lib/matplotlib/contour.py b/lib/matplotlib/contour.py
++++ b/lib/matplotlib/contour.py
+@@ -1117,15 +1117,20 @@ def _autolev(self, N):
++    def _process_contour_level_args(self, args, z_dtype):
++            if args:
++            elif np.issubdtype(z_dtype, bool):
++                if self.filled:
++                    levels_arg = [0, .5, 1]
++                else:
++                    levels_arg = [.5]
++            else:
++                levels_arg = 7  # Default, hard-wired.
+@@ -1447,12 +1452,12 @@ def _contour_args(self, args, kwargs):
++            z, *args = args
++            z = ma.asarray(z)
++            x, y, z_orig, *args = args
++            x, y, z = self._check_xyz(x, y, z_orig, kwargs)
+@@ -1462,20 +1467,19 @@ def _contour_args(self, args, kwargs):
++        self._process_contour_level_args(args, z.dtype)
++    def _check_xyz(self, x, y, z, kwargs):
++        z = ma.asarray(z)
+diff --git a/lib/matplotlib/tri/_tricontour.py b/lib/matplotlib/tri/_tricontour.py
++++ b/lib/matplotlib/tri/_tricontour.py
+@@ -53,7 +53,8 @@ def _process_args(self, *args, **kwargs):
++        z, *args = args
++        z = np.ma.asarray(z)
+@@ -74,7 +75,7 @@ def _contour_args(self, args, kwargs):
++        self._process_contour_level_args(args, z.dtype)
+--- TEST (headers/+ lines) ---
+diff --git a/lib/matplotlib/tests/test_contour.py b/lib/matplotlib/tests/test_contour.py
+@@ -693,3 +693,20 @@ def test_contour_remove():
++
++
++def test_bool_autolevel():
++    x, y = np.random.rand(2, 9)
++    z = (np.arange(9) % 2).reshape((3, 3)).astype(bool)
++    m = [[False, False, False], [False, True, False], [False, False, False]]
++    assert plt.contour(z.tolist()).levels.tolist() == [.5]
++    assert plt.contour(z).levels.tolist() == [.5]
++    assert plt.contour(np.ma.array(z, mask=m)).levels.tolist() == [.5]
++    assert plt.contourf(z.tolist()).levels.tolist() == [0, .5, 1]
++    assert plt.contourf(z).levels.tolist() == [0, .5, 1]
++    assert plt.contourf(np.ma.array(z, mask=m)).levels.tolist() == [0, .5, 1]
++    z = z.ravel()
++    assert plt.tricontour(x, y, z.tolist()).levels.tolist() == [.5]
++    assert plt.tricontour(x, y, z).levels.tolist() == [.5]
++    assert plt.tricontourf(x, y, z.tolist()).levels.tolist() == [0, .5, 1]
++    assert plt.tricontourf(x, y, z).levels.tolist() == [0, .5, 1]
+
+##########################################################################################
+## [0424] sphinx-doc__sphinx-9658 · systematic-debugging | B=incomplete_patch
+files: patch=sphinx/util/typing.py | gold=sphinx/ext/autodoc/mock.py | test=tests/test_util_typing.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=2 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=False status=patch
+evidence: 仅在typing.restify加ismock(cls)分支，当前识别/名称链路仍未覆盖目标mock；官方输出unknown.secret.与unknown.secret.Class不同。 | 最终补丁第17行：+        elif ismock(cls):
+F2P: tests/test_util_typing.py::test_restify_mock
+--- FINAL PATCH ---
+diff --git a/sphinx/util/typing.py b/sphinx/util/typing.py
+index 87707d48f..3810e3b5a 100644
+--- a/sphinx/util/typing.py
++++ b/sphinx/util/typing.py
+@@ -106,6 +106,7 @@ def is_system_TypeVar(typ: Any) -> bool:
+ 
+ def restify(cls: Optional[Type]) -> str:
+     """Convert python class to a reST reference."""
++    from sphinx.ext.autodoc.mock import ismock  # lazy loading
+     from sphinx.util import inspect  # lazy loading
+ 
+     try:
+@@ -115,6 +116,8 @@ def restify(cls: Optional[Type]) -> str:
+             return '...'
+         elif isinstance(cls, str):
+             return cls
++        elif ismock(cls):
++            return ':py:class:`%s`' % cls.__display_name__
+         elif cls in INVALID_BUILTIN_CLASSES:
+             return ':py:class:`%s`' % INVALID_BUILTIN_CLASSES[cls]
+         elif inspect.isNewType(cls):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sphinx/ext/autodoc/mock.py b/sphinx/ext/autodoc/mock.py
++++ b/sphinx/ext/autodoc/mock.py
+@@ -26,6 +26,7 @@ class _MockObject:
++    __name__ = ''
+@@ -40,7 +41,7 @@ def __new__(cls, *args: Any, **kwargs: Any) -> Any:
++        self.__qualname__ = self.__name__
+@@ -73,6 +74,7 @@ def _make_subclass(name: str, module: str, superclass: Any = _MockObject,
++             '__name__': name,
+--- TEST (headers/+ lines) ---
+diff --git a/tests/test_util_typing.py b/tests/test_util_typing.py
+@@ -17,6 +17,7 @@
++from sphinx.ext.autodoc import mock
+@@ -170,6 +171,12 @@ def test_restify_broken_type_hints():
++def test_restify_mock():
++    with mock(['unknown']):
++        import unknown
++        assert restify(unknown.secret.Class) == ':py:class:`unknown.secret.Class`'
++
++
+@@ -294,3 +301,9 @@ def test_stringify_type_union_operator():
++
++
++def test_stringify_mock():
++    with mock(['unknown']):
++        import unknown
++        assert stringify(unknown.secret.Class) == 'unknown.secret.Class'

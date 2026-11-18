@@ -1,0 +1,165 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..5c470434 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -60,6 +60,60 @@ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+         raise astroid.exceptions.InferenceError()
+ 
+ 
++def _get_annotation(node):
++    """Return the type annotation associated with an assignment target.
++
++    ``node`` is expected to be an :class:`astroid.AssignName` or
++    :class:`astroid.AssignAttr` node. Both inline annotations
++    (``x: int = 0``) and annotations carried by the assigned value
++    (``self.x = x`` where ``x`` is an annotated argument) are taken into
++    account. ``None`` is returned when no annotation can be found.
++    """
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Assign) and isinstance(parent.value, astroid.Name):
++        frame = parent.value.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            arguments = frame.args
++            for arg, annotation in zip(arguments.args, arguments.annotations):
++                if arg.name == parent.value.name:
++                    return annotation
++            for arg, annotation in zip(
++                arguments.posonlyargs, arguments.posonlyargs_annotations
++            ):
++                if arg.name == parent.value.name:
++                    return annotation
++            for arg, annotation in zip(
++                arguments.kwonlyargs, arguments.kwonlyargs_annotations
++            ):
++                if arg.name == parent.value.name:
++                    return annotation
++            if arguments.vararg == parent.value.name:
++                return arguments.varargannotation
++            if arguments.kwarg == parent.value.name:
++                return arguments.kwargannotation
++    return None
++
++
++def _infer_type_annotation(node):
++    """Infer the type of an assignment target.
++
++    When the target carries a type annotation, the annotation is preferred
++    over the value inferred from the assignment so that e.g.
++    ``a: str = None`` is reported as ``str`` and not ``NoneType``.
++    """
++    annotation = _get_annotation(node)
++    if annotation is not None:
++        try:
++            values = set(annotation.infer())
++        except astroid.InferenceError:
++            values = set()
++        if values:
++            return values
++    return set(node.infer())
++
++
+ class IdGeneratorMixIn:
+     """Mixin adding the ability to generate integer uid."""
+ 
+@@ -218,7 +272,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _infer_type_annotation(node)
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +284,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _infer_type_annotation(node)
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..3f0efa1a 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -93,6 +95,22 @@ def is_exception(node):
+     return node.type == "exception"
+ 
+ 
++def get_annotation_label(annotation):
++    """Return the name of the annotation or the annotation itself if it's a string."""
++    if isinstance(annotation, astroid.Name):
++        return annotation.name
++    if isinstance(annotation, astroid.Attribute):
++        return annotation.attrname
++    return get_annotation(annotation)
++
++
++def get_annotation(annotation):
++    """Return the annotation as a string."""
++    if isinstance(annotation, str):
++        return annotation
++    return annotation.as_string()
++
++
+ # Helpers #####################################################################
+ 
+ _CONSTRUCTOR = 1
+diff --git a/pylint/pyreverse/writer.py b/pylint/pyreverse/writer.py
+index 0d80bb9c..0ce26df8 100644
+--- a/pylint/pyreverse/writer.py
++++ b/pylint/pyreverse/writer.py
+@@ -19,7 +19,7 @@
+ import os
+ 
+ from pylint.graph import DotBackend
+-from pylint.pyreverse.utils import is_exception
++from pylint.pyreverse.utils import get_annotation_label, is_exception
+ from pylint.pyreverse.vcgutils import VCGPrinter
+ 
+ 
+@@ -123,6 +123,19 @@ class DotWriter(DiagramWriter):
+         """get project title"""
+         return obj.title
+ 
++    @staticmethod
++    def get_method_label(method):
++        """Return the label of a method, including the types of its arguments."""
++        args = []
++        for arg, annotation in zip(method.args.args, method.args.annotations):
++            if arg.name == "self":
++                continue
++            if annotation is None:
++                args.append(arg.name)
++            else:
++                args.append(f"{arg.name} : {get_annotation_label(annotation)}")
++        return f"{method.name}({', '.join(args)})"
++
+     def get_values(self, obj):
+         """get label and shape for classes.
+ 
+@@ -134,11 +147,7 @@ class DotWriter(DiagramWriter):
+         if not self.config.only_classnames:
+             label = r"{}|{}\l|".format(label, r"\l".join(obj.attrs))
+             for func in obj.methods:
+-                if func.args.args:
+-                    args = [arg.name for arg in func.args.args if arg.name != "self"]
+-                else:
+-                    args = []
+-                label = r"{}{}({})\l".format(label, func.name, ", ".join(args))
++                label = r"{}{}\l".format(label, self.get_method_label(func))
+             label = "{%s}" % label
+         if is_exception(obj.node):
+             return dict(fontcolor="red", label=label, shape="record")

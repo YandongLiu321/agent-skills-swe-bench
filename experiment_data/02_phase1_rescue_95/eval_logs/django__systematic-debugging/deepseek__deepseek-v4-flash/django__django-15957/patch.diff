@@ -1,0 +1,194 @@
+diff --git a/django/contrib/contenttypes/fields.py b/django/contrib/contenttypes/fields.py
+index 5b327b6ae4..ac2a85cfd7 100644
+--- a/django/contrib/contenttypes/fields.py
++++ b/django/contrib/contenttypes/fields.py
+@@ -13,6 +13,7 @@ from django.db.models.fields.related import (
+     ReverseManyToOneDescriptor,
+     lazy_related_operation,
+ )
++from django.db.models.query import _filter_prefetch_queryset
+ from django.db.models.query_utils import PathInfo
+ from django.db.models.sql import AND
+ from django.db.models.sql.where import WhereNode
+@@ -605,7 +606,9 @@ def create_generic_related_manager(superclass, rel):
+             Filter the queryset for the instance this manager is bound to.
+             """
+             db = self._db or router.db_for_read(self.model, instance=self.instance)
+-            return queryset.using(db).filter(**self.core_filters)
++            return _filter_prefetch_queryset(
++                queryset.using(db), models.Q(**self.core_filters)
++            )
+ 
+         def _remove_prefetched_objects(self):
+             try:
+@@ -645,7 +648,7 @@ def create_generic_related_manager(superclass, rel):
+             object_id_converter = instances[0]._meta.pk.to_python
+             content_type_id_field_name = "%s_id" % self.content_type_field_name
+             return (
+-                queryset.filter(query),
++                _filter_prefetch_queryset(queryset, query),
+                 lambda relobj: (
+                     object_id_converter(getattr(relobj, self.object_id_field_name)),
+                     getattr(relobj, content_type_id_field_name),
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index b192df4fbf..057f0e5ba8 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -66,7 +66,7 @@ and two directions (forward and reverse) for a total of six combinations.
+ from django.core.exceptions import FieldError
+ from django.db import connections, router, transaction
+ from django.db.models import Q, signals
+-from django.db.models.query import QuerySet
++from django.db.models.query import QuerySet, _filter_prefetch_queryset
+ from django.db.models.query_utils import DeferredAttribute
+ from django.db.models.utils import resolve_callables
+ from django.utils.functional import cached_property
+@@ -139,13 +139,22 @@ class ForwardManyToOneDescriptor:
+         # The check for len(...) == 1 is a special case that allows the query
+         # to be join-less and smaller. Refs #21760.
+         if remote_field.is_hidden() or len(self.field.foreign_related_fields) == 1:
+-            query = {
+-                "%s__in"
+-                % related_field.name: {instance_attr(inst)[0] for inst in instances}
+-            }
++            queryset = _filter_prefetch_queryset(
++                queryset,
++                Q(
++                    **{
++                        "%s__in"
++                        % related_field.name: {
++                            instance_attr(inst)[0] for inst in instances
++                        }
++                    }
++                ),
++            )
+         else:
+-            query = {"%s__in" % self.field.related_query_name(): instances}
+-        queryset = queryset.filter(**query)
++            queryset = _filter_prefetch_queryset(
++                queryset,
++                Q(**{"%s__in" % self.field.related_query_name(): instances}),
++            )
+ 
+         # Since we're going to assign directly in the cache,
+         # we must manage the reverse relation cache manually.
+@@ -403,8 +412,9 @@ class ReverseOneToOneDescriptor:
+         rel_obj_attr = self.related.field.get_local_related_value
+         instance_attr = self.related.field.get_foreign_related_value
+         instances_dict = {instance_attr(inst): inst for inst in instances}
+-        query = {"%s__in" % self.related.field.name: instances}
+-        queryset = queryset.filter(**query)
++        queryset = _filter_prefetch_queryset(
++            queryset, Q(**{"%s__in" % self.related.field.name: instances})
++        )
+ 
+         # Since we're going to assign directly in the cache,
+         # we must manage the reverse relation cache manually.
+@@ -663,7 +673,7 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             if self._db:
+                 queryset = queryset.using(self._db)
+             queryset._defer_next_filter = True
+-            queryset = queryset.filter(**self.core_filters)
++            queryset = _filter_prefetch_queryset(queryset, Q(**self.core_filters))
+             for field in self.field.foreign_related_fields:
+                 val = getattr(self.instance, field.attname)
+                 if val is None or (val == "" and empty_strings_as_null):
+@@ -718,8 +728,9 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             rel_obj_attr = self.field.get_local_related_value
+             instance_attr = self.field.get_foreign_related_value
+             instances_dict = {instance_attr(inst): inst for inst in instances}
+-            query = {"%s__in" % self.field.name: instances}
+-            queryset = queryset.filter(**query)
++            queryset = _filter_prefetch_queryset(
++                queryset, Q(**{"%s__in" % self.field.name: instances})
++            )
+ 
+             # Since we just bypassed this class' get_queryset(), we must manage
+             # the reverse relation manually.
+@@ -1029,7 +1040,9 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             if self._db:
+                 queryset = queryset.using(self._db)
+             queryset._defer_next_filter = True
+-            return queryset._next_is_sticky().filter(**self.core_filters)
++            return _filter_prefetch_queryset(
++                queryset._next_is_sticky(), Q(**self.core_filters)
++            )
+ 
+         def _remove_prefetched_objects(self):
+             try:
+@@ -1051,8 +1064,10 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
+ 
+-            query = {"%s__in" % self.query_field_name: instances}
+-            queryset = queryset._next_is_sticky().filter(**query)
++            queryset = _filter_prefetch_queryset(
++                queryset._next_is_sticky(),
++                Q(**{"%s__in" % self.query_field_name: instances}),
++            )
+ 
+             # M2M: need to annotate the query in order to get the primary model
+             # that the secondary model was actually related to. We know that
+@@ -1065,13 +1080,20 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             join_table = fk.model._meta.db_table
+             connection = connections[queryset.db]
+             qn = connection.ops.quote_name
+-            queryset = queryset.extra(
++            # Use Query.add_extra() directly because QuerySet.extra()
++            # doesn't support sliced querysets.
++            queryset.query.add_extra(
+                 select={
+                     "_prefetch_related_val_%s"
+                     % f.attname: "%s.%s"
+                     % (qn(join_table), qn(f.column))
+                     for f in fk.local_related_fields
+-                }
++                },
++                select_params=None,
++                where=None,
++                params=None,
++                tables=None,
++                order_by=None,
+             )
+             return (
+                 queryset,
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index be0deb90b0..3e3dbbefa8 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -2155,6 +2155,12 @@ class Prefetch:
+             raise ValueError(
+                 "Prefetch querysets cannot use raw(), values(), and values_list()."
+             )
++        if queryset is not None and queryset.query.is_sliced:
++            if not queryset.query.distinct and not queryset.query.distinct_fields:
++                raise NotImplementedError(
++                    "Prefetching from a sliced queryset with a non-distinct "
++                    "queryset is not supported."
++                )
+         if to_attr:
+             self.prefetch_to = LOOKUP_SEP.join(
+                 lookup.split(LOOKUP_SEP)[:-1] + [to_attr]
+@@ -2200,6 +2206,22 @@ class Prefetch:
+         return hash((self.__class__, self.prefetch_to))
+ 
+ 
++def _filter_prefetch_queryset(queryset, predicate):
++    """
++    Filter a queryset with the given predicate. If the queryset is sliced, the
++    slice is preserved by temporarily clearing the limits, applying the filter,
++    and restoring the limits.
++    """
++    if not queryset.query.is_sliced:
++        return queryset.filter(predicate)
++    queryset = queryset._chain()
++    low_mark, high_mark = queryset.query.low_mark, queryset.query.high_mark
++    queryset.query.clear_limits()
++    queryset = queryset.filter(predicate)
++    queryset.query.set_limits(low_mark, high_mark)
++    return queryset
++
++
+ def normalize_prefetch_lookups(lookups, prefix=None):
+     """Normalize lookups into Prefetch objects."""
+     ret = []

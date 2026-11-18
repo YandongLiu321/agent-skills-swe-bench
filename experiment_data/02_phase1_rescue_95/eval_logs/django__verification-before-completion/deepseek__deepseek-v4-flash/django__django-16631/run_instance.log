@@ -1,0 +1,136 @@
+2026-10-07 00:59:24,701 - INFO - Creating container for django__django-16631...
+2026-10-07 00:59:24,783 - INFO - Container for django__django-16631 created: d4911b464e1fc3423d056ff73ca59d92d85fbb2595eb7bab28fad4fc713d62b4
+2026-10-07 00:59:24,916 - INFO - Container for django__django-16631 started: d4911b464e1fc3423d056ff73ca59d92d85fbb2595eb7bab28fad4fc713d62b4
+2026-10-07 00:59:24,917 - INFO - Intermediate patch for django__django-16631 written to logs\run_evaluation\django__verification-before-completion\deepseek__deepseek-v4-flash\django__django-16631\patch.diff, now applying to container...
+2026-10-07 00:59:25,009 - INFO - >>>>> Applied Patch:
+Checking patch django/contrib/auth/__init__.py...
+Checking patch django/contrib/auth/base_user.py...
+Applied patch django/contrib/auth/__init__.py cleanly.
+Applied patch django/contrib/auth/base_user.py cleanly.
+
+2026-10-07 00:59:26,398 - INFO - Git diff before:
+diff --git a/django/contrib/auth/__init__.py b/django/contrib/auth/__init__.py
+index 155330c596..11f70caeb6 100644
+--- a/django/contrib/auth/__init__.py
++++ b/django/contrib/auth/__init__.py
+@@ -1,5 +1,6 @@
+ import inspect
+ import re
++from itertools import chain
+ 
+ from django.apps import apps as django_apps
+ from django.conf import settings
+@@ -199,8 +200,15 @@ def get_user(request):
+             # Verify the session
+             if hasattr(user, "get_session_auth_hash"):
+                 session_hash = request.session.get(HASH_SESSION_KEY)
+-                session_hash_verified = session_hash and constant_time_compare(
+-                    session_hash, user.get_session_auth_hash()
++                session_auth_hashes = [user.get_session_auth_hash()]
++                if hasattr(user, "get_session_auth_fallback_hash"):
++                    session_auth_hashes = chain(
++                        session_auth_hashes,
++                        user.get_session_auth_fallback_hash(),
++                    )
++                session_hash_verified = session_hash and any(
++                    constant_time_compare(session_hash, session_auth_hash)
++                    for session_auth_hash in session_auth_hashes
+                 )
+                 if not session_hash_verified:
+                     request.session.flush()
+diff --git a/django/contrib/auth/base_user.py b/django/contrib/auth/base_user.py
+index 5ee30bf59c..913b91504d 100644
+--- a/django/contrib/auth/base_user.py
++++ b/django/contrib/auth/base_user.py
+@@ -5,6 +5,7 @@ not in INSTALLED_APPS.
+ import unicodedata
+ import warnings
+ 
++from django.conf import settings
+ from django.contrib.auth import password_validation
+ from django.contrib.auth.hashers import (
+     check_password,
+@@ -142,6 +143,15 @@ class AbstractBaseUser(models.Model):
+             algorithm="sha256",
+         ).hexdigest()
+ 
++    def get_session_auth_fallback_hash(self):
++        for fallback_secret in settings.SECRET_KEY_FALLBACKS:
++            yield salted_hmac(
++                "django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash",
++                self.password,
++                secret=fallback_secret,
++                algorithm="sha256",
++            ).hexdigest()
++
+     @classmethod
+     def get_email_field_name(cls):
+         try:
+2026-10-07 00:59:26,399 - INFO - Eval script for django__django-16631 written to logs\run_evaluation\django__verification-before-completion\deepseek__deepseek-v4-flash\django__django-16631\eval.sh; copying to container...
+2026-10-07 00:59:32,265 - INFO - Test runtime: 5.82 seconds
+2026-10-07 00:59:32,267 - INFO - Test output for django__django-16631 written to logs\run_evaluation\django__verification-before-completion\deepseek__deepseek-v4-flash\django__django-16631\test_output.txt
+2026-10-07 00:59:32,302 - INFO - Git diff after:
+diff --git a/django/contrib/auth/__init__.py b/django/contrib/auth/__init__.py
+index 155330c596..11f70caeb6 100644
+--- a/django/contrib/auth/__init__.py
++++ b/django/contrib/auth/__init__.py
+@@ -1,5 +1,6 @@
+ import inspect
+ import re
++from itertools import chain
+ 
+ from django.apps import apps as django_apps
+ from django.conf import settings
+@@ -199,8 +200,15 @@ def get_user(request):
+             # Verify the session
+             if hasattr(user, "get_session_auth_hash"):
+                 session_hash = request.session.get(HASH_SESSION_KEY)
+-                session_hash_verified = session_hash and constant_time_compare(
+-                    session_hash, user.get_session_auth_hash()
++                session_auth_hashes = [user.get_session_auth_hash()]
++                if hasattr(user, "get_session_auth_fallback_hash"):
++                    session_auth_hashes = chain(
++                        session_auth_hashes,
++                        user.get_session_auth_fallback_hash(),
++                    )
++                session_hash_verified = session_hash and any(
++                    constant_time_compare(session_hash, session_auth_hash)
++                    for session_auth_hash in session_auth_hashes
+                 )
+                 if not session_hash_verified:
+                     request.session.flush()
+diff --git a/django/contrib/auth/base_user.py b/django/contrib/auth/base_user.py
+index 5ee30bf59c..913b91504d 100644
+--- a/django/contrib/auth/base_user.py
++++ b/django/contrib/auth/base_user.py
+@@ -5,6 +5,7 @@ not in INSTALLED_APPS.
+ import unicodedata
+ import warnings
+ 
++from django.conf import settings
+ from django.contrib.auth import password_validation
+ from django.contrib.auth.hashers import (
+     check_password,
+@@ -142,6 +143,15 @@ class AbstractBaseUser(models.Model):
+             algorithm="sha256",
+         ).hexdigest()
+ 
++    def get_session_auth_fallback_hash(self):
++        for fallback_secret in settings.SECRET_KEY_FALLBACKS:
++            yield salted_hmac(
++                "django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash",
++                self.password,
++                secret=fallback_secret,
++                algorithm="sha256",
++            ).hexdigest()
++
+     @classmethod
+     def get_email_field_name(cls):
+         try:
+2026-10-07 00:59:32,302 - INFO - Grading answer for django__django-16631...
+2026-10-07 00:59:32,303 - INFO - report: {'django__django-16631': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['test_get_user_fallback_secret (auth_tests.test_basic.TestGetUser.test_get_user_fallback_secret)']}, 'PASS_TO_PASS': {'success': ['test_get_user (auth_tests.test_basic.TestGetUser.test_get_user)', 'test_get_user_anonymous (auth_tests.test_basic.TestGetUser.test_get_user_anonymous)', 'The current user model can be retrieved', 'Check the creation and properties of a superuser', 'test_superuser_no_email_or_password (auth_tests.test_basic.BasicTestCase.test_superuser_no_email_or_password)', 'The current user model can be swapped out for another', 'The alternate user setting must point to something in the format app.model', 'The current user model must point to an installed model', 'test_unicode_username (auth_tests.test_basic.BasicTestCase.test_unicode_username)', 'Users can be created and can set their password', 'Users can be created without an email', 'Default User model verbose names are translatable (#19945)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-16631: resolved: False
+2026-10-07 00:59:32,304 - INFO - Attempting to stop container sweb.eval.django__django-16631.django__verification-before-completion...
+2026-10-07 00:59:47,580 - INFO - Container sweb.eval.django__django-16631.django__verification-before-completion stopped successfully.
+2026-10-07 00:59:47,581 - INFO - Attempting to remove container sweb.eval.django__django-16631.django__verification-before-completion...
+2026-10-07 00:59:47,682 - INFO - Container sweb.eval.django__django-16631.django__verification-before-completion removed successfully.

@@ -1,0 +1,254 @@
+2026-10-07 04:21:10,381 - INFO - Creating container for pylint-dev__pylint-8898...
+2026-10-07 04:21:10,430 - INFO - Container for pylint-dev__pylint-8898 created: 3b4bbd7e4e48831fe1905eb078d0cd2857c1ba2c2773fe591d9029fe52dcd1f1
+2026-10-07 04:21:10,543 - INFO - Container for pylint-dev__pylint-8898 started: 3b4bbd7e4e48831fe1905eb078d0cd2857c1ba2c2773fe591d9029fe52dcd1f1
+2026-10-07 04:21:10,545 - INFO - Intermediate patch for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-anti-patterns\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\patch.diff, now applying to container...
+2026-10-07 04:21:10,643 - INFO - >>>>> Applied Patch:
+Checking patch pylint/config/argument.py...
+Checking patch pylint/utils/utils.py...
+Applied patch pylint/config/argument.py cleanly.
+Applied patch pylint/utils/utils.py cleanly.
+
+2026-10-07 04:21:10,829 - INFO - Git diff before:
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..7d2ad7f38 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -114,7 +114,7 @@ def _regex_transformer(value: str) -> Pattern[str]:
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in pylint_utils._splitstrip(value, respect_quotes=True):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 
+@@ -122,7 +122,7 @@ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions paths."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in pylint_utils._splitstrip(value, respect_quotes=True):
+         patterns.append(
+             re.compile(
+                 str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..d4e68e0ed 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -209,16 +209,31 @@ def register_plugins(linter: PyLinter, directory: str) -> None:
+                     imported[base] = 1
+ 
+ 
+-def _splitstrip(string: str, sep: str = ",") -> list[str]:
++def _splitstrip(
++    string: str, sep: str = ",", *, respect_quotes: bool = False
++) -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A `sep` escaped with a backslash (e.g. ``a\\,b``) is not used to split
++    the string and the backslash is removed from the resulting value. This
++    makes it possible to use a separator inside an option's value, for
++    instance inside a regular expression.
++
++    When ``respect_quotes`` is true, fields surrounded by single or double
++    quotes are kept together and the quotes are removed from the resulting
++    value.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+     >>> _splitstrip('a,\nb,\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip(r'a, b\\,c')
++    ['a', 'b,c']
++    >>> _splitstrip('a, "b,c"', respect_quotes=True)
++    ['a', 'b,c']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -226,10 +241,53 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :type sep: str or unicode
+     :param sep: field separator, default to the comma (',')
+ 
+-    :rtype: str or unicode
+-    :return: the unquoted string (or the input string if it wasn't quoted)
++    :rtype: list of str or unicode
++    :return: the list of unquoted and unescaped strings
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    words: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    escaped = False
++    at_field_start = True
++    for char in string:
++        if escaped:
++            # The separator is escaped: keep it but drop the backslash.
++            if char != sep:
++                current.append("\\")
++            current.append(char)
++            escaped = False
++            at_field_start = False
++        elif char == "\\":
++            escaped = True
++        elif quote is not None:
++            current.append(char)
++            if char == quote:
++                quote = None
++            at_field_start = False
++        elif respect_quotes and char in "\"'" and at_field_start:
++            quote = char
++            current.append(char)
++            at_field_start = False
++        elif char == sep:
++            word = "".join(current).strip()
++            if respect_quotes:
++                word = _unquote(word)
++            if word:
++                words.append(word)
++            current = []
++            at_field_start = True
++        else:
++            current.append(char)
++            if not char.isspace():
++                at_field_start = False
++    if escaped:
++        current.append("\\")
++    word = "".join(current).strip()
++    if respect_quotes:
++        word = _unquote(word)
++    if word:
++        words.append(word)
++    return words
+ 
+ 
+ def _unquote(string: str) -> str:
+2026-10-07 04:21:10,830 - INFO - Eval script for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-anti-patterns\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\eval.sh; copying to container...
+2026-10-07 04:21:16,168 - INFO - Test runtime: 5.30 seconds
+2026-10-07 04:21:16,170 - INFO - Test output for pylint-dev__pylint-8898 written to logs\run_evaluation\pylint__python-anti-patterns\deepseek__deepseek-v4-flash\pylint-dev__pylint-8898\test_output.txt
+2026-10-07 04:21:16,207 - INFO - Git diff after:
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..7d2ad7f38 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -114,7 +114,7 @@ def _regex_transformer(value: str) -> Pattern[str]:
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in pylint_utils._splitstrip(value, respect_quotes=True):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 
+@@ -122,7 +122,7 @@ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions paths."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in pylint_utils._splitstrip(value, respect_quotes=True):
+         patterns.append(
+             re.compile(
+                 str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..d4e68e0ed 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -209,16 +209,31 @@ def register_plugins(linter: PyLinter, directory: str) -> None:
+                     imported[base] = 1
+ 
+ 
+-def _splitstrip(string: str, sep: str = ",") -> list[str]:
++def _splitstrip(
++    string: str, sep: str = ",", *, respect_quotes: bool = False
++) -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    A `sep` escaped with a backslash (e.g. ``a\\,b``) is not used to split
++    the string and the backslash is removed from the resulting value. This
++    makes it possible to use a separator inside an option's value, for
++    instance inside a regular expression.
++
++    When ``respect_quotes`` is true, fields surrounded by single or double
++    quotes are kept together and the quotes are removed from the resulting
++    value.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+     >>> _splitstrip('a,\nb,\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip(r'a, b\\,c')
++    ['a', 'b,c']
++    >>> _splitstrip('a, "b,c"', respect_quotes=True)
++    ['a', 'b,c']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -226,10 +241,53 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :type sep: str or unicode
+     :param sep: field separator, default to the comma (',')
+ 
+-    :rtype: str or unicode
+-    :return: the unquoted string (or the input string if it wasn't quoted)
++    :rtype: list of str or unicode
++    :return: the list of unquoted and unescaped strings
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    words: list[str] = []
++    current: list[str] = []
++    quote: str | None = None
++    escaped = False
++    at_field_start = True
++    for char in string:
++        if escaped:
++            # The separator is escaped: keep it but drop the backslash.
++            if char != sep:
++                current.append("\\")
++            current.append(char)
++            escaped = False
++            at_field_start = False
++        elif char == "\\":
++            escaped = True
++        elif quote is not None:
++            current.append(char)
++            if char == quote:
++                quote = None
++            at_field_start = False
++        elif respect_quotes and char in "\"'" and at_field_start:
++            quote = char
++            current.append(char)
++            at_field_start = False
++        elif char == sep:
++            word = "".join(current).strip()
++            if respect_quotes:
++                word = _unquote(word)
++            if word:
++                words.append(word)
++            current = []
++            at_field_start = True
++        else:
++            current.append(char)
++            if not char.isspace():
++                at_field_start = False
++    if escaped:
++        current.append("\\")
++    word = "".join(current).strip()
++    if respect_quotes:
++        word = _unquote(word)
++    if word:
++        words.append(word)
++    return words
+ 
+ 
+ def _unquote(string: str) -> str:
+2026-10-07 04:21:16,208 - INFO - Grading answer for pylint-dev__pylint-8898...
+2026-10-07 04:21:16,209 - INFO - report: {'pylint-dev__pylint-8898': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/config/test_config.py::test_csv_regex_error']}, 'PASS_TO_PASS': {'success': ['tests/config/test_config.py::test_can_read_toml_env_variable', 'tests/config/test_config.py::test_unknown_message_id', 'tests/config/test_config.py::test_unknown_option_name', 'tests/config/test_config.py::test_unknown_short_option_name', 'tests/config/test_config.py::test_unknown_confidence', 'tests/config/test_config.py::test_empty_confidence', 'tests/config/test_config.py::test_unknown_yes_no', 'tests/config/test_config.py::test_unknown_py_version', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo-expected0]', 'tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,bar-expected1]', 'tests/config/test_config.py::test_regex_error', 'tests/config/test_config.py::test_short_verbose', 'tests/config/test_config.py::test_argument_separator', 'tests/config/test_config.py::test_clear_cache_post_run', 'tests/config/test_config.py::test_enable_all_disable_all_mutually_exclusive', 'tests/config/test_config.py::test_disable_before_enable_all_takes_effect', 'tests/config/test_config.py::test_enable_before_disable_all_takes_effect'], 'failure': ['tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,']}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-8898: resolved: False
+2026-10-07 04:21:16,210 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-8898.pylint__python-anti-patterns...
+2026-10-07 04:21:31,483 - INFO - Container sweb.eval.pylint-dev__pylint-8898.pylint__python-anti-patterns stopped successfully.
+2026-10-07 04:21:31,484 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-8898.pylint__python-anti-patterns...
+2026-10-07 04:21:31,571 - INFO - Container sweb.eval.pylint-dev__pylint-8898.pylint__python-anti-patterns removed successfully.

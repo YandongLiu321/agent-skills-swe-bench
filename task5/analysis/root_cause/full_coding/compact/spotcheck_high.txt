@@ -1,0 +1,1523 @@
+
+##########################################################################################
+## [0023] django__django-11400 · debugging-and-error-recovery | B=incomplete_patch
+files: patch=django/contrib/admin/filters.py;django/db/models/fields/__init__.py | gold=django/contrib/admin/filters.py;django/db/models/fields/__init__.py;django/db/models/fields/reverse_related.py | test=tests/admin_filters/tests.py;tests/model_fields/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=2/3 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=False status=patch
+evidence: 已修复过滤器和正向Field.get_choices，遗漏reverse_related.get_choices默认排序；具体反向关系测试仍失败。 | patch L10: +        ordering = self.field_admin_ordering(field, request, model_admin) | patch L11: +        return field.get_choices(include_blank=False, ordering=ordering) | patch L13: +    def field_admin_ordering(self, field, request, model_admin):
+F2P: test_get_choices_default_ordering (model_fields.tests.GetChoicesOrderingTests) | test_get_choices_reverse_related_field_default_ordering (model_fields.tests.GetChoicesOrderingTests) | RelatedFieldListFilter ordering respects Model.ordering. | test_relatedfieldlistfilter_reverse_relationships_default_ordering (admin_filters.tests.ListFiltersTests) | RelatedOnlyFieldListFilter ordering respects Meta.ordering. | RelatedOnlyFieldListFilter ordering respects ModelAdmin.ordering.
+--- FINAL PATCH ---
+diff --git a/django/contrib/admin/filters.py b/django/contrib/admin/filters.py
+index d65e01d5e2..67d9a7958b 100644
+--- a/django/contrib/admin/filters.py
++++ b/django/contrib/admin/filters.py
+@@ -194,11 +194,17 @@ class RelatedFieldListFilter(FieldListFilter):
+         return [self.lookup_kwarg, self.lookup_kwarg_isnull]
+ 
+     def field_choices(self, field, request, model_admin):
+-        ordering = ()
++        ordering = self.field_admin_ordering(field, request, model_admin)
++        return field.get_choices(include_blank=False, ordering=ordering)
++
++    def field_admin_ordering(self, field, request, model_admin):
++        """
++        Return the model admin's ordering for related field, if provided.
++        """
+         related_admin = model_admin.admin_site._registry.get(field.remote_field.model)
+         if related_admin is not None:
+-            ordering = related_admin.get_ordering(request)
+-        return field.get_choices(include_blank=False, ordering=ordering)
++            return related_admin.get_ordering(request)
++        return ()
+ 
+     def choices(self, changelist):
+         yield {
+@@ -419,4 +425,5 @@ FieldListFilter.register(lambda f: True, AllValuesFieldListFilter)
+ class RelatedOnlyFieldListFilter(RelatedFieldListFilter):
+     def field_choices(self, field, request, model_admin):
+         pk_qs = model_admin.get_queryset(request).distinct().values_list('%s__pk' % self.field_path, flat=True)
+-        return field.get_choices(include_blank=False, limit_choices_to={'pk__in': pk_qs})
++        ordering = self.field_admin_ordering(field, request, model_admin)
++        return field.get_choices(include_blank=False, limit_choices_to={'pk__in': pk_qs}, ordering=ordering)
+diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py
+index 194514c900..1aad845470 100644
+--- a/django/db/models/fields/__init__.py
++++ b/django/db/models/fields/__init__.py
+@@ -825,9 +825,11 @@ class Field(RegisterLookupMixin):
+             if hasattr(self.remote_field, 'get_related_field')
+             else 'pk'
+         )
++        qs = rel_model._default_manager.complex_filter(limit_choices_to)
++        if ordering:
++            qs = qs.order_by(*ordering)
+         return (blank_choice if include_blank else []) + [
+-            (choice_func(x), str(x))
+-            for x in rel_model._default_manager.complex_filter(limit_choices_to).order_by(*ordering)
++            (choice_func(x), str(x)) for x in qs
+         ]
+ 
+     def value_to_string(self, obj):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/admin/filters.py b/django/contrib/admin/filters.py
++++ b/django/contrib/admin/filters.py
+@@ -193,11 +193,17 @@ def has_output(self):
++    def field_admin_ordering(self, field, request, model_admin):
++        """
++        Return the model admin's ordering for related field, if provided.
++        """
++            return related_admin.get_ordering(request)
++        return ()
++
++    def field_choices(self, field, request, model_admin):
++        ordering = self.field_admin_ordering(field, request, model_admin)
+@@ -419,4 +425,5 @@ def choices(self, changelist):
++        ordering = self.field_admin_ordering(field, request, model_admin)
++        return field.get_choices(include_blank=False, limit_choices_to={'pk__in': pk_qs}, ordering=ordering)
+diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py
++++ b/django/db/models/fields/__init__.py
+@@ -825,9 +825,11 @@ def get_choices(self, include_blank=True, blank_choice=BLANK_CHOICE_DASH, limit_
++        qs = rel_model._default_manager.complex_filter(limit_choices_to)
++        if ordering:
++            qs = qs.order_by(*ordering)
++            (choice_func(x), str(x)) for x in qs
+diff --git a/django/db/models/fields/reverse_related.py b/django/db/models/fields/reverse_related.py
++++ b/django/db/models/fields/reverse_related.py
+@@ -122,8 +122,11 @@ def get_choices(self, include_blank=True, blank_choice=BLANK_CHOICE_DASH, orderi
++        qs = self.related_model._default_manager.all()
++        if ordering:
++            qs = qs.order_by(*ordering)
++            (x.pk, str(x)) for x in qs
+--- TEST (headers/+ lines) ---
+diff --git a/tests/admin_filters/tests.py b/tests/admin_filters/tests.py
+@@ -591,6 +591,22 @@ class BookAdmin(ModelAdmin):
++    def test_relatedfieldlistfilter_foreignkey_default_ordering(self):
++        """RelatedFieldListFilter ordering respects Model.ordering."""
++        class BookAdmin(ModelAdmin):
++            list_filter = ('employee',)
++
++        self.addCleanup(setattr, Employee._meta, 'ordering', Employee._meta.ordering)
++        Employee._meta.ordering = ('name',)
++        modeladmin = BookAdmin(Book, site)
++
++        request = self.request_factory.get('/')
++        request.user = self.alfred
++        changelist = modeladmin.get_changelist_instance(request)
++        filterspec = changelist.get_filters(request)[0][0]
++        expected = [(self.jack.pk, 'Jack Red'), (self.john.pk, 'John Blue')]
++        self.assertEqual(filterspec.lookup_choices, expected)
++
+@@ -696,6 +712,23 @@ def test_relatedfieldlistfilter_reverse_relationships(self):
++    def test_relatedfieldlistfilter_reverse_relationships_default_ordering(self):
++        self.addCleanup(setattr, Book._meta, 'ordering', Book._meta.ordering)
++        Book._meta.ordering = ('title',)
++        modeladmin = CustomUserAdmin(User, site)
++
++        request = self.request_factory.get('/')
++        request.user = self.alfred
++        changelist = modeladmin.get_changelist_instance(request)
++        filterspec = changelist.get_filters(request)[0][0]
++        expected = [
++            (self.bio_book.pk, 'Django: a biography'),
++            (self.djangonaut_book.pk, 'Djangonaut: an art of living'),
++            (self.guitar_book.pk, 'Guitar for dummies'),
++            (self.django_book.pk, 'The Django Book')
++        ]
++        self.assertEqual(filterspec.lookup_choices, expected)
++
+@@ -708,6 +741,57 @@ def test_relatedonlyfieldlistfilter_foreignkey(self):
++    def test_relatedonlyfieldlistfilter_foreignkey_ordering(self):
++        """RelatedOnlyFieldListFilter ordering respects ModelAdmin.ordering."""
++        class EmployeeAdminWithOrdering(ModelAdmin):
++            ordering = ('name',)
++
++        class BookAdmin(ModelAdmin):
++            list_filter = (
++                ('employee', RelatedOnlyFieldListFilter),
++            )
++
++        albert = Employee.objects.create(name='Albert Green', department=self.dev)
++        self.djangonaut_book.employee = albert
++        self.djangonaut_book.save()
++        self.bio_book.employee = self.jack
++        self.bio_book.save()
++
++        site.register(Employee
+...[truncated 2571 chars]
+
+##########################################################################################
+## [0037] django__django-11532 · django-access-review | B=incomplete_patch
+files: patch=django/core/mail/message.py | gold=django/core/mail/message.py;django/core/mail/utils.py;django/core/validators.py;django/utils/encoding.py;django/utils/html.py | test=tests/mail/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/5 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 仅在Message-ID消费点做IDNA转换，CachedDnsName仍缓存非ASCII主机名；SMTP EHLO复用该缓存时触发UnicodeEncodeError。 | patch L10: +            domain = force_str(DNS_NAME) | patch L11: +            try: | patch L12: +                domain.encode('ascii')
+F2P: test_non_ascii_dns_non_unicode_email (mail.tests.MailTests)
+--- FINAL PATCH ---
+diff --git a/django/core/mail/message.py b/django/core/mail/message.py
+index e393b4cf5c..5bd8fc4c1e 100644
+--- a/django/core/mail/message.py
++++ b/django/core/mail/message.py
+@@ -257,7 +257,12 @@ class EmailMessage:
+             msg['Date'] = formatdate(localtime=settings.EMAIL_USE_LOCALTIME)
+         if 'message-id' not in header_names:
+             # Use cached DNS_NAME for performance
+-            msg['Message-ID'] = make_msgid(domain=DNS_NAME)
++            domain = force_str(DNS_NAME)
++            try:
++                domain.encode('ascii')
++            except UnicodeEncodeError:
++                domain = domain.encode('idna').decode('ascii')
++            msg['Message-ID'] = make_msgid(domain=domain)
+         for name, value in self.extra_headers.items():
+             if name.lower() != 'from':  # From is already handled
+                 msg[name] = value
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/core/mail/message.py b/django/core/mail/message.py
++++ b/django/core/mail/message.py
+@@ -16,7 +16,7 @@
++from django.utils.encoding import force_str, punycode
+@@ -102,10 +102,7 @@ def sanitize_address(addr, encoding):
++    domain = punycode(domain)
+diff --git a/django/core/mail/utils.py b/django/core/mail/utils.py
++++ b/django/core/mail/utils.py
+@@ -4,6 +4,8 @@
++from django.utils.encoding import punycode
++
+@@ -13,7 +15,7 @@ def __str__(self):
++            self._fqdn = punycode(socket.getfqdn())
+diff --git a/django/core/validators.py b/django/core/validators.py
++++ b/django/core/validators.py
+@@ -5,6 +5,7 @@
++from django.utils.encoding import punycode
+@@ -124,7 +125,7 @@ def __call__(self, value):
++                    netloc = punycode(netloc)  # IDN -> ACE
+@@ -199,7 +200,7 @@ def __call__(self, value):
++                domain_part = punycode(domain_part)
+diff --git a/django/utils/encoding.py b/django/utils/encoding.py
++++ b/django/utils/encoding.py
+@@ -218,6 +218,11 @@ def escape_uri_path(path):
++def punycode(domain):
++    """Return the Punycode of the given domain if it's non-ASCII."""
++    return domain.encode('idna').decode('ascii')
++
++
+diff --git a/django/utils/html.py b/django/utils/html.py
++++ b/django/utils/html.py
+@@ -8,6 +8,7 @@
++from django.utils.encoding import punycode
+@@ -210,7 +211,7 @@ def unquote_quote(segment):
++        netloc = punycode(netloc)  # IDN -> ACE
+@@ -319,7 +320,7 @@ def is_email_simple(value):
++                    domain = punycode(domain)
+--- TEST (headers/+ lines) ---
+diff --git a/tests/mail/tests.py b/tests/mail/tests.py
+@@ -14,10 +14,11 @@
++from unittest import mock
++    DNS_NAME, EmailMessage, EmailMultiAlternatives, mail_admins, mail_managers,
+@@ -365,6 +366,13 @@ def test_none_body(self):
++    @mock.patch('socket.getfqdn', return_value='漢字')
++    def test_non_ascii_dns_non_unicode_email(self, mocked_getfqdn):
++        delattr(DNS_NAME, '_fqdn')
++        email = EmailMessage('subject', 'content', 'from@example.com', ['to@example.com'])
++        email.encoding = 'iso-8859-1'
++        self.assertIn('@xn--p8s937b>', email.message()['Message-ID'])
++
+
+##########################################################################################
+## [0052] django__django-15127 · django-patterns | B=wrong_fix
+files: patch=django/contrib/messages/storage/base.py | gold=django/contrib/messages/apps.py | test=tests/messages_tests/base.py;tests/messages_tests/tests.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 把LEVEL_TAGS删除并改为动态读取，破坏模块符号契约；官方新增断言仍访问base.LEVEL_TAGS。 | 最终补丁第9行：-LEVEL_TAGS = utils.get_level_tags()
+F2P: test_override_settings_level_tags (messages_tests.tests.TestLevelTags)
+--- FINAL PATCH ---
+diff --git a/django/contrib/messages/storage/base.py b/django/contrib/messages/storage/base.py
+index 01422066a6..8cdbbd92c7 100644
+--- a/django/contrib/messages/storage/base.py
++++ b/django/contrib/messages/storage/base.py
+@@ -1,8 +1,6 @@
+ from django.conf import settings
+ from django.contrib.messages import constants, utils
+ 
+-LEVEL_TAGS = utils.get_level_tags()
+-
+ 
+ class Message:
+     """
+@@ -38,7 +36,7 @@ class Message:
+ 
+     @property
+     def level_tag(self):
+-        return LEVEL_TAGS.get(self.level, '')
++        return utils.get_level_tags().get(self.level, '')
+ 
+ 
+ class BaseStorage:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/messages/apps.py b/django/contrib/messages/apps.py
++++ b/django/contrib/messages/apps.py
+@@ -1,7 +1,18 @@
++from django.contrib.messages.storage import base
++from django.contrib.messages.utils import get_level_tags
++from django.test.signals import setting_changed
++def update_level_tags(setting, **kwargs):
++    if setting == 'MESSAGE_TAGS':
++        base.LEVEL_TAGS = get_level_tags()
++
++
++
++    def ready(self):
++        setting_changed.connect(update_level_tags)
+--- TEST (headers/+ lines) ---
+diff --git a/tests/messages_tests/base.py b/tests/messages_tests/base.py
+@@ -1,7 +1,7 @@
++from django.contrib.messages import constants, get_level, set_level
++from django.contrib.messages.storage import default_storage
+@@ -22,20 +22,6 @@ def add_level_messages(storage):
+@@ -47,7 +33,7 @@ class BaseTests:
++        self.settings_override = override_settings(
+@@ -368,7 +354,7 @@ def test_level_tag(self):
++    @override_settings(MESSAGE_TAGS={
+diff --git a/tests/messages_tests/tests.py b/tests/messages_tests/tests.py
+@@ -1,8 +1,9 @@
++from django.contrib.messages.storage import base
++from django.test import SimpleTestCase, override_settings
+@@ -15,3 +16,18 @@ def test_eq(self):
++
++
++class TestLevelTags(SimpleTestCase):
++    message_tags = {
++        constants.INFO: 'info',
++        constants.DEBUG: '',
++        constants.WARNING: '',
++        constants.ERROR: 'bad',
++        constants.SUCCESS: '',
++        12: 'custom',
++    }
++
++    @override_settings(MESSAGE_TAGS=message_tags)
++    def test_override_settings_level_tags(self):
++        self.assertEqual(base.LEVEL_TAGS, self.message_tags)
+
+##########################################################################################
+## [0081] django__django-11400 · django-verification | B=incomplete_patch
+files: patch=django/contrib/admin/filters.py | gold=django/contrib/admin/filters.py;django/db/models/fields/__init__.py;django/db/models/fields/reverse_related.py | test=tests/admin_filters/tests.py;tests/model_fields/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/3 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=False status=patch
+evidence: 已修复过滤器和正向Field.get_choices，遗漏reverse_related.get_choices默认排序；具体反向关系测试仍失败。 | patch L9: +        ordering = self.field_choices_ordering(field, request, model_admin) | patch L10: +        return field.get_choices(include_blank=False, ordering=ordering) | patch L12: +    def field_choices_ordering(self, field, request, model_admin):
+F2P: test_get_choices_default_ordering (model_fields.tests.GetChoicesOrderingTests) | test_get_choices_reverse_related_field_default_ordering (model_fields.tests.GetChoicesOrderingTests) | RelatedFieldListFilter ordering respects Model.ordering. | test_relatedfieldlistfilter_reverse_relationships_default_ordering (admin_filters.tests.ListFiltersTests) | RelatedOnlyFieldListFilter ordering respects Meta.ordering. | RelatedOnlyFieldListFilter ordering respects ModelAdmin.ordering.
+--- FINAL PATCH ---
+diff --git a/django/contrib/admin/filters.py b/django/contrib/admin/filters.py
+index d65e01d5e2..4ec5cbe121 100644
+--- a/django/contrib/admin/filters.py
++++ b/django/contrib/admin/filters.py
+@@ -194,11 +194,17 @@ class RelatedFieldListFilter(FieldListFilter):
+         return [self.lookup_kwarg, self.lookup_kwarg_isnull]
+ 
+     def field_choices(self, field, request, model_admin):
++        ordering = self.field_choices_ordering(field, request, model_admin)
++        return field.get_choices(include_blank=False, ordering=ordering)
++
++    def field_choices_ordering(self, field, request, model_admin):
+         ordering = ()
+         related_admin = model_admin.admin_site._registry.get(field.remote_field.model)
+         if related_admin is not None:
+             ordering = related_admin.get_ordering(request)
+-        return field.get_choices(include_blank=False, ordering=ordering)
++        if not ordering:
++            ordering = field.remote_field.model._meta.ordering
++        return ordering
+ 
+     def choices(self, changelist):
+         yield {
+@@ -419,4 +425,5 @@ FieldListFilter.register(lambda f: True, AllValuesFieldListFilter)
+ class RelatedOnlyFieldListFilter(RelatedFieldListFilter):
+     def field_choices(self, field, request, model_admin):
+         pk_qs = model_admin.get_queryset(request).distinct().values_list('%s__pk' % self.field_path, flat=True)
+-        return field.get_choices(include_blank=False, limit_choices_to={'pk__in': pk_qs})
++        ordering = self.field_choices_ordering(field, request, model_admin)
++        return field.get_choices(include_blank=False, limit_choices_to={'pk__in': pk_qs}, ordering=ordering)
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/admin/filters.py b/django/contrib/admin/filters.py
++++ b/django/contrib/admin/filters.py
+@@ -193,11 +193,17 @@ def has_output(self):
++    def field_admin_ordering(self, field, request, model_admin):
++        """
++        Return the model admin's ordering for related field, if provided.
++        """
++            return related_admin.get_ordering(request)
++        return ()
++
++    def field_choices(self, field, request, model_admin):
++        ordering = self.field_admin_ordering(field, request, model_admin)
+@@ -419,4 +425,5 @@ def choices(self, changelist):
++        ordering = self.field_admin_ordering(field, request, model_admin)
++        return field.get_choices(include_blank=False, limit_choices_to={'pk__in': pk_qs}, ordering=ordering)
+diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py
++++ b/django/db/models/fields/__init__.py
+@@ -825,9 +825,11 @@ def get_choices(self, include_blank=True, blank_choice=BLANK_CHOICE_DASH, limit_
++        qs = rel_model._default_manager.complex_filter(limit_choices_to)
++        if ordering:
++            qs = qs.order_by(*ordering)
++            (choice_func(x), str(x)) for x in qs
+diff --git a/django/db/models/fields/reverse_related.py b/django/db/models/fields/reverse_related.py
++++ b/django/db/models/fields/reverse_related.py
+@@ -122,8 +122,11 @@ def get_choices(self, include_blank=True, blank_choice=BLANK_CHOICE_DASH, orderi
++        qs = self.related_model._default_manager.all()
++        if ordering:
++            qs = qs.order_by(*ordering)
++            (x.pk, str(x)) for x in qs
+--- TEST (headers/+ lines) ---
+diff --git a/tests/admin_filters/tests.py b/tests/admin_filters/tests.py
+@@ -591,6 +591,22 @@ class BookAdmin(ModelAdmin):
++    def test_relatedfieldlistfilter_foreignkey_default_ordering(self):
++        """RelatedFieldListFilter ordering respects Model.ordering."""
++        class BookAdmin(ModelAdmin):
++            list_filter = ('employee',)
++
++        self.addCleanup(setattr, Employee._meta, 'ordering', Employee._meta.ordering)
++        Employee._meta.ordering = ('name',)
++        modeladmin = BookAdmin(Book, site)
++
++        request = self.request_factory.get('/')
++        request.user = self.alfred
++        changelist = modeladmin.get_changelist_instance(request)
++        filterspec = changelist.get_filters(request)[0][0]
++        expected = [(self.jack.pk, 'Jack Red'), (self.john.pk, 'John Blue')]
++        self.assertEqual(filterspec.lookup_choices, expected)
++
+@@ -696,6 +712,23 @@ def test_relatedfieldlistfilter_reverse_relationships(self):
++    def test_relatedfieldlistfilter_reverse_relationships_default_ordering(self):
++        self.addCleanup(setattr, Book._meta, 'ordering', Book._meta.ordering)
++        Book._meta.ordering = ('title',)
++        modeladmin = CustomUserAdmin(User, site)
++
++        request = self.request_factory.get('/')
++        request.user = self.alfred
++        changelist = modeladmin.get_changelist_instance(request)
++        filterspec = changelist.get_filters(request)[0][0]
++        expected = [
++            (self.bio_book.pk, 'Django: a biography'),
++            (self.djangonaut_book.pk, 'Djangonaut: an art of living'),
++            (self.guitar_book.pk, 'Guitar for dummies'),
++            (self.django_book.pk, 'The Django Book')
++        ]
++        self.assertEqual(filterspec.lookup_choices, expected)
++
+@@ -708,6 +741,57 @@ def test_relatedonlyfieldlistfilter_foreignkey(self):
++    def test_relatedonlyfieldlistfilter_foreignkey_ordering(self):
++        """RelatedOnlyFieldListFilter ordering respects ModelAdmin.ordering."""
++        class EmployeeAdminWithOrdering(ModelAdmin):
++            ordering = ('name',)
++
++        class BookAdmin(ModelAdmin):
++            list_filter = (
++                ('employee', RelatedOnlyFieldListFilter),
++            )
++
++        albert = Employee.objects.create(name='Albert Green', department=self.dev)
++        self.djangonaut_book.employee = albert
++        self.djangonaut_book.save()
++        self.bio_book.employee = self.jack
++        self.bio_book.save()
++
++        site.register(Employee
+...[truncated 2571 chars]
+
+##########################################################################################
+## [0095] django__django-13195 · systematic-debugging | B=other
+files: patch= | gold=django/contrib/messages/storage/cookie.py;django/contrib/sessions/middleware.py;django/http/response.py | test=tests/messages_tests/test_cookie.py;tests/responses/test_cookie.py;tests/sessions_tests/tests.py
+overlap: exact=False subset=False disjoint=False touched_gold=0/3 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=limits_exceeded
+evidence: 达到250步LimitsExceeded，未交出diff补丁；这是完成度失败，尚不能把预算耗尽归成工具循环或知识不足。 | 最终补丁第1行：LimitsExceeded
+F2P: test_delete_cookie_samesite (responses.test_cookie.DeleteCookieTests) | test_delete_cookie_secure_samesite_none (responses.test_cookie.DeleteCookieTests) | test_session_delete_on_end (sessions_tests.tests.SessionMiddlewareTests) | test_session_delete_on_end_with_custom_domain_and_path (sessions_tests.tests.SessionMiddlewareTests) | test_cookie_setings (messages_tests.test_cookie.CookieTests)
+--- FINAL PATCH ---
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/messages/storage/cookie.py b/django/contrib/messages/storage/cookie.py
++++ b/django/contrib/messages/storage/cookie.py
+@@ -92,7 +92,11 @@ def _update_cookie(self, encoded_data, response):
++            response.delete_cookie(
++                self.cookie_name,
++                domain=settings.SESSION_COOKIE_DOMAIN,
++                samesite=settings.SESSION_COOKIE_SAMESITE,
++            )
+diff --git a/django/contrib/sessions/middleware.py b/django/contrib/sessions/middleware.py
++++ b/django/contrib/sessions/middleware.py
+@@ -42,6 +42,7 @@ def process_response(self, request, response):
++                samesite=settings.SESSION_COOKIE_SAMESITE,
+diff --git a/django/http/response.py b/django/http/response.py
++++ b/django/http/response.py
+@@ -210,13 +210,18 @@ def set_signed_cookie(self, key, value, salt='', **kwargs):
++    def delete_cookie(self, key, path='/', domain=None, samesite=None):
++        # Browsers can ignore the Set-Cookie header if the cookie doesn't use
++        # the secure flag and:
++        # - the cookie name starts with "__Host-" or "__Secure-", or
++        # - the samesite is "none".
++        secure = (
++            key.startswith(('__Secure-', '__Host-')) or
++            (samesite and samesite.lower() == 'none')
++        )
++            expires='Thu, 01 Jan 1970 00:00:00 GMT', samesite=samesite,
+--- TEST (headers/+ lines) ---
+diff --git a/tests/messages_tests/test_cookie.py b/tests/messages_tests/test_cookie.py
+@@ -1,5 +1,6 @@
++from django.conf import settings
+@@ -85,6 +86,10 @@ def test_cookie_setings(self):
++        self.assertEqual(
++            response.cookies['messages']['samesite'],
++            settings.SESSION_COOKIE_SAMESITE,
++        )
+diff --git a/tests/responses/test_cookie.py b/tests/responses/test_cookie.py
+@@ -105,6 +105,7 @@ def test_default(self):
++        self.assertEqual(cookie['samesite'], '')
+@@ -118,3 +119,14 @@ def test_delete_cookie_secure_prefix(self):
++
++    def test_delete_cookie_secure_samesite_none(self):
++        # delete_cookie() sets the secure flag if samesite='none'.
++        response = HttpResponse()
++        response.delete_cookie('c', samesite='none')
++        self.assertIs(response.cookies['c']['secure'], True)
++
++    def test_delete_cookie_samesite(self):
++        response = HttpResponse()
++        response.delete_cookie('c', samesite='lax')
++        self.assertEqual(response.cookies['c']['samesite'], 'lax')
+diff --git a/tests/sessions_tests/tests.py b/tests/sessions_tests/tests.py
+@@ -758,8 +758,9 @@ def response_ending_session(request):
++            'Max-Age=0; Path=/; SameSite={}'.format(
++                settings.SESSION_COOKIE_SAMESITE,
+@@ -789,8 +790,9 @@ def response_ending_session(request):
++            '01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/example/; SameSite={}'.format(
++                settings.SESSION_COOKIE_SAMESITE,
+
+##########################################################################################
+## [0109] django__django-15127 · test-driven-development | B=incomplete_patch
+files: patch=django/contrib/messages/storage/base.py | gold=django/contrib/messages/apps.py | test=tests/messages_tests/base.py;tests/messages_tests/tests.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 只让Message.level_tag动态读取，模块LEVEL_TAGS仍陈旧，未满足官方test_override_settings_level_tags的共享状态断言。 | 最终补丁第20行：+        return utils.get_level_tags().get(self.level, '')
+F2P: test_override_settings_level_tags (messages_tests.tests.TestLevelTags)
+--- FINAL PATCH ---
+diff --git a/django/contrib/messages/storage/base.py b/django/contrib/messages/storage/base.py
+index 01422066a6..ef5ff88caf 100644
+--- a/django/contrib/messages/storage/base.py
++++ b/django/contrib/messages/storage/base.py
+@@ -1,6 +1,9 @@
+ from django.conf import settings
+ from django.contrib.messages import constants, utils
+ 
++# Backwards-compatible module-level alias. The actual level tags are looked up
++# dynamically in ``Message.level_tag`` so that changes to ``MESSAGE_TAGS``
++# (e.g. via ``override_settings``) take effect immediately.
+ LEVEL_TAGS = utils.get_level_tags()
+ 
+ 
+@@ -38,7 +41,7 @@ class Message:
+ 
+     @property
+     def level_tag(self):
+-        return LEVEL_TAGS.get(self.level, '')
++        return utils.get_level_tags().get(self.level, '')
+ 
+ 
+ class BaseStorage:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/messages/apps.py b/django/contrib/messages/apps.py
++++ b/django/contrib/messages/apps.py
+@@ -1,7 +1,18 @@
++from django.contrib.messages.storage import base
++from django.contrib.messages.utils import get_level_tags
++from django.test.signals import setting_changed
++def update_level_tags(setting, **kwargs):
++    if setting == 'MESSAGE_TAGS':
++        base.LEVEL_TAGS = get_level_tags()
++
++
++
++    def ready(self):
++        setting_changed.connect(update_level_tags)
+--- TEST (headers/+ lines) ---
+diff --git a/tests/messages_tests/base.py b/tests/messages_tests/base.py
+@@ -1,7 +1,7 @@
++from django.contrib.messages import constants, get_level, set_level
++from django.contrib.messages.storage import default_storage
+@@ -22,20 +22,6 @@ def add_level_messages(storage):
+@@ -47,7 +33,7 @@ class BaseTests:
++        self.settings_override = override_settings(
+@@ -368,7 +354,7 @@ def test_level_tag(self):
++    @override_settings(MESSAGE_TAGS={
+diff --git a/tests/messages_tests/tests.py b/tests/messages_tests/tests.py
+@@ -1,8 +1,9 @@
++from django.contrib.messages.storage import base
++from django.test import SimpleTestCase, override_settings
+@@ -15,3 +16,18 @@ def test_eq(self):
++
++
++class TestLevelTags(SimpleTestCase):
++    message_tags = {
++        constants.INFO: 'info',
++        constants.DEBUG: '',
++        constants.WARNING: '',
++        constants.ERROR: 'bad',
++        constants.SUCCESS: '',
++        12: 'custom',
++    }
++
++    @override_settings(MESSAGE_TAGS=message_tags)
++    def test_override_settings_level_tags(self):
++        self.assertEqual(base.LEVEL_TAGS, self.message_tags)
+
+##########################################################################################
+## [0131] matplotlib__matplotlib-23476 · matplotlib | B=wrong_location
+files: patch=lib/matplotlib/backend_bases.py | gold=lib/matplotlib/figure.py | test=lib/matplotlib/tests/test_figure.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=2 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 消息117、123、127及139运行的相关测试均通过，但消息129/137最终仅在 FigureCanvasBase.__init__ 中用 getattr 守卫 _original_dpi；消息131的额外状态脚本还因 KeyError 失败。该方案没有在 Figure.__getstate__ 消除被设备像素比放大的序列化 _dpi。
+F2P: lib/matplotlib/tests/test_figure.py::test_unpickle_with_device_pixel_ratio
+--- FINAL PATCH ---
+diff --git a/lib/matplotlib/backend_bases.py b/lib/matplotlib/backend_bases.py
+index 9ae2982c62..409c7b0018 100755
+--- a/lib/matplotlib/backend_bases.py
++++ b/lib/matplotlib/backend_bases.py
+@@ -1653,7 +1653,8 @@ class FigureCanvasBase:
+         self.toolbar = None  # NavigationToolbar2 will set me
+         self._is_idle_drawing = False
+         # We don't want to scale up the figure DPI more than once.
+-        figure._original_dpi = figure.dpi
++        if getattr(figure, "_original_dpi", None) is None:
++            figure._original_dpi = figure.dpi
+         self._device_pixel_ratio = 1
+         super().__init__()  # Typically the GUI widget init (if any).
+ 
+
+--- GOLD (headers/+ lines) ---
+diff --git a/lib/matplotlib/figure.py b/lib/matplotlib/figure.py
++++ b/lib/matplotlib/figure.py
+@@ -3023,6 +3023,9 @@ def __getstate__(self):
++        # discard any changes to the dpi due to pixel ratio changes
++        state["_dpi"] = state.get('_original_dpi', state['_dpi'])
++
+--- TEST (headers/+ lines) ---
+diff --git a/lib/matplotlib/tests/test_figure.py b/lib/matplotlib/tests/test_figure.py
+@@ -2,6 +2,7 @@
++import pickle
+@@ -1380,3 +1381,11 @@ def test_deepcopy():
++
++
++def test_unpickle_with_device_pixel_ratio():
++    fig = Figure(dpi=42)
++    fig.canvas._set_device_pixel_ratio(7)
++    assert fig.dpi == 42*7
++    fig2 = pickle.loads(pickle.dumps(fig))
++    assert fig2.dpi == 42
+
+##########################################################################################
+## [0179] sphinx-doc__sphinx-9461 · python-anti-patterns | B=other
+files: patch= | gold=sphinx/domains/python.py;sphinx/ext/autodoc/__init__.py;sphinx/util/inspect.py | test=tests/roots/test-ext-autodoc/target/properties.py;tests/test_domain_py.py;tests/test_ext_autodoc_autoclass.py;tests/test_ext_autodoc_autoproperty.py
+overlap: exact=False subset=False disjoint=False touched_gold=0/3 func_jaccard=0.0
+signals: eq=3 is=0 in=2 raises=0 new_tests_in_f2p=all conflict=False status=api_error
+evidence: 首步BadRequestError中断，无可评估补丁。 | 最终补丁第1行：litellm.BadRequestError: DeepseekException - {"error":{"message":"Insufficient Balance (request_id: 643cffd9-3f5a-4ace-ac03-c28e678b415b)","type":"unknown_error","param":null,"code":"invalid_request_error"}}
+F2P: tests/test_domain_py.py::test_pyproperty | tests/test_ext_autodoc_autoclass.py::test_properties | tests/test_ext_autodoc_autoproperty.py::test_class_properties
+--- FINAL PATCH ---
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
++        'classmethod': directives.flag,
+@@ -865,10 +866,13 @@ def handle_signature(self, sig: str, signode: desc_signature) -> Tuple[str, str]
++        prefix = []
++            prefix.append('abstract')
++        if 'classmethod' in self.options:
++            prefix.append('class')
++        prefix.append('property')
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -718,7 +718,7 @@ def is_filtered_inherited_member(name: str, obj: Any) -> bool:
++                         self.object, membername)
+@@ -2661,7 +2661,32 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
++        if isinstance(parent, ClassDocumenter):
++            if inspect.isproperty(member):
++                return True
++            else:
++                __dict__ = safe_getattr(parent.object, '__dict__', {})
++                obj = __dict__.get(membername)
++                return isinstance(obj, classmethod) and inspect.isproperty(obj.__func__)
++        else:
++            return False
++
++    def import_object(self, raiseerror: bool = False) -> bool:
++        """Check the exisitence of uninitialized instance attribute when failed to import
++        the attribute."""
++        ret = super().import_object(raiseerror)
++        if ret and not inspect.isproperty(self.object):
++            __dict__ = safe_getattr(self.parent, '__dict__', {})
++            obj = __dict__.get(self.objpath[-1])
++            if isinstance(obj, classmethod) and inspect.isproperty(obj.__func__):
++                self.object = obj.__func__
++                self.isclassmethod = True
++                return True
++            else:
++                return False
++
++        self.isclassmethod = False
++        return ret
+@@ -2675,6 +2700,8 @@ def add_directive_header(self, sig: str) -> None:
++        if self.isclassmethod:
++            self.add_line('   :classmethod:', sourcename)
+diff --git a/sphinx/util/inspect.py b/sphinx/util/inspect.py
++++ b/sphinx/util/inspect.py
+@@ -245,12 +245,17 @@ def ispartial(obj: Any) -> bool:
++def isclassmethod(obj: Any, cls: Any = None, name: str = None) -> bool:
++    elif cls and name:
++        for basecls in getmro(cls):
++            meth = basecls.__dict__.get(name)
++            if meth:
++                return isclassmethod(meth)
+@@ -837,6 +842,12 @@ def ge
+...[truncated 261 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/roots/test-ext-autodoc/target/properties.py b/tests/roots/test-ext-autodoc/target/properties.py
+@@ -2,5 +2,10 @@ class Foo:
++    def prop1(self) -> int:
++        """docstring"""
++
++    @classmethod
++    @property
++    def prop2(self) -> int:
+diff --git a/tests/test_domain_py.py b/tests/test_domain_py.py
+@@ -813,8 +813,12 @@ def test_pyattribute(app):
++            "   .. py:property:: prop1\n"
++            "      :type: str\n"
++            "\n"
++            "   .. py:property:: prop2\n"
++            "      :classmethod:\n"
+@@ -822,15 +826,25 @@ def test_pyproperty(app):
++                                                  desc,
++                                                  addnodes.index,
++                entries=[('single', 'prop1 (Class property)', 'Class.prop1', '', None)])
++                                                     [desc_name, "prop1"],
++                                                     [desc_annotation, ": str"])],
++                                   [desc_content, ()]))
++    assert_node(doctree[1][1][2], addnodes.index,
++                entries=[('single', 'prop2 (Class property)', 'Class.prop2', '', None)])
++    assert_node(doctree[1][1][3], ([desc_signature, ([desc_annotation, "class property "],
++                                                     [desc_name, "prop2"],
++    assert 'Class.prop1' in domain.objects
++    assert domain.objects['Class.prop1'] == ('index', 'Class.prop1', 'property', False)
++    assert 'Class.prop2' in domain.objects
++    assert domain.objects['Class.prop2'] == ('index', 'Class.prop2', 'property', False)
+diff --git a/tests/test_ext_autodoc_autoclass.py b/tests/test_ext_autodoc_autoclass.py
+@@ -212,12 +212,20 @@ def test_properties(app):
++        '   .. py:property:: Foo.prop1',
++        '',
++        '   .. py:property:: Foo.prop2',
++        '      :module: target.properties',
++        '      :classmethod:',
++        '      :type: int',
++        '',
++        '      docstring',
++        '',
+diff --git a/tests/test_ext_autodoc_autoproperty.py b/tests/test_ext_autodoc_autoproperty.py
+@@ -16,13 +16,28 @@
++    actual = do_autodoc(app, 'property', 'target.properties.Foo.prop1')
++        '.. py:property:: Foo.prop1',
++
++
++@pytest.mark.sphinx('html', testroot='ext-autodoc')
++def test_class_properties(app):
++    actual = do_autodoc(app, 'property', 'target.properties.Foo.prop2')
++    assert list(actual) == [
++        '',
++        '.. py:property:: Foo.prop2',
++        '   :module: target.properti
+...[truncated 117 chars]
+
+##########################################################################################
+## [0200] sphinx-doc__sphinx-8056 · verification-before-completion | B=wrong_location
+files: patch=sphinx/util/docfields.py | gold=sphinx/ext/napoleon/docstring.py | test=tests/test_ext_napoleon_docstring.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 在util/docfields规避逗号误判，但Napoleon仍未生成分别命名的参数；正式NumpyDocstringTest.test_multiple_parameters失败，局部HTML能显示不等于转换契约通过。 | 最终补丁第1行：diff --git a/sphinx/util/docfields.py b/sphinx/util/docfields.py
+F2P: tests/test_ext_napoleon_docstring.py::NumpyDocstringTest::test_multiple_parameters
+--- FINAL PATCH ---
+diff --git a/sphinx/util/docfields.py b/sphinx/util/docfields.py
+index c07bc7f66..55c00c2ec 100644
+--- a/sphinx/util/docfields.py
++++ b/sphinx/util/docfields.py
+@@ -322,6 +322,8 @@ class DocFieldTransformer:
+             if typedesc.is_typed:
+                 try:
+                     argtype, argname = fieldarg.split(None, 1)
++                    if argtype.endswith(","):
++                        raise ValueError
+                 except ValueError:
+                     pass
+                 else:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sphinx/ext/napoleon/docstring.py b/sphinx/ext/napoleon/docstring.py
++++ b/sphinx/ext/napoleon/docstring.py
+@@ -266,13 +266,16 @@ def _consume_field(self, parse_type: bool = True, prefer_type: bool = False
++    def _consume_fields(self, parse_type: bool = True, prefer_type: bool = False,
++                        multiple: bool = False) -> List[Tuple[str, str, List[str]]]:
++            if multiple and _name:
++                for name in _name.split(","):
++                    fields.append((name.strip(), _type, _desc))
++            elif _name or _type or _desc:
+@@ -681,10 +684,12 @@ def _parse_other_parameters_section(self, section: str) -> List[str]:
++            # Allow to declare multiple parameters at once (ex: x, y: int)
++            fields = self._consume_fields(multiple=True)
++            fields = self._consume_fields()
+--- TEST (headers/+ lines) ---
+diff --git a/tests/test_ext_napoleon_docstring.py b/tests/test_ext_napoleon_docstring.py
+@@ -1230,7 +1230,7 @@ class NumpyDocstringTest(BaseDocstringTest):
++        :Parameters: * **arg1** (:class:`str`) -- Extended description of arg1
+@@ -1337,6 +1337,32 @@ def test_parameters_with_class_reference(self):
++"""
++        self.assertEqual(expected, actual)
++
++    def test_multiple_parameters(self):
++        docstring = """\
++Parameters
++----------
++x1, x2 : array_like
++    Input arrays, description of ``x1``, ``x2``.
++
++"""
++
++        config = Config(napoleon_use_param=False)
++        actual = str(NumpyDocstring(docstring, config))
++        expected = """\
++:Parameters: **x1, x2** (:class:`array_like`) -- Input arrays, description of ``x1``, ``x2``.
++"""
++        self.assertEqual(expected, actual)
++
++        config = Config(napoleon_use_param=True)
++        actual = str(NumpyDocstring(dedent(docstring), config))
++        expected = """\
++:param x1: Input arrays, description of ``x1``, ``x2``.
++:type x1: :class:`array_like`
++:param x2: Input arrays, description of ``x1``, ``x2``.
++:type x2: :class:`array_like`
+
+##########################################################################################
+## [0242] sympy__sympy-15017 · verification-before-completion | B=incomplete_patch
+files: patch=sympy/tensor/array/ndim_array.py | gold=sympy/tensor/array/dense_ndim_array.py | test=sympy/tensor/array/tests/test_immutable_ndim_array.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=4 is=0 in=0 raises=0 new_tests_in_f2p=n/a conflict=False status=patch
+evidence: 只特判__len__，底层_loop_size仍为0，导致索引[0]越界；正式日志明确ValueError。 | 最终补丁第1行：diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py
+F2P: test_ndim_array_initiation
+--- FINAL PATCH ---
+diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py
+index 099b29116..2699da4aa 100644
+--- a/sympy/tensor/array/ndim_array.py
++++ b/sympy/tensor/array/ndim_array.py
+@@ -175,6 +175,8 @@ def __len__(self):
+         9
+ 
+         """
++        if self._rank == 0:
++            return 1
+         return self._loop_size
+ 
+     @property
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/tensor/array/dense_ndim_array.py b/sympy/tensor/array/dense_ndim_array.py
++++ b/sympy/tensor/array/dense_ndim_array.py
+@@ -149,7 +149,7 @@ def _new(cls, iterable, shape, **kwargs):
++        self._loop_size = functools.reduce(lambda x,y: x*y, shape, 1)
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/tensor/array/tests/test_immutable_ndim_array.py b/sympy/tensor/array/tests/test_immutable_ndim_array.py
+@@ -9,6 +9,10 @@
++    arr_with_no_elements = ImmutableDenseNDimArray([], shape=(0,))
++    assert len(arr_with_no_elements) == 0
++    assert arr_with_no_elements.rank() == 1
++
+@@ -73,11 +77,11 @@ def test_ndim_array_initiation():
++    assert len(rank_zero_array) == 1
++    assert rank_zero_array[0] == x
+
+##########################################################################################
+## [0267] matplotlib__matplotlib-23299 · python-error-handling | B=wrong_location
+files: patch=lib/matplotlib/pyplot.py | gold=lib/matplotlib/__init__.py | test=lib/matplotlib/tests/test_rcparams.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=1 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 消息68-89把修复完全放在 pyplot.switch_backend()，并同时写 rcParams 与 rcParamsDefault；消息91-125测试中持续出现失败；消息130-135提交时仍未修改 rc_context()，且污染默认配置状态，评测 resolved=0。
+F2P: lib/matplotlib/tests/test_rcparams.py::test_no_backend_reset_rccontext
+--- FINAL PATCH ---
+diff --git a/lib/matplotlib/pyplot.py b/lib/matplotlib/pyplot.py
+index e3c66ea67c..9cd2c89073 100755
+--- a/lib/matplotlib/pyplot.py
++++ b/lib/matplotlib/pyplot.py
+@@ -222,6 +222,18 @@ def switch_backend(newbackend):
+     global _backend_mod
+     # make sure the init is pulled up so we can assign to it later
+     import matplotlib.backends
++
++    if (newbackend is rcsetup._auto_backend_sentinel
++            and _backend_mod is not None):
++        # The auto backend sentinel is being resolved again even though a
++        # backend has already been selected.  This can happen e.g. when
++        # ``rc_context`` restores ``rcParams["backend"]`` to the sentinel after
++        # the backend was resolved.  In that case, keep the current backend
++        # (and thus the existing figures) instead of re-selecting one.
++        rcParams['backend'] = rcParamsDefault['backend'] = \
++            matplotlib.backends.backend
++        return
++
+     close("all")
+ 
+     if newbackend is rcsetup._auto_backend_sentinel:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/lib/matplotlib/__init__.py b/lib/matplotlib/__init__.py
++++ b/lib/matplotlib/__init__.py
+@@ -1059,6 +1059,8 @@ def rc_context(rc=None, fname=None):
++    The :rc:`backend` will not be reset by the context manager.
++
+@@ -1087,7 +1089,8 @@ def rc_context(rc=None, fname=None):
++    orig = dict(rcParams.copy())
++    del orig['backend']
+--- TEST (headers/+ lines) ---
+diff --git a/lib/matplotlib/tests/test_rcparams.py b/lib/matplotlib/tests/test_rcparams.py
+@@ -496,6 +496,13 @@ def test_keymaps():
++def test_no_backend_reset_rccontext():
++    assert mpl.rcParams['backend'] != 'module://aardvark'
++    with mpl.rc_context():
++        mpl.rcParams['backend'] = 'module://aardvark'
++    assert mpl.rcParams['backend'] == 'module://aardvark'
++
++
+
+##########################################################################################
+## [0305] django__django-11885 · django-security | B=uncertain
+files: patch=django/db/models/deletion.py | gold=django/contrib/admin/utils.py;django/db/models/deletion.py | test=tests/delete/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.16666666666666666
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 补丁采用末端合并fast-delete QuerySet的替代方案；仅与gold早期按模型分组不同不足以证明错误。缺少正式失败断言，不能确定查询次数、兼容行为或评测链何者导致失败。 | patch L15: +        self.fast_deletes = {} | patch L23: +    def _add_fast_delete(self, objs): | patch L24: +        """
+F2P: test_fast_delete_combined_relationships (delete.tests.FastDeleteTests)
+--- FINAL PATCH ---
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index ae82d26340..be931b2747 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -67,9 +67,10 @@ class Collector:
+         # Initially, {model: {instances}}, later values become lists.
+         self.data = {}
+         self.field_updates = {}  # {model: {(field, value): {instances}}}
+-        # fast_deletes is a list of queryset-likes that can be deleted without
+-        # fetching the objects into memory.
+-        self.fast_deletes = []
++        # fast_deletes is a dict of model: queryset-like that can be deleted
++        # without fetching the objects into memory. Querysets targeting the
++        # same model are combined to reduce the number of queries.
++        self.fast_deletes = {}
+ 
+         # Tracks deletion-order dependency for databases without transactions
+         # or ability to defer constraint checks. Only concrete model classes
+@@ -159,6 +160,17 @@ class Collector:
+             )
+         )
+ 
++    def _add_fast_delete(self, objs):
++        """
++        Add a queryset-like to the collection of objects to fast-delete,
++        combining it with any queryset already registered for the same model.
++        """
++        model = objs.model
++        if model in self.fast_deletes:
++            self.fast_deletes[model] = self.fast_deletes[model] | objs
++        else:
++            self.fast_deletes[model] = objs
++
+     def get_del_batches(self, objs, field):
+         """
+         Return the objs in suitably sized batches for the used connection.
+@@ -191,7 +203,7 @@ class Collector:
+         If 'keep_parents' is True, data of parent model's will be not deleted.
+         """
+         if self.can_fast_delete(objs):
+-            self.fast_deletes.append(objs)
++            self._add_fast_delete(objs)
+             return
+         new_objs = self.add(objs, source, nullable,
+                             reverse_dependency=reverse_dependency)
+@@ -225,7 +237,7 @@ class Collector:
+                 for batch in batches:
+                     sub_objs = self.related_objects(related, batch)
+                     if self.can_fast_delete(sub_objs, from_field=field):
+-                        self.fast_deletes.append(sub_objs)
++                        self._add_fast_delete(sub_objs)
+                     else:
+                         related_model = related.related_model
+                         # Non-referenced fields can be deferred if no signal
+@@ -310,7 +322,7 @@ class Collector:
+                     )
+ 
+             # fast deletes
+-            for qs in self.fast_deletes:
++            for qs in self.fast_deletes.values():
+                 count = qs._raw_delete(using=self.using)
+                 deleted_counter[qs.model._meta.label] += count
+ 
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -182,9 +182,9 @@ def collect(self, objs, source=None, source_attr=None, **kwargs):
++    def related_objects(self, related_model, related_fields, objs):
++        qs = super().related_objects(related_model, related_fields, objs)
++        return qs.select_related(*[related_field.name for related_field in related_fields])
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -1,9 +1,11 @@
++import operator
++from collections import Counter, defaultdict
++from functools import partial, reduce
++from django.db.models import query_utils, signals, sql
+@@ -65,8 +67,9 @@ class Collector:
++        self.data = defaultdict(set)
++        # {model: {(field, value): {instances}}}
++        self.field_updates = defaultdict(partial(defaultdict, set))
+@@ -76,7 +79,7 @@ def __init__(self, using):
++        self.dependencies = defaultdict(set)  # {model: {models}}
+@@ -90,7 +93,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++        instances = self.data[model]
+@@ -101,8 +104,7 @@ def add(self, objs, source=None, nullable=False, reverse_dependency=False):
++            self.dependencies[source._meta.concrete_model].add(model._meta.concrete_model)
+@@ -113,9 +115,7 @@ def add_field_update(self, field, value, objs):
++        self.field_updates[model][field, value].update(objs)
+@@ -137,7 +137,7 @@ def can_fast_delete(self, objs, from_field=None):
++            model = objs._meta.model
+@@ -159,12 +159,13 @@ def can_fast_delete(self, objs, from_field=None):
++    def get_del_batches(self, objs, fields):
++        field_names = [field.name for field in fields]
++            connections[self.using].ops.bulk_batch_size(field_names, objs), 1)
+@@ -211,51 +212,60 @@ def collect(self, objs, source=None, nullable=False, collect_related=True,
++        if not collect_related:
++            return
++
++        if keep_parents:
++            parents = set(model._meta.get_parent_list())
++        model_fast_deletes = defaultdict(list)
++        for related in get_candidate_relations_to_delete(model._meta):
++            # Preserve parent reverse relationships if keep_parents=True.
++            if keep_parents and related.model in parents:
++                continue
++            field = related.field
++            if field.remote_field.on_delete == DO_NOTHING:
++                continue
++            related_model = r
+...[truncated 2403 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/delete/tests.py b/tests/delete/tests.py
+@@ -582,3 +582,11 @@ def test_fast_delete_empty_no_update_can_self_select(self):
++
++    def test_fast_delete_combined_relationships(self):
++        # The cascading fast-delete of SecondReferrer should be combined
++        # in a single DELETE WHERE referrer_id OR unique_field.
++        origin = Origin.objects.create()
++        referer = Referrer.objects.create(origin=origin, unique_field=42)
++        with self.assertNumQueries(2):
++            referer.delete()
+
+##########################################################################################
+## [0323] django__django-13344 · verification-before-completion | B=uncertain
+files: patch=django/middleware/cache.py;django/middleware/security.py | gold=django/contrib/sessions/middleware.py;django/middleware/cache.py;django/middleware/security.py | test=tests/cache/tests.py;tests/deprecation/test_middleware_mixin.py;tests/runtests.py
+overlap: exact=False subset=True disjoint=False touched_gold=2/3 func_jaccard=0.6666666666666666
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=some conflict=True status=patch
+evidence: 同实例存在规范化后完全相同补丁却成功的运行。未跑完整套件只是观察，不能解释相同补丁的不同判定；优先保留评测链冲突标记，暂不归因于修复或提交行为。 | patch L9: +        self._async_check() | patch L17: +        self._async_check() | patch L25: +        self._async_check()
+F2P: test_coroutine (deprecation.test_middleware_mixin.MiddlewareMixinTests) | test_deprecation (deprecation.test_middleware_mixin.MiddlewareMixinTests)
+--- FINAL PATCH ---
+diff --git a/django/middleware/cache.py b/django/middleware/cache.py
+index e92f768fa3..d957448eb5 100644
+--- a/django/middleware/cache.py
++++ b/django/middleware/cache.py
+@@ -71,6 +71,7 @@ class UpdateCacheMiddleware(MiddlewareMixin):
+         self.cache_alias = settings.CACHE_MIDDLEWARE_ALIAS
+         self.cache = caches[self.cache_alias]
+         self.get_response = get_response
++        self._async_check()
+ 
+     def _should_update_cache(self, request, response):
+         return hasattr(request, '_cache_update_cache') and request._cache_update_cache
+@@ -133,6 +134,7 @@ class FetchFromCacheMiddleware(MiddlewareMixin):
+         self.cache_alias = settings.CACHE_MIDDLEWARE_ALIAS
+         self.cache = caches[self.cache_alias]
+         self.get_response = get_response
++        self._async_check()
+ 
+     def process_request(self, request):
+         """
+@@ -175,6 +177,7 @@ class CacheMiddleware(UpdateCacheMiddleware, FetchFromCacheMiddleware):
+     def __init__(self, get_response=None, cache_timeout=None, page_timeout=None, **kwargs):
+         self._get_response_none_deprecation(get_response)
+         self.get_response = get_response
++        self._async_check()
+         # We need to differentiate between "provided, but using default value",
+         # and "not provided". If the value is provided using a default, then
+         # we fall back to system defaults. If it is not provided at all,
+diff --git a/django/middleware/security.py b/django/middleware/security.py
+index 035c329efb..d292194502 100644
+--- a/django/middleware/security.py
++++ b/django/middleware/security.py
+@@ -20,6 +20,7 @@ class SecurityMiddleware(MiddlewareMixin):
+         self.redirect_exempt = [re.compile(r) for r in settings.SECURE_REDIRECT_EXEMPT]
+         self.referrer_policy = settings.SECURE_REFERRER_POLICY
+         self.get_response = get_response
++        self._async_check()
+ 
+     def process_request(self, request):
+         path = request.path.lstrip("/")
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/sessions/middleware.py b/django/contrib/sessions/middleware.py
++++ b/django/contrib/sessions/middleware.py
+@@ -13,9 +13,7 @@ class SessionMiddleware(MiddlewareMixin):
++        super().__init__(get_response)
+diff --git a/django/middleware/cache.py b/django/middleware/cache.py
++++ b/django/middleware/cache.py
+@@ -64,13 +64,12 @@ class UpdateCacheMiddleware(MiddlewareMixin):
++        super().__init__(get_response)
+@@ -128,11 +127,10 @@ class FetchFromCacheMiddleware(MiddlewareMixin):
++        super().__init__(get_response)
+@@ -173,8 +171,7 @@ class CacheMiddleware(UpdateCacheMiddleware, FetchFromCacheMiddleware):
++        super().__init__(get_response)
+@@ -184,20 +181,18 @@ def __init__(self, get_response=None, cache_timeout=None, page_timeout=None, **k
++            self.key_prefix = key_prefix
++            pass
++            self.cache_alias = cache_alias
++            self.cache = caches[self.cache_alias]
++            pass
++        if cache_timeout is not None:
++            self.cache_timeout = cache_timeout
+diff --git a/django/middleware/security.py b/django/middleware/security.py
++++ b/django/middleware/security.py
+@@ -9,7 +9,7 @@ class SecurityMiddleware(MiddlewareMixin):
++        super().__init__(get_response)
+@@ -19,7 +19,6 @@ def __init__(self, get_response=None):
+--- TEST (headers/+ lines) ---
+diff --git a/tests/cache/tests.py b/tests/cache/tests.py
+@@ -2083,6 +2083,7 @@ def test_constructor(self):
++        self.assertEqual(middleware.cache, self.other_cache)
+@@ -2092,6 +2093,7 @@ def test_constructor(self):
++        self.assertEqual(as_view_decorator.cache, self.default_cache)
+@@ -2101,6 +2103,21 @@ def test_constructor(self):
++        self.assertEqual(as_view_decorator_with_custom.cache, self.other_cache)
++
++    def test_update_cache_middleware_constructor(self):
++        middleware = UpdateCacheMiddleware(empty_response)
++        self.assertEqual(middleware.cache_timeout, 30)
++        self.assertIsNone(middleware.page_timeout)
++        self.assertEqual(middleware.key_prefix, 'middlewareprefix')
++        self.assertEqual(middleware.cache_alias, 'other')
++        self.assertEqual(middleware.cache, self.other_cache)
++
++    def test_fetch_cache_middleware_constructor(self):
++        middleware = FetchFromCacheMiddleware(empty_response)
++        self.assertEqual(middleware.key_prefix, 'middlewareprefix')
++        self.assertEqual(middleware.cache_alias, 'other')
++        self.assertEqual(middleware.cache, self.other_cache)
+diff --git a/tests/deprecation/test_middleware_mixin.py b/tests/deprecation/test_middleware_mixin.py
+@@ -1,15 +1,31 @@
++import asyncio
++from django.contrib.admindocs.middleware import XViewMiddleware
++from django.contrib.auth.middleware import (
++    AuthenticationMiddleware, RemoteUserMiddleware,
++)
++from django.contrib.flatpages.middleware import FlatpageFallbackMiddleware
++from django.contrib.messages.middleware import MessageMiddleware
++from django.contrib.redirects.middleware import RedirectFallbackMiddleware
++from django.contrib.sites.middleware import CurrentSiteMiddleware
++from django.middleware.clickjacking import XFrameOptionsMiddleware
++from django.middleware.common import (
++    BrokenLinkEmailsMiddleware, CommonMiddleware,
++)
++from django.middleware.csrf import CsrfViewMiddleware
++from django.middleware.gzip import GZipMiddleware
++from django.middleware.http import ConditionalGetMiddleware
++from django.middleware.locale import LocaleMiddleware
+@@ -20,30 +36,57 @@ class MiddlewareMixinTests(SimpleTestCase):
++    middlewares = [
++        AuthenticationMiddleware,
++        BrokenLinkEmailsMiddleware,
++        CacheMiddleware,
++        CommonMiddleware,
++        ConditionalGetMiddleware,
++        CsrfViewMiddleware,
++        CurrentSiteMiddleware,
++        FetchFromCacheMiddleware,
++        FlatpageFallbackMiddleware,
++
+...[truncated 1959 chars]
+
+##########################################################################################
+## [0353] pydata__xarray-6938 · test-driven-development | B=incomplete_patch
+files: patch=xarray/core/dataset.py | gold=xarray/core/dataset.py;xarray/core/variable.py | test=xarray/tests/test_variable.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=1 is=1 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 在swap_dims调用点防御性copy，局部避免原对象被改，但公开IndexVariable.to_index_variable仍返回self；遗漏转换API本身的独立对象契约。 | patch L9: +                if var is v: | patch L13: +                    var = var.copy(deep=False)
+F2P: xarray/tests/test_variable.py::TestIndexVariable::test_to_index_variable_copy
+--- FINAL PATCH ---
+diff --git a/xarray/core/dataset.py b/xarray/core/dataset.py
+index c775d05c..0c8c1b63 100644
+--- a/xarray/core/dataset.py
++++ b/xarray/core/dataset.py
+@@ -3773,6 +3773,11 @@ class Dataset(
+             dims = tuple(dims_dict.get(dim, dim) for dim in v.dims)
+             if k in result_dims:
+                 var = v.to_index_variable()
++                if var is v:
++                    # to_index_variable() returns the same object when the
++                    # variable is already an IndexVariable, so copy it to
++                    # avoid modifying the original object in-place
++                    var = var.copy(deep=False)
+                 var.dims = dims
+                 if k in self._indexes:
+                     indexes[k] = self._indexes[k]
+
+--- GOLD (headers/+ lines) ---
+diff --git a/xarray/core/dataset.py b/xarray/core/dataset.py
++++ b/xarray/core/dataset.py
+@@ -3771,6 +3771,7 @@ def swap_dims(
++            var: Variable
+diff --git a/xarray/core/variable.py b/xarray/core/variable.py
++++ b/xarray/core/variable.py
+@@ -14,6 +14,7 @@
++    NoReturn,
+@@ -536,23 +537,23 @@ def values(self):
++    def to_base_variable(self) -> Variable:
++            self._dims, self._data, self._attrs, encoding=self._encoding, fastpath=True
++    def to_index_variable(self) -> IndexVariable:
++            self._dims, self._data, self._attrs, encoding=self._encoding, fastpath=True
++    def to_index(self) -> pd.Index:
+@@ -2879,13 +2880,13 @@ def equals(self, other, equiv=None):
++    def to_index_variable(self) -> IndexVariable:
++        return self.copy()
++    def to_index(self) -> pd.Index:
+@@ -2904,7 +2905,7 @@ def to_index(self):
++    def level_names(self) -> list[str] | None:
+@@ -2922,11 +2923,11 @@ def get_level_variable(self, level):
++    def name(self) -> Hashable:
++    def name(self, value) -> NoReturn:
+--- TEST (headers/+ lines) ---
+diff --git a/xarray/tests/test_variable.py b/xarray/tests/test_variable.py
+@@ -2422,6 +2422,15 @@ def test_rolling_window_errors(self):
++    def test_to_index_variable_copy(self) -> None:
++        # to_index_variable should return a copy
++        # https://github.com/pydata/xarray/issues/6931
++        a = IndexVariable("x", ["a"])
++        b = a.to_index_variable()
++        assert a is not b
++        b.dims = ("y",)
++        assert a.dims == ("x",)
++
+
+##########################################################################################
+## [0375] django__django-16256 · django-perf-review | B=incomplete_patch
+files: patch=django/db/models/fields/related_descriptors.py | gold=django/contrib/contenttypes/fields.py;django/db/models/fields/related_descriptors.py | test=tests/async/models.py;tests/async/test_async_related_managers.py;tests/generic_relations/tests.py
+overlap: exact=False subset=True disjoint=False touched_gold=1/2 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=n/a conflict=False status=patch
+evidence: 消息64-68发现 contenttypes/fields.py 的 create_generic_related_manager 也有同类同步方法；消息85-87的 generic 临时测试失败后，将其解释为 out of scope 并保留单文件方案；消息94-99最终提交只修改 related_descriptors.py。
+F2P: test_acreate (async.test_async_related_managers.AsyncRelatedManagersOperationTest) | test_acreate_reverse (async.test_async_related_managers.AsyncRelatedManagersOperationTest) | test_aget_or_create (async.test_async_related_managers.AsyncRelatedManagersOperationTest) | test_aget_or_create_reverse (async.test_async_related_managers.AsyncRelatedManagersOperationTest) | test_aupdate_or_create (async.test_async_related_managers.AsyncRelatedManagersOperationTest) | test_aupdate_or_create_reverse (async.test_async_related_managers.AsyncRelatedManagersOperationTest) | test_generic_async_acreate (gene
+...[truncated 213 chars]
+--- FINAL PATCH ---
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index c5d87f647a..f1c8a73f49 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -63,6 +63,8 @@ and two directions (forward and reverse) for a total of six combinations.
+    ``ReverseManyToManyDescriptor``, use ``ManyToManyDescriptor`` instead.
+ """
+ 
++from asgiref.sync import sync_to_async
++
+ from django.core.exceptions import FieldError
+ from django.db import (
+     DEFAULT_DB_ALIAS,
+@@ -793,6 +795,11 @@ def create_reverse_many_to_one_manager(superclass, rel):
+ 
+         create.alters_data = True
+ 
++        async def acreate(self, **kwargs):
++            return await sync_to_async(self.create)(**kwargs)
++
++        acreate.alters_data = True
++
+         def get_or_create(self, **kwargs):
+             self._check_fk_val()
+             kwargs[self.field.name] = self.instance
+@@ -801,6 +808,11 @@ def create_reverse_many_to_one_manager(superclass, rel):
+ 
+         get_or_create.alters_data = True
+ 
++        async def aget_or_create(self, **kwargs):
++            return await sync_to_async(self.get_or_create)(**kwargs)
++
++        aget_or_create.alters_data = True
++
+         def update_or_create(self, **kwargs):
+             self._check_fk_val()
+             kwargs[self.field.name] = self.instance
+@@ -809,6 +821,11 @@ def create_reverse_many_to_one_manager(superclass, rel):
+ 
+         update_or_create.alters_data = True
+ 
++        async def aupdate_or_create(self, **kwargs):
++            return await sync_to_async(self.update_or_create)(**kwargs)
++
++        aupdate_or_create.alters_data = True
++
+         # remove() and clear() are only provided if the ForeignKey can have a
+         # value of null.
+         if rel.field.null:
+@@ -1191,6 +1208,13 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+ 
+         create.alters_data = True
+ 
++        async def acreate(self, *, through_defaults=None, **kwargs):
++            return await sync_to_async(self.create)(
++                through_defaults=through_defaults, **kwargs
++            )
++
++        acreate.alters_data = True
++
+         def get_or_create(self, *, through_defaults=None, **kwargs):
+             db = router.db_for_write(self.instance.__class__, instance=self.instance)
+             obj, created = super(ManyRelatedManager, self.db_manager(db)).get_or_create(
+@@ -1204,6 +1228,13 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+ 
+         get_or_create.alters_data = True
+ 
++        async def aget_or_create(self, *, through_defaults=None, **kwargs):
++            return await sync_to_async(self.get_or_create)(
++                through_defaults=through_defaults, **kwargs
++            )
++
++        aget_or_create.alters_data = True
++
+         def update_or_create(self, *, through_defaults=None, **kwargs):
+             db = router.db_for_write(self.instance.__class__, instance=self.instance)
+             obj, created = super(
+@@ -1217,6 +1248,13 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+ 
+         update_or_create.alters_data = True
+ 
++        async def aupdate_or_create(self, *, through_defaults=None, **kwargs):
++            return await sync_to_async(self.update_or_create)(
++                through_defaults=through_defaults, **kwargs
++            )
++
++        aupdate_or_create.alters_data = True
++
+         def _get_target_ids(self, target_field_name, objs):
+             """
+             Return the set of ids of `objs` that the target field references.
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/contrib/contenttypes/fields.py b/django/contrib/contenttypes/fields.py
++++ b/django/contrib/contenttypes/fields.py
+@@ -2,6 +2,8 @@
++from asgiref.sync import sync_to_async
++
+@@ -747,6 +749,11 @@ def create(self, **kwargs):
++        async def acreate(self, **kwargs):
++            return await sync_to_async(self.create)(**kwargs)
++
++        acreate.alters_data = True
++
+@@ -755,6 +762,11 @@ def get_or_create(self, **kwargs):
++        async def aget_or_create(self, **kwargs):
++            return await sync_to_async(self.get_or_create)(**kwargs)
++
++        aget_or_create.alters_data = True
++
+@@ -763,4 +775,9 @@ def update_or_create(self, **kwargs):
++        async def aupdate_or_create(self, **kwargs):
++            return await sync_to_async(self.update_or_create)(**kwargs)
++
++        aupdate_or_create.alters_data = True
++
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -63,6 +63,8 @@ class Child(Model):
++from asgiref.sync import sync_to_async
++
+@@ -793,6 +795,11 @@ def create(self, **kwargs):
++        async def acreate(self, **kwargs):
++            return await sync_to_async(self.create)(**kwargs)
++
++        acreate.alters_data = True
++
+@@ -801,6 +808,11 @@ def get_or_create(self, **kwargs):
++        async def aget_or_create(self, **kwargs):
++            return await sync_to_async(self.get_or_create)(**kwargs)
++
++        aget_or_create.alters_data = True
++
+@@ -809,6 +821,11 @@ def update_or_create(self, **kwargs):
++        async def aupdate_or_create(self, **kwargs):
++            return await sync_to_async(self.update_or_create)(**kwargs)
++
++        aupdate_or_create.alters_data = True
++
+@@ -1191,6 +1208,13 @@ def create(self, *, through_defaults=None, **kwargs):
++        async def acreate(self, *, through_defaults=None, **kwargs):
++            return await sync_to_async(self.create)(
++                through_defaults=through_defaults, **kwargs
++            )
++
++        acreate.alters_data = True
++
+@@ -1204,6 +1228,13 @@ def get_or_create(self, *, through_defaults=None, **kwargs):
++        async def aget_or_create(self, *, through_defaults=None, **kwargs):
++            return await sync_to_async(self.get_or_create)(
++                through_defaults=through_defaults, **kwargs
++            )
++
++        aget_or_create.alters_data = True
++
+@@ -1217,6 +1248,13 @@ def update_or_create(self, *, through_defaults=None, **kwargs):
++    
+...[truncated 264 chars]
+--- TEST (headers/+ lines) ---
+diff --git a/tests/async/models.py b/tests/async/models.py
+@@ -9,3 +9,7 @@ class RelatedModel(models.Model):
++
++
++class ManyToManyModel(models.Model):
++    simples = models.ManyToManyField("SimpleModel")
+diff --git a/tests/async/test_async_related_managers.py b/tests/async/test_async_related_managers.py
+@@ -0,0 +1,56 @@
++from django.test import TestCase
++
++from .models import ManyToManyModel, SimpleModel
++
++
++class AsyncRelatedManagersOperationTest(TestCase):
++    @classmethod
++    def setUpTestData(cls):
++        cls.mtm1 = ManyToManyModel.objects.create()
++        cls.s1 = SimpleModel.objects.create(field=0)
++
++    async def test_acreate(self):
++        await self.mtm1.simples.acreate(field=2)
++        new_simple = await self.mtm1.simples.aget()
++        self.assertEqual(new_simple.field, 2)
++
++    async def test_acreate_reverse(self):
++        await self.s1.relatedmodel_set.acreate()
++        new_relatedmodel = await self.s1.relatedmodel_set.aget()
++        self.assertEqual(new_relatedmodel.simple, self.s1)
++
++    async def test_aget_or_create(self):
++        new_simple, created = await self.mtm1.simples.aget_or_create(field=2)
++        self.assertIs(created, True)
++        self.assertEqual(await self.mtm1.simples.acount(), 1)
++        self.assertEqual(new_simple.field, 2)
++        new_simple, created = await self.mtm1.simples.aget_or_create(
++            id=new_simple.id, through_defaults={"field": 3}
++        )
++        self.assertIs(created, False)
++        self.assertEqual(await self.mtm1.simples.acount(), 1)
++        self.assertEqual(new_simple.field, 2)
++
++    async def test_aget_or_create_reverse(self):
++        new_relatedmodel, created = await self.s1.relatedmodel_set.aget_or_create()
++        self.assertIs(created, True)
++        self.assertEqual(await self.s1.relatedmodel_set.acount(), 1)
++        self.assertEqual(new_relatedmodel.simple, self.s1)
++
++    async def test_aupdate_or_create(self):
++        new_simple, created = await self.mtm1.simples.aupdate_or_create(field=2)
++        self.assertIs(created, True)
++        self.assertEqual(await self.mtm1.simples.acount(), 1)
++        self.assertEqual(new_simple.field, 2)
++        new_simple, created = await self.mtm1.simples.aupdate_or_create(
++            id=new_simple.id, defaults={"field": 3}
++        )
++        self.assertIs(created, False)
++        self.assertEqual(await self.mtm1.simples.acount(), 1)
++        self.assertEqual(new_simple.field, 3)
++
++    async def test_aupdate_or_create_re
+...[truncated 1812 chars]
+
+##########################################################################################
+## [0395] django__django-11477 · verification-before-completion | B=wrong_location
+files: patch=django/urls/base.py | gold=django/urls/resolvers.py | test=tests/i18n/patterns/tests.py;tests/i18n/patterns/urls/default.py;tests/urlpatterns/path_urls.py;tests/urlpatterns/tests.py;tests/urlpatterns_reverse/tests.py
+overlap: exact=False subset=False disjoint=True touched_gold=0/1 func_jaccard=0.0
+signals: eq=0 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 消息108通过71项测试、消息114通过193项测试；消息120最终 diff 仍仅在 django/urls/base.py 的 translate_url() 调 reverse() 时过滤 None。它验证了表面症状，却没有在 django/urls/resolvers.py 的 RegexPattern.match() 源头消除未参与命名组。
+F2P: test_re_path_with_optional_parameter (urlpatterns.tests.SimplifiedURLTests) | test_two_variable_at_start_of_path_pattern (urlpatterns.tests.SimplifiedURLTests) | test_translate_url_utility (i18n.patterns.tests.URLTranslationTests)
+--- FINAL PATCH ---
+diff --git a/django/urls/base.py b/django/urls/base.py
+index 0e1c3d909c..fb4a4b7e54 100644
+--- a/django/urls/base.py
++++ b/django/urls/base.py
+@@ -172,7 +172,9 @@ def translate_url(url, lang_code):
+         to_be_reversed = "%s:%s" % (match.namespace, match.url_name) if match.namespace else match.url_name
+         with override(lang_code):
+             try:
+-                url = reverse(to_be_reversed, args=match.args, kwargs=match.kwargs)
++                url = reverse(to_be_reversed, args=match.args, kwargs={
++                    k: v for k, v in match.kwargs.items() if v is not None
++                })
+             except NoReverseMatch:
+                 pass
+             else:
+
+--- GOLD (headers/+ lines) ---
+diff --git a/django/urls/resolvers.py b/django/urls/resolvers.py
++++ b/django/urls/resolvers.py
+@@ -153,7 +153,7 @@ def match(self, path):
++            kwargs = {k: v for k, v in match.groupdict().items() if v is not None}
+--- TEST (headers/+ lines) ---
+diff --git a/tests/i18n/patterns/tests.py b/tests/i18n/patterns/tests.py
+@@ -158,6 +158,15 @@ def test_translate_url_utility(self):
++            # URL with parameters.
++            self.assertEqual(
++                translate_url('/en/with-arguments/regular-argument/', 'nl'),
++                '/nl/with-arguments/regular-argument/',
++            )
++            self.assertEqual(
++                translate_url('/en/with-arguments/regular-argument/optional.html', 'nl'),
++                '/nl/with-arguments/regular-argument/optional.html',
++            )
+diff --git a/tests/i18n/patterns/urls/default.py b/tests/i18n/patterns/urls/default.py
+@@ -15,6 +15,11 @@
++    re_path(
++        _(r'^with-arguments/(?P<argument>[\w-]+)/(?:(?P<optional>[\w-]+).html)?$'),
++        view,
++        name='with-arguments',
++    ),
+diff --git a/tests/urlpatterns/path_urls.py b/tests/urlpatterns/path_urls.py
+@@ -11,6 +11,7 @@
++    re_path(r'^regex_optional/(?P<arg1>\d+)/(?:(?P<arg2>\d+)/)?', views.empty_view, name='regex_optional'),
+diff --git a/tests/urlpatterns/tests.py b/tests/urlpatterns/tests.py
+@@ -54,6 +54,20 @@ def test_re_path(self):
++    def test_re_path_with_optional_parameter(self):
++        for url, kwargs in (
++            ('/regex_optional/1/2/', {'arg1': '1', 'arg2': '2'}),
++            ('/regex_optional/1/', {'arg1': '1'}),
++        ):
++            with self.subTest(url=url):
++                match = resolve(url)
++                self.assertEqual(match.url_name, 'regex_optional')
++                self.assertEqual(match.kwargs, kwargs)
++                self.assertEqual(
++                    match.route,
++                    r'^regex_optional/(?P<arg1>\d+)/(?:(?P<arg2>\d+)/)?',
++                )
++
+diff --git a/tests/urlpatterns_reverse/tests.py b/tests/urlpatterns_reverse/tests.py
+@@ -180,6 +180,8 @@
++    ('named_optional_terminated', '/optional/1/', [1], {}),
++    ('named_optional_terminated', '/optional/1/', [], {'arg1': 1}),

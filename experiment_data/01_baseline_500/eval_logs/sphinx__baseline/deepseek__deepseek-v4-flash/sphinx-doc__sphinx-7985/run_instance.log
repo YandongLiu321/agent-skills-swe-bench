@@ -1,0 +1,208 @@
+2026-10-04 11:17:01,518 - INFO - Creating container for sphinx-doc__sphinx-7985...
+2026-10-04 11:17:01,589 - INFO - Container for sphinx-doc__sphinx-7985 created: ae57700908da65e88ba446c34b30faab4a088ac1fe1eb7a1d917447c71a990ad
+2026-10-04 11:17:01,713 - INFO - Container for sphinx-doc__sphinx-7985 started: ae57700908da65e88ba446c34b30faab4a088ac1fe1eb7a1d917447c71a990ad
+2026-10-04 11:17:01,715 - INFO - Intermediate patch for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__baseline\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\patch.diff, now applying to container...
+2026-10-04 11:17:01,832 - INFO - >>>>> Applied Patch:
+Checking patch sphinx/builders/linkcheck.py...
+Applied patch sphinx/builders/linkcheck.py cleanly.
+
+2026-10-04 11:17:02,281 - INFO - Git diff before:
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..d3268547b 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -109,6 +109,61 @@ class CheckExternalLinksBuilder(Builder):
+             thread.start()
+             self.workers.append(thread)
+ 
++    def check_local(self, uri: str, docname: str) -> Tuple[str, str, int]:
++        """Check a local link and return its status."""
++        if '#' in uri:
++            target, anchor = uri.split('#', 1)
++        else:
++            target = uri
++            anchor = None
++
++        if anchor:
++            for rex in self.anchors_ignore:
++                if rex.match(anchor):
++                    anchor = None
++                    break
++
++        target = unquote(target)
++        if target:
++            relpath, abspath = self.env.relfn2path(target, docname)
++        else:
++            relpath = self.env.doc2path(docname, None)
++            abspath = self.env.doc2path(docname)
++
++        candidates = [relpath]
++        if not target:
++            candidates.append(docname)
++
++        for suffix in self.env.project.source_suffix:
++            if relpath.endswith(suffix):
++                candidates.append(relpath[:-len(suffix)])
++
++        if path.splitext(relpath)[1] in ('.html', '.htm', '.xhtml'):
++            candidates.append(path.splitext(relpath)[0])
++
++        target_docname = None
++        for candidate in candidates:
++            candidate = path.normpath(candidate)
++            if candidate in self.env.found_docs:
++                target_docname = candidate
++                break
++
++        if target_docname is not None:
++            if anchor and self.app.config.linkcheck_anchors:
++                try:
++                    doctree = self.env.get_doctree(target_docname)
++                except Exception:
++                    return 'local', '', 0
++
++                if unquote(anchor) not in doctree.ids:
++                    return 'broken', __("Anchor '%s' not found") % anchor, 0
++
++            return 'local', '', 0
++        elif path.exists(abspath):
++            return 'local', '', 0
++        else:
++            return 'broken', 'local file not found', 0
++
+     def check_thread(self) -> None:
+         kwargs = {
+             'allow_redirects': True,
+@@ -210,19 +265,21 @@ class CheckExternalLinksBuilder(Builder):
+ 
+         def check() -> Tuple[str, str, int]:
+             # check for various conditions without bothering the network
+-            if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
++            if len(uri) == 0 or uri.startswith(('mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+-            elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
++
++            for rex in self.to_ignore:
++                if rex.match(uri):
++                    return 'ignored', '', 0
++
++            if not uri.startswith(('http:', 'https:')):
++                return self.check_local(uri, docname)
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+                 return 'broken', self.broken[uri], 0
+             elif uri in self.redirected:
+                 return 'redirected', self.redirected[uri][0], self.redirected[uri][1]
+-            for rex in self.to_ignore:
+-                if rex.match(uri):
+-                    return 'ignored', '', 0
+ 
+             # need to actually check the URI
+             for _ in range(self.app.config.linkcheck_retries):
+2026-10-04 11:17:02,284 - INFO - Eval script for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__baseline\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\eval.sh; copying to container...
+2026-10-04 11:17:09,020 - INFO - Test runtime: 6.67 seconds
+2026-10-04 11:17:09,023 - INFO - Test output for sphinx-doc__sphinx-7985 written to logs\run_evaluation\sphinx__baseline\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7985\test_output.txt
+2026-10-04 11:17:09,075 - INFO - Git diff after:
+diff --git a/sphinx/builders/linkcheck.py b/sphinx/builders/linkcheck.py
+index dd5317087..d3268547b 100644
+--- a/sphinx/builders/linkcheck.py
++++ b/sphinx/builders/linkcheck.py
+@@ -109,6 +109,61 @@ class CheckExternalLinksBuilder(Builder):
+             thread.start()
+             self.workers.append(thread)
+ 
++    def check_local(self, uri: str, docname: str) -> Tuple[str, str, int]:
++        """Check a local link and return its status."""
++        if '#' in uri:
++            target, anchor = uri.split('#', 1)
++        else:
++            target = uri
++            anchor = None
++
++        if anchor:
++            for rex in self.anchors_ignore:
++                if rex.match(anchor):
++                    anchor = None
++                    break
++
++        target = unquote(target)
++        if target:
++            relpath, abspath = self.env.relfn2path(target, docname)
++        else:
++            relpath = self.env.doc2path(docname, None)
++            abspath = self.env.doc2path(docname)
++
++        candidates = [relpath]
++        if not target:
++            candidates.append(docname)
++
++        for suffix in self.env.project.source_suffix:
++            if relpath.endswith(suffix):
++                candidates.append(relpath[:-len(suffix)])
++
++        if path.splitext(relpath)[1] in ('.html', '.htm', '.xhtml'):
++            candidates.append(path.splitext(relpath)[0])
++
++        target_docname = None
++        for candidate in candidates:
++            candidate = path.normpath(candidate)
++            if candidate in self.env.found_docs:
++                target_docname = candidate
++                break
++
++        if target_docname is not None:
++            if anchor and self.app.config.linkcheck_anchors:
++                try:
++                    doctree = self.env.get_doctree(target_docname)
++                except Exception:
++                    return 'local', '', 0
++
++                if unquote(anchor) not in doctree.ids:
++                    return 'broken', __("Anchor '%s' not found") % anchor, 0
++
++            return 'local', '', 0
++        elif path.exists(abspath):
++            return 'local', '', 0
++        else:
++            return 'broken', 'local file not found', 0
++
+     def check_thread(self) -> None:
+         kwargs = {
+             'allow_redirects': True,
+@@ -210,19 +265,21 @@ class CheckExternalLinksBuilder(Builder):
+ 
+         def check() -> Tuple[str, str, int]:
+             # check for various conditions without bothering the network
+-            if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'ftp:')):
++            if len(uri) == 0 or uri.startswith(('mailto:', 'ftp:')):
+                 return 'unchecked', '', 0
+-            elif not uri.startswith(('http:', 'https:')):
+-                return 'local', '', 0
++
++            for rex in self.to_ignore:
++                if rex.match(uri):
++                    return 'ignored', '', 0
++
++            if not uri.startswith(('http:', 'https:')):
++                return self.check_local(uri, docname)
+             elif uri in self.good:
+                 return 'working', 'old', 0
+             elif uri in self.broken:
+                 return 'broken', self.broken[uri], 0
+             elif uri in self.redirected:
+                 return 'redirected', self.redirected[uri][0], self.redirected[uri][1]
+-            for rex in self.to_ignore:
+-                if rex.match(uri):
+-                    return 'ignored', '', 0
+ 
+             # need to actually check the URI
+             for _ in range(self.app.config.linkcheck_retries):
+2026-10-04 11:17:09,076 - INFO - Grading answer for sphinx-doc__sphinx-7985...
+2026-10-04 11:17:09,101 - INFO - report: {'sphinx-doc__sphinx-7985': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/test_build_linkcheck.py::test_defaults', 'tests/test_build_linkcheck.py::test_anchors_ignored']}, 'PASS_TO_PASS': {'success': ['tests/test_build_linkcheck.py::test_defaults_json', 'tests/test_build_linkcheck.py::test_auth', 'tests/test_build_linkcheck.py::test_linkcheck_request_headers'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-7985: resolved: False
+2026-10-04 11:17:09,105 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-7985.sphinx__baseline...
+2026-10-04 11:17:24,439 - INFO - Container sweb.eval.sphinx-doc__sphinx-7985.sphinx__baseline stopped successfully.
+2026-10-04 11:17:24,439 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-7985.sphinx__baseline...
+2026-10-04 11:17:24,589 - INFO - Container sweb.eval.sphinx-doc__sphinx-7985.sphinx__baseline removed successfully.

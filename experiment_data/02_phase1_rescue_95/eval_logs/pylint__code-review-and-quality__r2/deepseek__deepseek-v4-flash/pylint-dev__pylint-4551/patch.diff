@@ -1,0 +1,127 @@
+diff --git a/pylint/pyreverse/diagrams.py b/pylint/pyreverse/diagrams.py
+index bf9f67af..7f2d4765 100644
+--- a/pylint/pyreverse/diagrams.py
++++ b/pylint/pyreverse/diagrams.py
+@@ -119,6 +119,11 @@ class ClassDiagram(Figure, FilterMixIn):
+         """return class names if needed in diagram"""
+         names = []
+         for node in nodes:
++            if isinstance(node, str):
++                # a type annotation has been resolved to a label
++                if node not in names:
++                    names.append(node)
++                continue
+             if isinstance(node, astroid.Instance):
+                 node = node._proxied
+             if (
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..1f23c145 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -76,6 +76,28 @@ class IdGeneratorMixIn:
+         return self.id_count
+ 
+ 
++def _get_argument_annotation(node):
++    """Return the annotation of a function argument referenced by *node*.
++
++    *node* is expected to be an :class:`astroid.Name`.  ``None`` is returned
++    when the name does not refer to an annotated function argument.
++    """
++    if not isinstance(node, astroid.Name):
++        return None
++    frame = node.frame()
++    if not isinstance(frame, astroid.FunctionDef):
++        return None
++    arguments = (
++        list(zip(frame.args.args, frame.args.annotations))
++        + list(zip(frame.args.posonlyargs, frame.args.posonlyargs_annotations))
++        + list(zip(frame.args.kwonlyargs, frame.args.kwonlyargs_annotations))
++    )
++    for argument, annotation in arguments:
++        if argument.name == node.name and annotation is not None:
++            return annotation
++    return None
++
++
+ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+     """Walk on the project tree and resolve relationships.
+ 
+@@ -218,7 +240,12 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            if isinstance(node.parent, astroid.AnnAssign):
++                # the declared type is more reliable than the inferred one,
++                # especially when the default value is ``None``
++                values = {utils.get_annotation_label(node.parent.annotation)}
++            else:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +257,18 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            annotation = None
++            statement = node.statement()
++            if isinstance(statement, astroid.AnnAssign):
++                annotation = statement.annotation
++            elif isinstance(statement, astroid.Assign):
++                annotation = _get_argument_annotation(statement.value)
++            if annotation is not None:
++                # the declared type is more reliable than the inferred one,
++                # especially when the default value is ``None``
++                values = {utils.get_annotation_label(annotation)}
++            else:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..ac3e1d5f 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -93,6 +95,30 @@ def is_exception(node):
+     return node.type == "exception"
+ 
+ 
++def get_annotation_label(ann):
++    """Return a string representation of a type annotation node.
++
++    The representation tries to be as close as possible to the one used by
++    the user, so that it can be displayed in the generated diagrams.
++    """
++    if isinstance(ann, astroid.Name):
++        return ann.name
++    if isinstance(ann, astroid.Attribute):
++        return ann.attrname
++    if isinstance(ann, astroid.Subscript):
++        return "{}[{}]".format(
++            get_annotation_label(ann.value), get_annotation_label(ann.slice)
++        )
++    if isinstance(ann, astroid.Tuple):
++        return ", ".join(get_annotation_label(elt) for elt in ann.elts)
++    if isinstance(ann, astroid.List):
++        return "[{}]".format(", ".join(get_annotation_label(elt) for elt in ann.elts))
++    if isinstance(ann, astroid.Const) and isinstance(ann.value, str):
++        # a forward reference, e.g. ``"MyClass"``
++        return ann.value
++    return ann.as_string()
++
++
+ # Helpers #####################################################################
+ 
+ _CONSTRUCTOR = 1

@@ -1,0 +1,248 @@
+2026-10-07 02:03:20,274 - INFO - Creating container for sphinx-doc__sphinx-7748...
+2026-10-07 02:03:20,325 - INFO - Container for sphinx-doc__sphinx-7748 created: c281323a6384f71707540f29673cf00623d583f86b1baf7b89fe74b824386c11
+2026-10-07 02:03:20,469 - INFO - Container for sphinx-doc__sphinx-7748 started: c281323a6384f71707540f29673cf00623d583f86b1baf7b89fe74b824386c11
+2026-10-07 02:03:20,470 - INFO - Intermediate patch for sphinx-doc__sphinx-7748 written to logs\run_evaluation\sphinx__sphinx-build\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7748\patch.diff, now applying to container...
+2026-10-07 02:03:20,556 - INFO - >>>>> Applied Patch:
+Checking patch CHANGES...
+Checking patch doc/usage/extensions/autodoc.rst...
+Checking patch sphinx/ext/autodoc/__init__.py...
+Applied patch CHANGES cleanly.
+Applied patch doc/usage/extensions/autodoc.rst cleanly.
+Applied patch sphinx/ext/autodoc/__init__.py cleanly.
+
+2026-10-07 02:03:20,715 - INFO - Git diff before:
+diff --git a/CHANGES b/CHANGES
+index 6c2761c53..e4b9eb1d0 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -49,6 +49,7 @@ Features added
+ * #7143: autodoc: Support final classes and methods
+ * #7384: autodoc: Support signatures defined by ``__new__()``, metaclasses and
+   builtin base classes
++* #4194: autodoc: Support multiple signatures in docstrings
+ * #7466: autosummary: headings in generated documents are not translated
+ * #7490: autosummary: Add ``:caption:`` option to autosummary directive to set a
+   caption to the toctree
+diff --git a/doc/usage/extensions/autodoc.rst b/doc/usage/extensions/autodoc.rst
+index 36be7568b..e7966cbcb 100644
+--- a/doc/usage/extensions/autodoc.rst
++++ b/doc/usage/extensions/autodoc.rst
+@@ -452,7 +452,9 @@ There are also config values that you can set:
+    If this boolean value is set to ``True`` (which is the default), autodoc will
+    look at the first line of the docstring for functions and methods, and if it
+    looks like a signature, use the line as the signature and remove it from the
+-   docstring content.
++   docstring content.  Multiple signature lines at the beginning of the
++   docstring (as generated for overloaded functions by e.g. SWIG) are all
++   detected and used as signatures.
+ 
+    .. versionadded:: 1.1
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index f8e4be999..6897d12ba 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -1037,7 +1037,7 @@ class DocstringSignatureMixin:
+     feature of reading the signature from the docstring.
+     """
+ 
+-    def _find_signature(self, encoding: str = None) -> Tuple[str, str]:
++    def _find_signature(self, encoding: str = None) -> List[Tuple[str, str]]:
+         if encoding is not None:
+             warnings.warn("The 'encoding' argument to autodoc.%s._find_signature() is "
+                           "deprecated." % self.__class__.__name__,
+@@ -1049,24 +1049,35 @@ class DocstringSignatureMixin:
+             # no lines in docstring, no match
+             if not doclines:
+                 continue
+-            # match first line of docstring against signature RE
+-            match = py_ext_sig_re.match(doclines[0])
+-            if not match:
+-                continue
+-            exmod, path, base, args, retann = match.groups()
+-            # the base name must match ours
+-            valid_names = [self.objpath[-1]]  # type: ignore
+-            if isinstance(self, ClassDocumenter):
+-                valid_names.append('__init__')
+-                if hasattr(self.object, '__mro__'):
+-                    valid_names.extend(cls.__name__ for cls in self.object.__mro__)
+-            if base not in valid_names:
++
++            # match the consecutive signature lines at the beginning of the
++            # docstring against the signature RE.  All of them are collected
++            # (this is used by e.g. SWIG to describe overloaded methods).
++            matches = []  # type: List[Tuple[str, str]]
++            for line in doclines:
++                match = py_ext_sig_re.match(line)
++                if not match:
++                    break
++                exmod, path, base, args, retann = match.groups()
++                # the base name must match ours
++                valid_names = [self.objpath[-1]]  # type: ignore
++                if isinstance(self, ClassDocumenter):
++                    valid_names.append('__init__')
++                    if hasattr(self.object, '__mro__'):
++                        valid_names.extend(cls.__name__ for cls in self.object.__mro__)
++                if base not in valid_names:
++                    break
++                matches.append((args, retann))
++
++            if not matches:
+                 continue
++
+             # re-prepare docstring to ignore more leading indentation
+             tab_width = self.directive.state.document.settings.tab_width  # type: ignore
+-            self._new_docstrings[i] = prepare_docstring('\n'.join(doclines[1:]),
+-                                                        tabsize=tab_width)
+-            result = args, retann
++            self._new_docstrings[i] = prepare_docstring(
++                '\n'.join(doclines[len(matches):]), tabsize=tab_width)
++            result = matches
++
+             # don't look any further
+             break
+         return result
+@@ -1087,7 +1098,12 @@ class DocstringSignatureMixin:
+             # the feature is enabled
+             result = self._find_signature()
+             if result is not None:
+-                self.args, self.retann = result
++                # format each signature found in the docstring
++                signatures = []  # type: List[str]
++                for args, retann in result:
++                    self.args, self.retann = args, retann
++                    signatures.append(super().format_signature(**kwargs))  # type: ignore
++                return '\n'.join(signatures)
+         return super().format_signature(**kwargs)  # type: ignore
+ 
+ 
+@@ -1105,7 +1121,7 @@ class DocstringStripSignatureMixin(DocstringSignatureMixin):
+                 # Discarding _args is a only difference with
+                 # DocstringSignatureMixin.format_signature.
+                 # Documenter.format_signature use self.args value to format.
+-                _args, self.retann = result
++                _args, self.retann = result[-1]
+         return super().format_signature(**kwargs)
+2026-10-07 02:03:20,716 - INFO - Eval script for sphinx-doc__sphinx-7748 written to logs\run_evaluation\sphinx__sphinx-build\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7748\eval.sh; copying to container...
+2026-10-07 02:03:23,646 - INFO - Test runtime: 2.89 seconds
+2026-10-07 02:03:23,648 - INFO - Test output for sphinx-doc__sphinx-7748 written to logs\run_evaluation\sphinx__sphinx-build\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-7748\test_output.txt
+2026-10-07 02:03:23,689 - INFO - Git diff after:
+diff --git a/CHANGES b/CHANGES
+index 6c2761c53..e4b9eb1d0 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -49,6 +49,7 @@ Features added
+ * #7143: autodoc: Support final classes and methods
+ * #7384: autodoc: Support signatures defined by ``__new__()``, metaclasses and
+   builtin base classes
++* #4194: autodoc: Support multiple signatures in docstrings
+ * #7466: autosummary: headings in generated documents are not translated
+ * #7490: autosummary: Add ``:caption:`` option to autosummary directive to set a
+   caption to the toctree
+diff --git a/doc/usage/extensions/autodoc.rst b/doc/usage/extensions/autodoc.rst
+index 36be7568b..e7966cbcb 100644
+--- a/doc/usage/extensions/autodoc.rst
++++ b/doc/usage/extensions/autodoc.rst
+@@ -452,7 +452,9 @@ There are also config values that you can set:
+    If this boolean value is set to ``True`` (which is the default), autodoc will
+    look at the first line of the docstring for functions and methods, and if it
+    looks like a signature, use the line as the signature and remove it from the
+-   docstring content.
++   docstring content.  Multiple signature lines at the beginning of the
++   docstring (as generated for overloaded functions by e.g. SWIG) are all
++   detected and used as signatures.
+ 
+    .. versionadded:: 1.1
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index f8e4be999..6897d12ba 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -1037,7 +1037,7 @@ class DocstringSignatureMixin:
+     feature of reading the signature from the docstring.
+     """
+ 
+-    def _find_signature(self, encoding: str = None) -> Tuple[str, str]:
++    def _find_signature(self, encoding: str = None) -> List[Tuple[str, str]]:
+         if encoding is not None:
+             warnings.warn("The 'encoding' argument to autodoc.%s._find_signature() is "
+                           "deprecated." % self.__class__.__name__,
+@@ -1049,24 +1049,35 @@ class DocstringSignatureMixin:
+             # no lines in docstring, no match
+             if not doclines:
+                 continue
+-            # match first line of docstring against signature RE
+-            match = py_ext_sig_re.match(doclines[0])
+-            if not match:
+-                continue
+-            exmod, path, base, args, retann = match.groups()
+-            # the base name must match ours
+-            valid_names = [self.objpath[-1]]  # type: ignore
+-            if isinstance(self, ClassDocumenter):
+-                valid_names.append('__init__')
+-                if hasattr(self.object, '__mro__'):
+-                    valid_names.extend(cls.__name__ for cls in self.object.__mro__)
+-            if base not in valid_names:
++
++            # match the consecutive signature lines at the beginning of the
++            # docstring against the signature RE.  All of them are collected
++            # (this is used by e.g. SWIG to describe overloaded methods).
++            matches = []  # type: List[Tuple[str, str]]
++            for line in doclines:
++                match = py_ext_sig_re.match(line)
++                if not match:
++                    break
++                exmod, path, base, args, retann = match.groups()
++                # the base name must match ours
++                valid_names = [self.objpath[-1]]  # type: ignore
++                if isinstance(self, ClassDocumenter):
++                    valid_names.append('__init__')
++                    if hasattr(self.object, '__mro__'):
++                        valid_names.extend(cls.__name__ for cls in self.object.__mro__)
++                if base not in valid_names:
++                    break
++                matches.append((args, retann))
++
++            if not matches:
+                 continue
++
+             # re-prepare docstring to ignore more leading indentation
+             tab_width = self.directive.state.document.settings.tab_width  # type: ignore
+-            self._new_docstrings[i] = prepare_docstring('\n'.join(doclines[1:]),
+-                                                        tabsize=tab_width)
+-            result = args, retann
++            self._new_docstrings[i] = prepare_docstring(
++                '\n'.join(doclines[len(matches):]), tabsize=tab_width)
++            result = matches
++
+             # don't look any further
+             break
+         return result
+@@ -1087,7 +1098,12 @@ class DocstringSignatureMixin:
+             # the feature is enabled
+             result = self._find_signature()
+             if result is not None:
+-                self.args, self.retann = result
++                # format each signature found in the docstring
++                signatures = []  # type: List[str]
++                for args, retann in result:
++                    self.args, self.retann = args, retann
++                    signatures.append(super().format_signature(**kwargs))  # type: ignore
++                return '\n'.join(signatures)
+         return super().format_signature(**kwargs)  # type: ignore
+ 
+ 
+@@ -1105,7 +1121,7 @@ class DocstringStripSignatureMixin(DocstringSignatureMixin):
+                 # Discarding _args is a only difference with
+                 # DocstringSignatureMixin.format_signature.
+                 # Documenter.format_signature use self.args value to format.
+-                _args, self.retann = result
++                _args, self.retann = result[-1]
+         return super().format_signature(**kwargs)
+2026-10-07 02:03:23,689 - INFO - Grading answer for sphinx-doc__sphinx-7748...
+2026-10-07 02:03:23,693 - INFO - report: {'sphinx-doc__sphinx-7748': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/test_ext_autodoc_configs.py::test_autoclass_content_and_docstring_signature_init', 'tests/test_ext_autodoc_configs.py::test_autoclass_content_and_docstring_signature_both']}, 'PASS_TO_PASS': {'success': ['tests/test_ext_autodoc_configs.py::test_autoclass_content_class', 'tests/test_ext_autodoc_configs.py::test_autoclass_content_init', 'tests/test_ext_autodoc_configs.py::test_autoclass_content_both', 'tests/test_ext_autodoc_configs.py::test_autodoc_inherit_docstrings', 'tests/test_ext_autodoc_configs.py::test_autodoc_docstring_signature', 'tests/test_ext_autodoc_configs.py::test_autoclass_content_and_docstring_signature_class', 'tests/test_ext_autodoc_configs.py::test_mocked_module_imports', 'tests/test_ext_autodoc_configs.py::test_autodoc_typehints_signature', 'tests/test_ext_autodoc_configs.py::test_autodoc_typehints_none', 'tests/test_ext_autodoc_configs.py::test_autodoc_typehints_description', 'tests/test_ext_autodoc_configs.py::test_autodoc_default_options', 'tests/test_ext_autodoc_configs.py::test_autodoc_default_options_with_values'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-7748: resolved: False
+2026-10-07 02:03:23,694 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-7748.sphinx__sphinx-build...
+2026-10-07 02:03:39,038 - INFO - Container sweb.eval.sphinx-doc__sphinx-7748.sphinx__sphinx-build stopped successfully.
+2026-10-07 02:03:39,038 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-7748.sphinx__sphinx-build...
+2026-10-07 02:03:39,136 - INFO - Container sweb.eval.sphinx-doc__sphinx-7748.sphinx__sphinx-build removed successfully.

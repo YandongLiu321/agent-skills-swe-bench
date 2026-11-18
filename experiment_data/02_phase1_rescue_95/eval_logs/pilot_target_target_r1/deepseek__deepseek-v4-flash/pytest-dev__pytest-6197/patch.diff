@@ -1,0 +1,28 @@
+diff --git a/src/_pytest/python.py b/src/_pytest/python.py
+index 306e5f217..6d5f689f3 100644
+--- a/src/_pytest/python.py
++++ b/src/_pytest/python.py
+@@ -639,7 +639,6 @@ class Package(Module):
+         return path in self.session._initialpaths
+ 
+     def collect(self):
+-        self._mount_obj_if_needed()
+         this_path = self.fspath.dirpath()
+         init_module = this_path.join("__init__.py")
+         if init_module.check(file=1) and path_matches_patterns(
+@@ -662,7 +661,14 @@ class Package(Module):
+                 continue
+ 
+             if is_file:
+-                yield from self._collectfile(path)
++                collected = list(self._collectfile(path))
++                if collected:
++                    # The package needs to be imported for its markers to be
++                    # available to the collected items.  Do this lazily, only
++                    # when there actually are collected items, to avoid
++                    # importing unrelated packages which might fail to import.
++                    self._mount_obj_if_needed()
++                yield from collected
+             elif not path.isdir():
+                 # Broken symlink or invalid/missing file.
+                 continue

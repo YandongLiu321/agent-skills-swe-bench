@@ -1,0 +1,89 @@
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..78f07b560 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,10 +1,12 @@
+ from __future__ import annotations
+ 
+ import re
++from contextlib import contextmanager
+ from typing import TYPE_CHECKING, Any, cast
+ 
+-from docutils import nodes
++from docutils import io, nodes
+ from docutils.parsers.rst import directives
++from docutils.parsers.rst.directives import misc as docutils_directive_misc
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+ from docutils.parsers.rst.directives.misc import Class
+ from docutils.parsers.rst.directives.misc import Include as BaseInclude
+@@ -19,9 +21,12 @@ from sphinx.util.matching import Matcher, patfilter
+ from sphinx.util.nodes import explicit_title_re
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Iterator
++
+     from docutils.nodes import Element, Node
+ 
+     from sphinx.application import Sphinx
++    from sphinx.environment import BuildEnvironment
+     from sphinx.util.typing import OptionSpec
+ 
+ 
+@@ -362,6 +367,43 @@ class Only(SphinxDirective):
+             memo.section_level = surrounding_section_level
+ 
+ 
++@contextmanager
++def _emit_source_read(env: BuildEnvironment, docname: str) -> Iterator[None]:
++    """Make the include directive emit the ``source-read`` event.
++
++    The standard include directive reads the included file directly from
++    disk, bypassing the ``source-read`` event.  Temporarily replace the
++    ``docutils.io`` module used by the directive with a proxy whose
++    ``FileInput`` emits the event and returns the (possibly modified)
++    content to the directive.
++    """
++    class EventFileInput(io.FileInput):
++        """A FileInput that emits ``source-read`` when read."""
++
++        def read(self) -> str:
++            content = super().read()
++            source = [content]
++            env.events.emit('source-read', docname, source)
++            return source[0]
++
++    class _IncludeIO:
++        """A stand-in for :mod:`docutils.io` overriding ``FileInput``."""
++
++        def __init__(self, real_io: Any) -> None:
++            self._real_io = real_io
++            self.FileInput = EventFileInput
++
++        def __getattr__(self, name: str) -> Any:
++            return getattr(self._real_io, name)
++
++    original_io = docutils_directive_misc.io
++    docutils_directive_misc.io = _IncludeIO(original_io)
++    try:
++        yield
++    finally:
++        docutils_directive_misc.io = original_io
++
++
+ class Include(BaseInclude, SphinxDirective):
+     """
+     Like the standard "Include" directive, but interprets absolute paths
+@@ -376,7 +418,12 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++
++        # Emit the source-read event for the included file so that extensions
++        # can apply source-level transformations to it as well.
++        docname = self.env.path2doc(filename) or rel_filename
++        with _emit_source_read(self.env, docname):
++            return super().run()
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:

@@ -1,0 +1,172 @@
+diff --git a/django/contrib/contenttypes/fields.py b/django/contrib/contenttypes/fields.py
+index 5b327b6ae4..d64efdb002 100644
+--- a/django/contrib/contenttypes/fields.py
++++ b/django/contrib/contenttypes/fields.py
+@@ -6,13 +6,14 @@ from django.contrib.contenttypes.models import ContentType
+ from django.core import checks
+ from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
+ from django.db import DEFAULT_DB_ALIAS, models, router, transaction
+-from django.db.models import DO_NOTHING, ForeignObject, ForeignObjectRel
++from django.db.models import DO_NOTHING, F, ForeignObject, ForeignObjectRel
+ from django.db.models.base import ModelBase, make_foreign_order_accessors
+ from django.db.models.fields.mixins import FieldCacheMixin
+ from django.db.models.fields.related import (
+     ReverseManyToOneDescriptor,
+     lazy_related_operation,
+ )
++from django.db.models.fields.related_descriptors import _filter_prefetch_queryset
+ from django.db.models.query_utils import PathInfo
+ from django.db.models.sql import AND
+ from django.db.models.sql.where import WhereNode
+@@ -644,8 +645,16 @@ def create_generic_related_manager(superclass, rel):
+             # instances' PK in order to match up instances:
+             object_id_converter = instances[0]._meta.pk.to_python
+             content_type_id_field_name = "%s_id" % self.content_type_field_name
++            content_type_field = self.model._meta.get_field(
++                self.content_type_field_name
++            )
++            queryset = _filter_prefetch_queryset(
++                queryset,
++                query,
++                [F(self.object_id_field_name), F(content_type_field.attname)],
++            )
+             return (
+-                queryset.filter(query),
++                queryset,
+                 lambda relobj: (
+                     object_id_converter(getattr(relobj, self.object_id_field_name)),
+                     getattr(relobj, content_type_id_field_name),
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index b192df4fbf..127be1fa7a 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -65,13 +65,44 @@ and two directions (forward and reverse) for a total of six combinations.
+ 
+ from django.core.exceptions import FieldError
+ from django.db import connections, router, transaction
+-from django.db.models import Q, signals
++from django.db.models import F, Q, Window, signals
++from django.db.models.functions import RowNumber
+ from django.db.models.query import QuerySet
+ from django.db.models.query_utils import DeferredAttribute
+ from django.db.models.utils import resolve_callables
+ from django.utils.functional import cached_property
+ 
+ 
++def _filter_prefetch_queryset(queryset, query, partition_by):
++    """
++    Filter a prefetch queryset and apply its slice, if any, to each partition
++    of related objects.
++    """
++    if queryset.query.is_sliced:
++        low_mark, high_mark = queryset.query.low_mark, queryset.query.high_mark
++        queryset = queryset._chain()
++        queryset.query.clear_limits()
++    else:
++        low_mark, high_mark = 0, None
++    queryset = queryset.filter(query)
++    if low_mark or high_mark is not None:
++        ordering = queryset.query.extra_order_by or queryset.query.order_by
++        if not ordering and queryset.query.default_ordering:
++            ordering = queryset.query.get_meta().ordering
++        queryset = queryset.annotate(
++            _prefetch_related_rank=Window(
++                RowNumber(),
++                partition_by=partition_by,
++                order_by=list(ordering) or None,
++            )
++        )
++        if low_mark:
++            queryset = queryset.filter(_prefetch_related_rank__gt=low_mark)
++        if high_mark is not None:
++            queryset = queryset.filter(_prefetch_related_rank__lte=high_mark)
++    return queryset
++
++
+ class ForeignKeyDeferredAttribute(DeferredAttribute):
+     def __set__(self, instance, value):
+         if instance.__dict__.get(self.field.attname) != value and self.field.is_cached(
+@@ -145,7 +176,11 @@ class ForwardManyToOneDescriptor:
+             }
+         else:
+             query = {"%s__in" % self.field.related_query_name(): instances}
+-        queryset = queryset.filter(**query)
++        queryset = _filter_prefetch_queryset(
++            queryset,
++            Q(**query),
++            [F(field.name) for field in self.field.foreign_related_fields],
++        )
+ 
+         # Since we're going to assign directly in the cache,
+         # we must manage the reverse relation cache manually.
+@@ -404,7 +439,11 @@ class ReverseOneToOneDescriptor:
+         instance_attr = self.related.field.get_foreign_related_value
+         instances_dict = {instance_attr(inst): inst for inst in instances}
+         query = {"%s__in" % self.related.field.name: instances}
+-        queryset = queryset.filter(**query)
++        queryset = _filter_prefetch_queryset(
++            queryset,
++            Q(**query),
++            [F(field.attname) for field in self.related.field.local_related_fields],
++        )
+ 
+         # Since we're going to assign directly in the cache,
+         # we must manage the reverse relation cache manually.
+@@ -719,7 +758,11 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             instance_attr = self.field.get_foreign_related_value
+             instances_dict = {instance_attr(inst): inst for inst in instances}
+             query = {"%s__in" % self.field.name: instances}
+-            queryset = queryset.filter(**query)
++            queryset = _filter_prefetch_queryset(
++                queryset,
++                Q(**query),
++                [F(field.attname) for field in self.field.local_related_fields],
++            )
+ 
+             # Since we just bypassed this class' get_queryset(), we must manage
+             # the reverse relation manually.
+@@ -1052,16 +1095,22 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset = queryset.using(queryset._db or self._db)
+ 
+             query = {"%s__in" % self.query_field_name: instances}
+-            queryset = queryset._next_is_sticky().filter(**query)
++            # For non-autocreated 'through' models, can't assume we are
++            # dealing with PK values.
++            fk = self.through._meta.get_field(self.source_field_name)
++            queryset = _filter_prefetch_queryset(
++                queryset._next_is_sticky(),
++                Q(**query),
++                [
++                    F("%s__%s" % (self.query_field_name, field.name))
++                    for field in fk.foreign_related_fields
++                ],
++            )
+ 
+             # M2M: need to annotate the query in order to get the primary model
+             # that the secondary model was actually related to. We know that
+             # there will already be a join on the join table, so we can just add
+             # the select.
+-
+-            # For non-autocreated 'through' models, can't assume we are
+-            # dealing with PK values.
+-            fk = self.through._meta.get_field(self.source_field_name)
+             join_table = fk.model._meta.db_table
+             connection = connections[queryset.db]
+             qn = connection.ops.quote_name
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index be0deb90b0..e8159c5e15 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -2520,7 +2520,11 @@ def prefetch_one_level(instances, prefetcher, lookup, level):
+             else:
+                 manager = getattr(obj, to_attr)
+                 if leaf and lookup.queryset is not None:
+-                    qs = manager._apply_rel_filters(lookup.queryset)
++                    queryset = lookup.queryset
++                    if queryset.query.is_sliced:
++                        queryset = queryset._chain()
++                        queryset.query.clear_limits()
++                    qs = manager._apply_rel_filters(queryset)
+                 else:
+                     qs = manager.get_queryset()
+                 qs._result_cache = vals

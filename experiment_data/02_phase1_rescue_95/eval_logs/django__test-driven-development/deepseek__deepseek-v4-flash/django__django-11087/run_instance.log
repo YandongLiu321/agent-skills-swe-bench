@@ -1,0 +1,148 @@
+2026-10-06 22:56:59,541 - INFO - Creating container for django__django-11087...
+2026-10-06 22:56:59,608 - INFO - Container for django__django-11087 created: 77524d6628cba5bb0d5e0413338fb65ce7b20d64c5833e3db2c818d02a95e2d2
+2026-10-06 22:56:59,752 - INFO - Container for django__django-11087 started: 77524d6628cba5bb0d5e0413338fb65ce7b20d64c5833e3db2c818d02a95e2d2
+2026-10-06 22:56:59,753 - INFO - Intermediate patch for django__django-11087 written to logs\run_evaluation\django__test-driven-development\deepseek__deepseek-v4-flash\django__django-11087\patch.diff, now applying to container...
+2026-10-06 22:56:59,856 - INFO - >>>>> Applied Patch:
+Checking patch django/db/models/deletion.py...
+Checking patch django/db/models/query.py...
+Applied patch django/db/models/deletion.py cleanly.
+Applied patch django/db/models/query.py cleanly.
+
+2026-10-06 22:57:00,875 - INFO - Git diff before:
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..989689f53b 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -60,6 +60,22 @@ def get_candidate_relations_to_delete(opts):
+     )
+ 
+ 
++def get_required_fields_to_delete(model):
++    """
++    Return the names of the fields required when fetching instances of
++    ``model`` for deletion.
++
++    Only the primary key is needed to perform the deletion and to follow the
++    cascades, but relation fields are also kept so that
++    pre_delete/post_delete signal handlers can access them without triggering
++    extra queries.
++    """
++    return [
++        field.name for field in model._meta.concrete_fields
++        if field.primary_key or field.is_relation
++    ]
++
++
+ class Collector:
+     def __init__(self, using):
+         self.using = using
+@@ -232,9 +248,10 @@ class Collector:
+         """
+         Get a QuerySet of objects related to `objs` via the relation `related`.
+         """
+-        return related.related_model._base_manager.using(self.using).filter(
++        related_model = related.related_model
++        return related_model._base_manager.using(self.using).filter(
+             **{"%s__in" % related.field.name: objs}
+-        )
++        ).only(*get_required_fields_to_delete(related_model))
+ 
+     def instances_with_model(self):
+         for model, instances in self.data.items():
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index 84236107f3..75040d8192 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -17,7 +17,7 @@ from django.db import (
+ )
+ from django.db.models import DateField, DateTimeField, sql
+ from django.db.models.constants import LOOKUP_SEP
+-from django.db.models.deletion import Collector
++from django.db.models.deletion import Collector, get_required_fields_to_delete
+ from django.db.models.expressions import Case, Expression, F, Value, When
+ from django.db.models.fields import AutoField
+ from django.db.models.functions import Cast, Trunc
+@@ -695,6 +695,9 @@ class QuerySet:
+         del_query.query.select_related = False
+         del_query.query.clear_ordering(force_empty=True)
+ 
++        # Only fetch the fields required for the deletion.
++        del_query = del_query.only(*get_required_fields_to_delete(del_query.model))
++
+         collector = Collector(using=del_query.db)
+         collector.collect(del_query)
+         deleted, _rows_count = collector.delete()
+2026-10-06 22:57:00,877 - INFO - Eval script for django__django-11087 written to logs\run_evaluation\django__test-driven-development\deepseek__deepseek-v4-flash\django__django-11087\eval.sh; copying to container...
+2026-10-06 22:57:05,962 - INFO - Test runtime: 5.03 seconds
+2026-10-06 22:57:05,963 - INFO - Test output for django__django-11087 written to logs\run_evaluation\django__test-driven-development\deepseek__deepseek-v4-flash\django__django-11087\test_output.txt
+2026-10-06 22:57:06,010 - INFO - Git diff after:
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..989689f53b 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -60,6 +60,22 @@ def get_candidate_relations_to_delete(opts):
+     )
+ 
+ 
++def get_required_fields_to_delete(model):
++    """
++    Return the names of the fields required when fetching instances of
++    ``model`` for deletion.
++
++    Only the primary key is needed to perform the deletion and to follow the
++    cascades, but relation fields are also kept so that
++    pre_delete/post_delete signal handlers can access them without triggering
++    extra queries.
++    """
++    return [
++        field.name for field in model._meta.concrete_fields
++        if field.primary_key or field.is_relation
++    ]
++
++
+ class Collector:
+     def __init__(self, using):
+         self.using = using
+@@ -232,9 +248,10 @@ class Collector:
+         """
+         Get a QuerySet of objects related to `objs` via the relation `related`.
+         """
+-        return related.related_model._base_manager.using(self.using).filter(
++        related_model = related.related_model
++        return related_model._base_manager.using(self.using).filter(
+             **{"%s__in" % related.field.name: objs}
+-        )
++        ).only(*get_required_fields_to_delete(related_model))
+ 
+     def instances_with_model(self):
+         for model, instances in self.data.items():
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index 84236107f3..75040d8192 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -17,7 +17,7 @@ from django.db import (
+ )
+ from django.db.models import DateField, DateTimeField, sql
+ from django.db.models.constants import LOOKUP_SEP
+-from django.db.models.deletion import Collector
++from django.db.models.deletion import Collector, get_required_fields_to_delete
+ from django.db.models.expressions import Case, Expression, F, Value, When
+ from django.db.models.fields import AutoField
+ from django.db.models.functions import Cast, Trunc
+@@ -695,6 +695,9 @@ class QuerySet:
+         del_query.query.select_related = False
+         del_query.query.clear_ordering(force_empty=True)
+ 
++        # Only fetch the fields required for the deletion.
++        del_query = del_query.only(*get_required_fields_to_delete(del_query.model))
++
+         collector = Collector(using=del_query.db)
+         collector.collect(del_query)
+         deleted, _rows_count = collector.delete()
+2026-10-06 22:57:06,011 - INFO - Grading answer for django__django-11087...
+2026-10-06 22:57:06,012 - INFO - report: {'django__django-11087': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['test_only_referenced_fields_selected (delete.tests.DeletionTests)']}, 'PASS_TO_PASS': {'success': ['test_fast_delete_empty_no_update_can_self_select (delete.tests.FastDeleteTests)', 'test_fast_delete_fk (delete.tests.FastDeleteTests)', 'test_fast_delete_inheritance (delete.tests.FastDeleteTests)', 'test_fast_delete_instance_set_pk_none (delete.tests.FastDeleteTests)', 'test_fast_delete_joined_qs (delete.tests.FastDeleteTests)', 'test_fast_delete_large_batch (delete.tests.FastDeleteTests)', 'test_fast_delete_m2m (delete.tests.FastDeleteTests)', 'test_fast_delete_qs (delete.tests.FastDeleteTests)', 'test_fast_delete_revm2m (delete.tests.FastDeleteTests)', 'test_auto (delete.tests.OnDeleteTests)', 'test_auto_nullable (delete.tests.OnDeleteTests)', 'test_cascade (delete.tests.OnDeleteTests)', 'test_cascade_from_child (delete.tests.OnDeleteTests)', 'test_cascade_from_parent (delete.tests.OnDeleteTests)', 'test_cascade_nullable (delete.tests.OnDeleteTests)', 'test_do_nothing (delete.tests.OnDeleteTests)', 'test_do_nothing_qscount (delete.tests.OnDeleteTests)', 'test_inheritance_cascade_down (delete.tests.OnDeleteTests)', 'test_inheritance_cascade_up (delete.tests.OnDeleteTests)', 'test_o2o_setnull (delete.tests.OnDeleteTests)', 'test_protect (delete.tests.OnDeleteTests)', 'test_setdefault (delete.tests.OnDeleteTests)', 'test_setdefault_none (delete.tests.OnDeleteTests)', 'test_setnull (delete.tests.OnDeleteTests)', 'test_setnull_from_child (delete.tests.OnDeleteTests)', 'test_setnull_from_parent (delete.tests.OnDeleteTests)', 'test_setvalue (delete.tests.OnDeleteTests)', 'test_bulk (delete.tests.DeletionTests)', 'test_can_defer_constraint_checks (delete.tests.DeletionTests)', 'test_delete_with_keeping_parents (delete.tests.DeletionTests)', 'test_delete_with_keeping_parents_relationships (delete.tests.DeletionTests)', 'test_deletion_order (delete.tests.DeletionTests)', 'test_hidden_related (delete.tests.DeletionTests)', 'test_instance_update (delete.tests.DeletionTests)', 'test_large_delete (delete.tests.DeletionTests)', 'test_large_delete_related (delete.tests.DeletionTests)', 'test_m2m (delete.tests.DeletionTests)', 'test_model_delete_returns_num_rows (delete.tests.DeletionTests)', 'test_proxied_model_duplicate_queries (delete.tests.DeletionTests)', 'test_queryset_delete_returns_num_rows (delete.tests.DeletionTests)', 'test_relational_post_delete_signals_happen_before_parent_object (delete.tests.DeletionTests)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-11087: resolved: False
+2026-10-06 22:57:06,013 - INFO - Attempting to stop container sweb.eval.django__django-11087.django__test-driven-development...
+2026-10-06 22:57:21,418 - INFO - Container sweb.eval.django__django-11087.django__test-driven-development stopped successfully.
+2026-10-06 22:57:21,418 - INFO - Attempting to remove container sweb.eval.django__django-11087.django__test-driven-development...
+2026-10-06 22:57:21,523 - INFO - Container sweb.eval.django__django-11087.django__test-driven-development removed successfully.

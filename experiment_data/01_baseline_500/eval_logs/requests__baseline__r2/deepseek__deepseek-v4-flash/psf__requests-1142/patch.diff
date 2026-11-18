@@ -1,0 +1,100 @@
+diff --git a/requests/models.py b/requests/models.py
+index 9926045..a0821d5 100644
+--- a/requests/models.py
++++ b/requests/models.py
+@@ -344,11 +344,11 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         is_stream = all([
+             hasattr(data, '__iter__'),
+             not isinstance(data, basestring),
+-            not isinstance(data, dict)
++            not isinstance(data, (dict, list, tuple))
+         ])
+ 
+         try:
+-            length = str(super_len(data))
++            length = super_len(data)
+         except (TypeError, AttributeError):
+             length = False
+ 
+@@ -359,7 +359,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+                 raise NotImplementedError('Streamed bodies and files are mutually exclusive.')
+ 
+             if length:
+-                self.headers['Content-Length'] = length
++                self.headers['Content-Length'] = str(length)
+             else:
+                 self.headers['Transfer-Encoding'] = 'chunked'
+         # Check if file, fo, generator, iterator.
+@@ -386,13 +386,16 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         self.body = body
+ 
+     def prepare_content_length(self, body):
+-        self.headers['Content-Length'] = '0'
+-        if hasattr(body, 'seek') and hasattr(body, 'tell'):
+-            body.seek(0, 2)
+-            self.headers['Content-Length'] = str(body.tell())
+-            body.seek(0, 0)
+-        elif body is not None:
+-            self.headers['Content-Length'] = str(len(body))
++        if body is not None:
++            if hasattr(body, 'seek') and hasattr(body, 'tell'):
++                body.seek(0, 2)
++                self.headers['Content-Length'] = str(body.tell())
++                body.seek(0, 0)
++            else:
++                self.headers['Content-Length'] = str(len(body))
++        elif (self.method not in ('GET', 'HEAD')
++                and self.headers.get('Content-Length') is None):
++            self.headers['Content-Length'] = '0'
+ 
+     def prepare_auth(self, auth):
+         """Prepares the given HTTP auth data."""
+diff --git a/requests/utils.py b/requests/utils.py
+index 34d92d2..86250f3 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -39,12 +39,39 @@ def dict_to_sequence(d):
+     return d
+ 
+ def super_len(o):
++    total_length = None
++    current_position = 0
++
+     if hasattr(o, '__len__'):
+-        return len(o)
+-    if hasattr(o, 'len'):
+-        return o.len
+-    if hasattr(o, 'fileno'):
+-        return os.fstat(o.fileno()).st_size
++        total_length = len(o)
++    elif hasattr(o, 'len'):
++        total_length = o.len
++    elif hasattr(o, 'fileno'):
++        try:
++            total_length = os.fstat(o.fileno()).st_size
++        except (AttributeError, IOError, OSError, TypeError, ValueError):
++            pass
++
++    if hasattr(o, 'tell'):
++        try:
++            current_position = o.tell()
++        except (IOError, OSError, TypeError, ValueError):
++            if total_length is not None:
++                current_position = total_length
++        else:
++            if hasattr(o, 'seek') and total_length is None:
++                # StringIO and BytesIO have seek but no usable fileno.
++                try:
++                    o.seek(0, 2)
++                    total_length = o.tell()
++                    o.seek(current_position)
++                except (IOError, OSError, TypeError, ValueError):
++                    total_length = 0
++
++    if total_length is None:
++        total_length = 0
++
++    return max(0, total_length - current_position)
+ 
+ def get_netrc_auth(url):
+     """Returns the Requests tuple auth for a given url from netrc."""

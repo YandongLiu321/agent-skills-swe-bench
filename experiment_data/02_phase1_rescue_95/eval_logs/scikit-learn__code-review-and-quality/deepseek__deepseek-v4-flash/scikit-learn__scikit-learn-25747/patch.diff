@@ -1,0 +1,50 @@
+diff --git a/sklearn/utils/_set_output.py b/sklearn/utils/_set_output.py
+index 335773c6a..3a40911ba 100755
+--- a/sklearn/utils/_set_output.py
++++ b/sklearn/utils/_set_output.py
+@@ -17,11 +17,17 @@ def _wrap_in_pandas_container(
+ 
+     If `data_to_wrap` is a DataFrame, then the `columns` and `index` will be changed
+     inplace. If `data_to_wrap` is a ndarray, then a new DataFrame is created with
+-    `columns` and `index`.
++    `columns` and `index`. If `data_to_wrap` is a Series, it is converted to a
++    DataFrame first.
++
++    If the number of rows in `data_to_wrap` differs from the length of `index`,
++    `index` is ignored. This happens when a transformer changes the number of
++    samples, for instance when it aggregates the input. In this case, the index
++    of the transformed output is kept.
+ 
+     Parameters
+     ----------
+-    data_to_wrap : {ndarray, dataframe}
++    data_to_wrap : {ndarray, dataframe, series}
+         Data to be wrapped as pandas dataframe.
+ 
+     columns : callable, ndarray, or None
+@@ -52,13 +58,24 @@ def _wrap_in_pandas_container(
+ 
+     pd = check_pandas_support("Setting output container to 'pandas'")
+ 
++    if isinstance(data_to_wrap, pd.Series):
++        data_to_wrap = data_to_wrap.to_frame()
++
++    # If `data_to_wrap` has a different number of rows than `index`, then the
++    # transformer changed the number of samples (e.g. it aggregates the input).
++    # In this case, we cannot use the index of the original input and keep the
++    # index of the transformed output instead.
+     if isinstance(data_to_wrap, pd.DataFrame):
+         if columns is not None:
+             data_to_wrap.columns = columns
+-        if index is not None:
++        if index is not None and len(index) == len(data_to_wrap):
+             data_to_wrap.index = index
+         return data_to_wrap
+ 
++    if index is not None and hasattr(data_to_wrap, "__len__"):
++        if len(data_to_wrap) != len(index):
++            index = None
++
+     return pd.DataFrame(data_to_wrap, index=index, columns=columns)
+ 
+ 

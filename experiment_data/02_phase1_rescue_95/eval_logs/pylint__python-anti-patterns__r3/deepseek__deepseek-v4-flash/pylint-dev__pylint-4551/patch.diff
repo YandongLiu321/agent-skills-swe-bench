@@ -1,0 +1,131 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..8d6eedf5 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -21,6 +21,7 @@ import traceback
+ import astroid
+ 
+ from pylint.pyreverse import utils
++from pylint.pyreverse.utils import get_annotation, infer_node
+ 
+ 
+ def _iface_hdlr(_):
+@@ -60,6 +61,42 @@ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+         raise astroid.exceptions.InferenceError()
+ 
+ 
++def _infer_annotation(node):
++    """Infer the type(s) denoted by the annotation of the given node.
++
++    Return an empty set when the node is not annotated.
++    """
++    annotation = get_annotation(node)
++    if annotation is None:
++        return set()
++    values = infer_node(annotation)
++    # An unresolvable annotation should not prevent the actual value of the
++    # assignment from being inferred.
++    return values if values != {astroid.Uninferable} else set()
++
++
++def _infer_annotation_from_assigned_value(node):
++    """Infer the type(s) denoted by the annotation of the assigned value.
++
++    Type hints of annotated arguments and variables must be propagated to
++    the attributes they are assigned to, as in::
++
++        def __init__(self, value: int):
++            self.value = value
++    """
++    value = getattr(node.parent, "value", None)
++    if not isinstance(value, astroid.Name):
++        return set()
++    try:
++        _, assignments = value.lookup(value.name)
++    except astroid.InferenceError:
++        return set()
++    values = set()
++    for assignment in assignments:
++        values |= _infer_annotation(assignment)
++    return values
++
++
+ class IdGeneratorMixIn:
+     """Mixin adding the ability to generate integer uid."""
+ 
+@@ -218,7 +255,12 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            # Type hints take precedence over the inferred type of the
++            # assigned value, so that for instance ``value: int = None``
++            # is resolved as an ``int`` and not as ``NoneType``.
++            values = _infer_annotation(node)
++            if not values:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +272,13 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            # Type hints take precedence over the inferred type of the
++            # assigned value (see ``visit_assignname``).
++            values = _infer_annotation(node)
++            if not values:
++                values = _infer_annotation_from_assigned_value(node)
++            if not values:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..a67bf9d7 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -45,6 +47,33 @@ def insert_default_options():
+         sys.argv.insert(1, arg)
+ 
+ 
++def get_annotation(node):
++    """Return the annotation of the given node, if any.
++
++    Annotations are supported for annotated assignments
++    (``variable: type``) and for function arguments
++    (``def function(argument: type)``).
++    """
++    if isinstance(node, astroid.AnnAssign):
++        return node.annotation
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign) and parent.target is node:
++        return parent.annotation
++    if isinstance(parent, astroid.Arguments):
++        for argument, annotation in zip(parent.args, parent.annotations or []):
++            if argument is node:
++                return annotation
++    return None
++
++
++def infer_node(node):
++    """Return a set with the inferred node(s) for the given node."""
++    try:
++        return set(node.infer())
++    except astroid.InferenceError:
++        return {astroid.Uninferable}
++
++
+ # astroid utilities ###########################################################
+ SPECIAL = re.compile(r"^__([^\W_]_*)+__$")
+ PRIVATE = re.compile(r"^__(_*[^\W_])+_?$")

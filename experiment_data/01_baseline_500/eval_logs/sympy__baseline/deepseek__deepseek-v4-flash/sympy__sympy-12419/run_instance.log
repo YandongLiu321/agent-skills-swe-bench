@@ -1,0 +1,156 @@
+2026-10-04 10:24:13,311 - INFO - Creating container for sympy__sympy-12419...
+2026-10-04 10:24:13,451 - INFO - Container for sympy__sympy-12419 created: 69a8b4bb7da0d1c7cddaa3a8ed40beac2940a87419aa188ac8000ccd34922259
+2026-10-04 10:24:13,671 - INFO - Container for sympy__sympy-12419 started: 69a8b4bb7da0d1c7cddaa3a8ed40beac2940a87419aa188ac8000ccd34922259
+2026-10-04 10:24:13,675 - INFO - Intermediate patch for sympy__sympy-12419 written to logs\run_evaluation\sympy__baseline\deepseek__deepseek-v4-flash\sympy__sympy-12419\patch.diff, now applying to container...
+2026-10-04 10:24:13,839 - INFO - >>>>> Applied Patch:
+Checking patch sympy/concrete/summations.py...
+Checking patch sympy/matrices/expressions/matexpr.py...
+Checking patch sympy/matrices/expressions/matmul.py...
+Applied patch sympy/concrete/summations.py cleanly.
+Applied patch sympy/matrices/expressions/matexpr.py cleanly.
+Applied patch sympy/matrices/expressions/matmul.py cleanly.
+
+2026-10-04 10:24:14,289 - INFO - Git diff before:
+diff --git a/sympy/concrete/summations.py b/sympy/concrete/summations.py
+index 372487664..46a9664b3 100755
+--- a/sympy/concrete/summations.py
++++ b/sympy/concrete/summations.py
+@@ -866,6 +866,31 @@ def eval_sum(f, limits):
+                     return None
+                 newargs.append((newexpr, arg.cond))
+             return f.func(*newargs)
++        elif (len(f.args) == 2 and f.args[1] == (S.Zero, True) and
++                i in f.args[0][1].free_symbols):
++            # If the condition depends on the summation variable, try to
++            # determine the intervals in which each expression is valid and
++            # sum over those intervals.  This handles, for example,
++            # Sum(Piecewise((1, (0 <= j) & (j <= n - 1)), (0, True)),
++            #     (j, 0, n - 1)) == n
++            from sympy.core.relational import Relational, LessThan, GreaterThan
++            cond = f.args[0][1]
++            rels = cond.atoms(Relational)
++            if rels and all(isinstance(rel, (LessThan, GreaterThan))
++                            for rel in rels):
++                try:
++                    intervals = f._sort_expr_cond(i, a, b)
++                except (AttributeError, NotImplementedError):
++                    intervals = None
++                if intervals is not None:
++                    newargs = []
++                    for lower, upper, expr in intervals:
++                        newexpr = eval_sum(expr, (i, lower, upper))
++                        if newexpr is None:
++                            break
++                        newargs.append(newexpr)
++                    else:
++                        return Add(*newargs)
+ 
+     if f.has(KroneckerDelta) and _has_simple_delta(f, limits[0]):
+         return deltasummation(f, limits)
+diff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py
+index b4d759836..cd6770d69 100755
+--- a/sympy/matrices/expressions/matexpr.py
++++ b/sympy/matrices/expressions/matexpr.py
+@@ -476,10 +476,8 @@ def conjugate(self):
+         return self
+ 
+     def _entry(self, i, j):
+-        if i == j:
+-            return S.One
+-        else:
+-            return S.Zero
++        from sympy import KroneckerDelta
++        return KroneckerDelta(i, j)
+ 
+     def _eval_determinant(self):
+         return S.One
+diff --git a/sympy/matrices/expressions/matmul.py b/sympy/matrices/expressions/matmul.py
+index 79f3035f9..d2ad9be0f 100755
+--- a/sympy/matrices/expressions/matmul.py
++++ b/sympy/matrices/expressions/matmul.py
+@@ -284,7 +284,7 @@ def refine_MatMul(expr, assumptions):
+             last = arg
+     newargs.append(last)
+ 
+-    return MatMul(*newargs)
++    return MatMul(*newargs).doit()
+ 
+ 
+ handlers_dict['MatMul'] = refine_MatMul
+2026-10-04 10:24:14,292 - INFO - Eval script for sympy__sympy-12419 written to logs\run_evaluation\sympy__baseline\deepseek__deepseek-v4-flash\sympy__sympy-12419\eval.sh; copying to container...
+2026-10-04 10:24:17,806 - INFO - Test runtime: 3.45 seconds
+2026-10-04 10:24:17,811 - INFO - Test output for sympy__sympy-12419 written to logs\run_evaluation\sympy__baseline\deepseek__deepseek-v4-flash\sympy__sympy-12419\test_output.txt
+2026-10-04 10:24:17,864 - INFO - Git diff after:
+diff --git a/sympy/concrete/summations.py b/sympy/concrete/summations.py
+index 372487664..46a9664b3 100755
+--- a/sympy/concrete/summations.py
++++ b/sympy/concrete/summations.py
+@@ -866,6 +866,31 @@ def eval_sum(f, limits):
+                     return None
+                 newargs.append((newexpr, arg.cond))
+             return f.func(*newargs)
++        elif (len(f.args) == 2 and f.args[1] == (S.Zero, True) and
++                i in f.args[0][1].free_symbols):
++            # If the condition depends on the summation variable, try to
++            # determine the intervals in which each expression is valid and
++            # sum over those intervals.  This handles, for example,
++            # Sum(Piecewise((1, (0 <= j) & (j <= n - 1)), (0, True)),
++            #     (j, 0, n - 1)) == n
++            from sympy.core.relational import Relational, LessThan, GreaterThan
++            cond = f.args[0][1]
++            rels = cond.atoms(Relational)
++            if rels and all(isinstance(rel, (LessThan, GreaterThan))
++                            for rel in rels):
++                try:
++                    intervals = f._sort_expr_cond(i, a, b)
++                except (AttributeError, NotImplementedError):
++                    intervals = None
++                if intervals is not None:
++                    newargs = []
++                    for lower, upper, expr in intervals:
++                        newexpr = eval_sum(expr, (i, lower, upper))
++                        if newexpr is None:
++                            break
++                        newargs.append(newexpr)
++                    else:
++                        return Add(*newargs)
+ 
+     if f.has(KroneckerDelta) and _has_simple_delta(f, limits[0]):
+         return deltasummation(f, limits)
+diff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py
+index b4d759836..cd6770d69 100755
+--- a/sympy/matrices/expressions/matexpr.py
++++ b/sympy/matrices/expressions/matexpr.py
+@@ -476,10 +476,8 @@ def conjugate(self):
+         return self
+ 
+     def _entry(self, i, j):
+-        if i == j:
+-            return S.One
+-        else:
+-            return S.Zero
++        from sympy import KroneckerDelta
++        return KroneckerDelta(i, j)
+ 
+     def _eval_determinant(self):
+         return S.One
+diff --git a/sympy/matrices/expressions/matmul.py b/sympy/matrices/expressions/matmul.py
+index 79f3035f9..d2ad9be0f 100755
+--- a/sympy/matrices/expressions/matmul.py
++++ b/sympy/matrices/expressions/matmul.py
+@@ -284,7 +284,7 @@ def refine_MatMul(expr, assumptions):
+             last = arg
+     newargs.append(last)
+ 
+-    return MatMul(*newargs)
++    return MatMul(*newargs).doit()
+ 
+ 
+ handlers_dict['MatMul'] = refine_MatMul
+2026-10-04 10:24:17,864 - INFO - Grading answer for sympy__sympy-12419...
+2026-10-04 10:24:17,871 - INFO - report: {'sympy__sympy-12419': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_Identity'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_shape', 'test_matexpr', 'test_subs', 'test_ZeroMatrix', 'test_ZeroMatrix_doit', 'test_Identity_doit', 'test_addition', 'test_multiplication', 'test_MatPow', 'test_MatrixSymbol', 'test_dense_conversion', 'test_free_symbols', 'test_zero_matmul', 'test_matadd_simplify', 'test_matmul_simplify', 'test_invariants', 'test_indexing', 'test_single_indexing', 'test_MatrixElement_commutative', 'test_MatrixSymbol_determinant', 'test_MatrixElement_diff', 'test_MatrixElement_doit', 'test_identity_powers', 'test_Zero_power', 'test_matrixelement_diff'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sympy__sympy-12419: resolved: True
+2026-10-04 10:24:17,875 - INFO - Attempting to stop container sweb.eval.sympy__sympy-12419.sympy__baseline...
+2026-10-04 10:24:33,247 - INFO - Container sweb.eval.sympy__sympy-12419.sympy__baseline stopped successfully.
+2026-10-04 10:24:33,247 - INFO - Attempting to remove container sweb.eval.sympy__sympy-12419.sympy__baseline...
+2026-10-04 10:24:33,380 - INFO - Container sweb.eval.sympy__sympy-12419.sympy__baseline removed successfully.

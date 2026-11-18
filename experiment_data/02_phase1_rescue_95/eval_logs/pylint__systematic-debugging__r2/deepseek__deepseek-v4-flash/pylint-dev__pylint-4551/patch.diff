@@ -1,0 +1,119 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..d38b0e66 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -76,6 +76,57 @@ class IdGeneratorMixIn:
+         return self.id_count
+ 
+ 
++def _infer(node):
++    """Infer a node, returning an empty set on inference error."""
++    try:
++        return set(node.infer())
++    except astroid.InferenceError:
++        return set()
++
++
++def _find_argument_annotation(node, args):
++    """Find the annotation of a function argument matching ``node``."""
++    name = getattr(node, "name", node)
++    for arg_names, annotations in (
++        (args.args, args.annotations),
++        (args.posonlyargs, args.posonlyargs_annotations),
++        (args.kwonlyargs, args.kwonlyargs_annotations),
++    ):
++        for arg, annotation in zip(arg_names, annotations or ()):
++            if arg.name == name:
++                return annotation
++    return None
++
++
++def _get_annotation(node):
++    """Return the type annotation node of an assignment, if any.
++
++    ``node`` is expected to be an astroid.AssignName or astroid.AssignAttr
++    node.
++    """
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Arguments):
++        return _find_argument_annotation(node, parent)
++    return None
++
++
++def _get_assignattr_annotation(node):
++    """Return the type annotation node of an instance attribute assignment."""
++    annotation = _get_annotation(node)
++    if annotation is not None:
++        return annotation
++    # ``self.attr = arg`` where ``arg`` is an annotated argument.
++    if isinstance(node.parent, astroid.Assign):
++        value = node.parent.value
++        if isinstance(value, astroid.Name):
++            scope = value.scope()
++            if isinstance(scope, astroid.FunctionDef):
++                return _find_argument_annotation(value, scope.args)
++    return None
++
++
+ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+     """Walk on the project tree and resolve relationships.
+ 
+@@ -218,7 +269,10 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            annotation = _get_annotation(node)
++            values = _infer(annotation) if annotation is not None else set()
++            if not values:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +284,10 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            annotation = _get_assignattr_annotation(node)
++            values = _infer(annotation) if annotation is not None else set()
++            if not values:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..476319a4 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -45,6 +47,19 @@ def insert_default_options():
+         sys.argv.insert(1, arg)
+ 
+ 
++def get_annotation_label(return_node):
++    """Return a textual label for a type annotation node."""
++    if return_node is None:
++        return None
++    if isinstance(return_node, astroid.Name):
++        label = return_node.name
++    else:
++        label = return_node.as_string()
++    if label.startswith("Optional[") and label.endswith("]"):
++        label = label[9:-1]
++    return label
++
++
+ # astroid utilities ###########################################################
+ SPECIAL = re.compile(r"^__([^\W_]_*)+__$")
+ PRIVATE = re.compile(r"^__(_*[^\W_])+_?$")

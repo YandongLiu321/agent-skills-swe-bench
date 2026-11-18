@@ -1,0 +1,53 @@
+diff --git a/pylint/lint/parallel.py b/pylint/lint/parallel.py
+index 646d2699..2873701b 100644
+--- a/pylint/lint/parallel.py
++++ b/pylint/lint/parallel.py
+@@ -137,8 +137,10 @@ def check_parallel(
+     # is identical to the linter object here. This is required so that
+     # a custom PyLinter object can be used.
+     initializer = functools.partial(_worker_initialize, arguments=arguments)
++    # ``multiprocessing.Pool`` requires at least one process. Guard against a
++    # mis-detected CPU count (e.g. ``--jobs=0`` in a container) returning zero.
+     with multiprocessing.Pool(
+-        jobs, initializer=initializer, initargs=[dill.dumps(linter)]
++        max(1, jobs), initializer=initializer, initargs=[dill.dumps(linter)]
+     ) as pool:
+         linter.open()
+         all_stats = []
+diff --git a/pylint/lint/run.py b/pylint/lint/run.py
+index a7e5d557..4f0c6707 100644
+--- a/pylint/lint/run.py
++++ b/pylint/lint/run.py
+@@ -58,7 +58,13 @@ def _query_cpu() -> int | None:
+             cpu_shares = int(file.read().rstrip())
+         # For AWS, gives correct value * 1024.
+         avail_cpu = int(cpu_shares / 1024)
+-    return avail_cpu
++
++    if avail_cpu is not None:
++        # A container can be allotted less than one CPU (e.g. when
++        # ``cpu.shares`` is very small). ``multiprocessing`` requires a value
++        # of at least one, so never report zero.
++        return max(1, avail_cpu)
++    return None
+ 
+ 
+ def _cpu_count() -> int:
+@@ -76,7 +82,7 @@ def _cpu_count() -> int:
+     else:
+         cpu_count = 1
+     if cpu_share is not None:
+-        return min(cpu_share, cpu_count)
++        return max(1, min(cpu_share, cpu_count))
+     return cpu_count
+ 
+ 
+@@ -182,7 +188,7 @@ group are mutually exclusive.",
+                 )
+                 linter.set_option("jobs", 1)
+             elif linter.config.jobs == 0:
+-                linter.config.jobs = _cpu_count()
++                linter.config.jobs = max(1, _cpu_count())
+ 
+         if self._output:
+             try:

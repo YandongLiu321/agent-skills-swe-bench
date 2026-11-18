@@ -1,0 +1,54 @@
+diff --git a/sympy/core/relational.py b/sympy/core/relational.py
+index e2e0b7fbcc..8c0aaf94e3 100644
+--- a/sympy/core/relational.py
++++ b/sympy/core/relational.py
+@@ -305,6 +305,8 @@ def _eval_simplify(self, **kwargs):
+         r = self
+         r = r.func(*[i.simplify(**kwargs) for i in r.args])
+         if r.is_Relational:
++            if not isinstance(r.lhs, Expr) or not isinstance(r.rhs, Expr):
++                return r
+             dif = r.lhs - r.rhs
+             # replace dif with a valid Number that will
+             # allow a definitive comparison with 0
+diff --git a/sympy/sets/handlers/comparison.py b/sympy/sets/handlers/comparison.py
+index 6f7a19fccf..25160e3e30 100644
+--- a/sympy/sets/handlers/comparison.py
++++ b/sympy/sets/handlers/comparison.py
+@@ -49,6 +49,16 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return tfn[fuzzy_and(map(fuzzy_bool, eqs))]
+ 
+ 
++@dispatch(ProductSet, FiniteSet) # type:ignore
++def _eval_is_eq(lhs, rhs): # noqa: F811
++    return tfn[fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])]
++
++
++@dispatch(FiniteSet, ProductSet) # type:ignore
++def _eval_is_eq(lhs, rhs): # noqa: F811
++    return tfn[fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])]
++
++
+ @dispatch(Set, Basic) # type:ignore
+ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return False
+diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py
+index 3c4aa86e36..b73cd7601e 100644
+--- a/sympy/sets/sets.py
++++ b/sympy/sets/sets.py
+@@ -801,6 +801,15 @@ def _contains(self, element):
+ 
+         return fuzzy_and(s._contains(e) for s, e in zip(self.sets, element))
+ 
++    def _eval_is_subset(self, other):
++        if self.is_finite_set:
++            return fuzzy_and(other._contains(Tuple(*e)) for e in self)
++
++    def _eval_rewrite_as_FiniteSet(self, *args, **kwargs):
++        if self.is_finite_set:
++            return FiniteSet(*self)
++        return None
++
+     def as_relational(self, *symbols):
+         symbols = [_sympify(s) for s in symbols]
+         if len(symbols) != len(self.sets) or not all(

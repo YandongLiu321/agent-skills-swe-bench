@@ -1,0 +1,128 @@
+diff --git a/CHANGES b/CHANGES
+index ce1185c76..2f997eefe 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -31,6 +31,8 @@ Deprecated
+ Features added
+ --------------
+ 
++* #10585: Add the :event:`include-read` event, which is emitted when a file is
++  read via the :dudir:`include` directive.
+ * #11526: Support ``os.PathLike`` types and ``pathlib.Path`` objects
+   in many more places.
+ * #5474: coverage: Print summary statistics tables.
+diff --git a/doc/extdev/appapi.rst b/doc/extdev/appapi.rst
+index 78e88b063..583af8ce4 100644
+--- a/doc/extdev/appapi.rst
++++ b/doc/extdev/appapi.rst
+@@ -260,6 +260,20 @@ Here is a more detailed list of these events.
+ 
+    .. versionadded:: 0.5
+ 
++.. event:: include-read (app, relative_path, parent_docname, source)
++
++   Emitted when a file is read via the :dudir:`include` directive.
++
++   The *source* argument is a list whose single element is the contents of the
++   included file.  You can process the contents and replace this item to
++   implement source-level transformations.
++
++   The *relative_path* is the path of the included file relative to the source
++   directory, and the *parent_docname* is the name of the document containing
++   the :dudir:`include` directive.
++
++   .. versionadded:: 7.2
++
+ .. event:: object-description-transform (app, domain, objtype, contentnode)
+ 
+    Emitted when an object description directive has run.  The *domain* and
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..9f4b5bd89 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,10 +1,13 @@
+ from __future__ import annotations
+ 
+ import re
++from contextlib import contextmanager
+ from typing import TYPE_CHECKING, Any, cast
+ 
+ from docutils import nodes
++from docutils.io import FileInput
+ from docutils.parsers.rst import directives
++from docutils.parsers.rst.directives import misc as misc_directives
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+ from docutils.parsers.rst.directives.misc import Class
+ from docutils.parsers.rst.directives.misc import Include as BaseInclude
+@@ -19,9 +22,12 @@ from sphinx.util.matching import Matcher, patfilter
+ from sphinx.util.nodes import explicit_title_re
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Iterator
++
+     from docutils.nodes import Element, Node
+ 
+     from sphinx.application import Sphinx
++    from sphinx.environment import BuildEnvironment
+     from sphinx.util.typing import OptionSpec
+ 
+ 
+@@ -362,6 +368,36 @@ class Only(SphinxDirective):
+             memo.section_level = surrounding_section_level
+ 
+ 
++@contextmanager
++def _emit_include_read_event(
++    env: BuildEnvironment, relative_path: str,
++) -> Iterator[None]:
++    """Emit the :event:`include-read` event for the ``include`` directive."""
++
++    class _IncludeFileInput(FileInput):
++        def read(self) -> str:
++            content = super().read()
++            source = [content]
++            env.events.emit('include-read', relative_path, env.docname, source)
++            return source[0]
++
++    original_io = misc_directives.io
++
++    class _IOModuleProxy:
++        """Proxy module exposing a patched ``FileInput`` class."""
++
++        FileInput = _IncludeFileInput
++
++        def __getattr__(self, name: str) -> Any:
++            return getattr(original_io, name)
++
++    misc_directives.io = _IOModuleProxy()
++    try:
++        yield
++    finally:
++        misc_directives.io = original_io
++
++
+ class Include(BaseInclude, SphinxDirective):
+     """
+     Like the standard "Include" directive, but interprets absolute paths
+@@ -376,7 +412,8 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++        with _emit_include_read_event(self.env, rel_filename):
++            return super().run()
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:
+diff --git a/sphinx/events.py b/sphinx/events.py
+index c3fdb37c1..f4f0b83da 100644
+--- a/sphinx/events.py
++++ b/sphinx/events.py
+@@ -42,6 +42,7 @@ core_events = {
+     'env-merge-info': 'env, read docnames, other env instance',
+     'missing-reference': 'env, node, contnode',
+     'warn-missing-reference': 'domain, node',
++    'include-read': 'relative path, parent docname, source text',
+     'doctree-resolved': 'doctree, docname',
+     'env-updated': 'env',
+     'build-finished': 'exception',

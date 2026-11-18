@@ -1,0 +1,57 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index d69c24419b..a94615c577 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -1571,6 +1571,9 @@ class Query(BaseExpression):
+                 nullable = self.is_nullable(join.join_field)
+             else:
+                 nullable = True
++            if join.filtered_relation:
++                # FilteredRelation joins are conditional and can produce NULLs.
++                nullable = True
+             connection = Join(
+                 opts.db_table, alias, table_alias, INNER, join.join_field,
+                 nullable, filtered_relation=filtered_relation,
+@@ -1666,6 +1669,7 @@ class Query(BaseExpression):
+             filter_expr = (filter_lhs, OuterRef(filter_rhs.name))
+         # Generate the inner query.
+         query = Query(self.model)
++        query._filtered_relations = self._filtered_relations.copy()
+         query.add_filter(filter_expr)
+         query.clear_ordering(True)
+         # Try to have as simple as possible subquery -> trim leading joins from
+@@ -2145,6 +2149,34 @@ class Query(BaseExpression):
+         if self.alias_map[lookup_tables[trimmed_paths + 1]].join_type != LOUTER:
+             select_fields = [r[0] for r in join_field.related_fields]
+             select_alias = lookup_tables[trimmed_paths + 1]
++            # FilteredRelation conditions are part of the join's ON clause.
++            # They need to be moved to the WHERE clause before the join's
++            # aliases are relabelled or the join itself is removed.
++            filtered_relations = [
++                (alias, join.filtered_relation) for alias, join in self.alias_map.items()
++                if join.filtered_relation is not None and join.join_type != LOUTER
++            ]
++            if filtered_relations:
++                alias_refcount = self.alias_refcount.copy()
++                referenced_aliases = set()
++                for alias, filtered_relation in filtered_relations:
++                    where = self.build_filtered_relation_q(
++                        filtered_relation.condition,
++                        reuse=set(filtered_relation.path),
++                    )
++                    referenced_aliases.update(
++                        col.alias for col in where.get_group_by_cols()
++                        if isinstance(col, Col)
++                    )
++                    self.where.add(where, AND)
++                    self.alias_map[alias].filtered_relation = None
++                self.reset_refcounts(alias_refcount)
++                # Conditions may reference joins that are about to be removed.
++                # Keep those in the query so the referenced columns remain
++                # available.
++                for alias in lookup_tables[:trimmed_paths + 1]:
++                    if alias in referenced_aliases:
++                        self.ref_alias(alias)
+             self.unref_alias(lookup_tables[trimmed_paths])
+             extra_restriction = join_field.get_extra_restriction(
+                 self.where_class, None, lookup_tables[trimmed_paths + 1])

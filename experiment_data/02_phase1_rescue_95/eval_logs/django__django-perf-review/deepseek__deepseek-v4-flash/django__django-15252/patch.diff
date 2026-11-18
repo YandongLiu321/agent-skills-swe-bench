@@ -1,0 +1,118 @@
+diff --git a/django/db/migrations/executor.py b/django/db/migrations/executor.py
+index aa2fe0883b..056136bd3b 100755
+--- a/django/db/migrations/executor.py
++++ b/django/db/migrations/executor.py
+@@ -95,10 +95,6 @@ class MigrationExecutor:
+         Django first needs to create all project states before a migration is
+         (un)applied and in a second step run all the database operations.
+         """
+-        # The django_migrations table must be present to record applied
+-        # migrations.
+-        self.recorder.ensure_schema()
+-
+         if plan is None:
+             plan = self.migration_plan(targets)
+         # Create the forwards plan Django would follow on an empty database
+@@ -219,9 +215,65 @@ class MigrationExecutor:
+ 
+         return state
+ 
++    def _models_in_migration(self, migration):
++        """
++        Yield the lowercased names of the models referenced by the migration's
++        operations.
++        """
++        def models_for_operation(operation):
++            if isinstance(operation, migrations.SeparateDatabaseAndState):
++                for database_operation in operation.database_operations:
++                    yield from models_for_operation(database_operation)
++                return
++            if isinstance(operation, migrations.RenameModel):
++                yield operation.old_name_lower
++                yield operation.new_name_lower
++                return
++            model_name = getattr(operation, 'model_name', None)
++            if model_name is not None:
++                yield model_name.lower()
++                return
++            if hasattr(operation, 'references_model') and not hasattr(operation, 'hints'):
++                name = getattr(operation, 'name', None)
++                if name is not None:
++                    yield name.lower()
++                    return
++            for state_operation in getattr(operation, 'state_operations', None) or ():
++                yield from models_for_operation(state_operation)
++
++        for operation in migration.operations:
++            yield from models_for_operation(operation)
++            model_name = (getattr(operation, 'hints', None) or {}).get('model_name')
++            if model_name:
++                yield model_name.lower()
++
++    def _migration_is_allowed(self, state, migration):
++        """
++        Return whether the routers allow migrating at least one of the models
++        involved in the migration on this connection.
++        """
++        model_names = list(self._models_in_migration(migration))
++        if not model_names:
++            # Apps without models (e.g. data migrations) are handled by
++            # calling allow_migrate() without a model_name.
++            return router.allow_migrate(self.connection.alias, migration.app_label)
++        for model_name in model_names:
++            try:
++                model = state.apps.get_model(migration.app_label, model_name)
++            except LookupError:
++                allow = router.allow_migrate(
++                    self.connection.alias, migration.app_label, model_name=model_name,
++                )
++            else:
++                allow = router.allow_migrate_model(self.connection.alias, model)
++            if allow:
++                return True
++        return False
++
+     def apply_migration(self, state, migration, fake=False, fake_initial=False):
+         """Run a migration forwards."""
+         migration_recorded = False
++        record = self._migration_is_allowed(state, migration)
+         if self.progress_callback:
+             self.progress_callback("apply_start", migration, fake)
+         if not fake:
+@@ -235,9 +287,10 @@ class MigrationExecutor:
+                 with self.connection.schema_editor(atomic=migration.atomic) as schema_editor:
+                     state = migration.apply(state, schema_editor)
+                     if not schema_editor.deferred_sql:
+-                        self.record_migration(migration)
++                        if record:
++                            self.record_migration(migration)
+                         migration_recorded = True
+-        if not migration_recorded:
++        if not migration_recorded and record:
+             self.record_migration(migration)
+         # Report progress
+         if self.progress_callback:
+@@ -254,16 +307,18 @@ class MigrationExecutor:
+ 
+     def unapply_migration(self, state, migration, fake=False):
+         """Run a migration backwards."""
++        record = self._migration_is_allowed(state, migration)
+         if self.progress_callback:
+             self.progress_callback("unapply_start", migration, fake)
+         if not fake:
+             with self.connection.schema_editor(atomic=migration.atomic) as schema_editor:
+                 state = migration.unapply(state, schema_editor)
+-        # For replacement migrations, also record individual statuses.
+-        if migration.replaces:
+-            for app_label, name in migration.replaces:
+-                self.recorder.record_unapplied(app_label, name)
+-        self.recorder.record_unapplied(migration.app_label, migration.name)
++        if record:
++            # For replacement migrations, also record individual statuses.
++            if migration.replaces:
++                for app_label, name in migration.replaces:
++                    self.recorder.record_unapplied(app_label, name)
++            self.recorder.record_unapplied(migration.app_label, migration.name)
+         # Report progress
+         if self.progress_callback:
+             self.progress_callback("unapply_success", migration, fake)

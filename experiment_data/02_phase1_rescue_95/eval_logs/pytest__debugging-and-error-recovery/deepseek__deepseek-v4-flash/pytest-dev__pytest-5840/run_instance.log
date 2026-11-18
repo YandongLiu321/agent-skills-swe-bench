@@ -1,0 +1,150 @@
+2026-10-07 03:55:29,707 - INFO - Creating container for pytest-dev__pytest-5840...
+2026-10-07 03:55:29,772 - INFO - Container for pytest-dev__pytest-5840 created: 795af422ca673c492df6eb818caabff621fe3691344cd97c9697ec001fdd91df
+2026-10-07 03:55:29,935 - INFO - Container for pytest-dev__pytest-5840 started: 795af422ca673c492df6eb818caabff621fe3691344cd97c9697ec001fdd91df
+2026-10-07 03:55:29,936 - INFO - Intermediate patch for pytest-dev__pytest-5840 written to logs\run_evaluation\pytest__debugging-and-error-recovery\deepseek__deepseek-v4-flash\pytest-dev__pytest-5840\patch.diff, now applying to container...
+2026-10-07 03:55:30,018 - INFO - >>>>> Applied Patch:
+Checking patch src/_pytest/config/__init__.py...
+Applied patch src/_pytest/config/__init__.py cleanly.
+
+2026-10-07 03:55:30,080 - INFO - Git diff before:
+diff --git a/src/_pytest/config/__init__.py b/src/_pytest/config/__init__.py
+index 3a0eca546..5d79289de 100644
+--- a/src/_pytest/config/__init__.py
++++ b/src/_pytest/config/__init__.py
+@@ -406,7 +406,14 @@ class PytestPluginManager(PluginManager):
+         else:
+             directory = path
+ 
+-        directory = unique_path(directory)
++        # Use the real path (which preserves the case) to locate and import
++        # the conftest.py files, but ``unique_path`` (which lowercases on
++        # case-insensitive file systems such as Windows) as the cache key.
++        # Python's import system is case-sensitive for module names even on
++        # case-insensitive file systems, so the casing of the path used to
++        # derive the module name must be preserved.
++        directory = directory.realpath()
++        unique_directory = unique_path(directory)
+ 
+         # XXX these days we may rather want to use config.rootdir
+         # and allow users to opt into looking into the rootdir parent
+@@ -419,7 +426,7 @@ class PytestPluginManager(PluginManager):
+             if conftestpath.isfile():
+                 mod = self._importconftest(conftestpath)
+                 clist.append(mod)
+-        self._dirpath2confmods[directory] = clist
++        self._dirpath2confmods[unique_directory] = clist
+         return clist
+ 
+     def _rget_with_confmod(self, name, path):
+@@ -432,13 +439,19 @@ class PytestPluginManager(PluginManager):
+         raise KeyError(name)
+ 
+     def _importconftest(self, conftestpath):
+-        # Use realpath to avoid loading the same conftest twice
+-        # with build systems that create build directories containing
+-        # symlinks to actual files.
+-        conftestpath = unique_path(conftestpath)
++        # Use unique_path as the cache key so that the same conftest is not
++        # loaded twice when reached through different path casings or
++        # symlinks (see also the build directory comment below).
++        unique_conftestpath = unique_path(conftestpath)
+         try:
+-            return self._conftestpath2mod[conftestpath]
++            return self._conftestpath2mod[unique_conftestpath]
+         except KeyError:
++            # Use realpath to avoid loading the same conftest twice
++            # with build systems that create build directories containing
++            # symlinks to actual files.  Contrary to unique_path, realpath
++            # preserves the case of the path, which is important because the
++            # module name derived from the path is case-sensitive on Windows.
++            conftestpath = conftestpath.realpath()
+             pkgpath = conftestpath.pypkgpath()
+             if pkgpath is None:
+                 _ensure_removed_sysmodule(conftestpath.purebasename)
+@@ -454,8 +467,8 @@ class PytestPluginManager(PluginManager):
+                 raise ConftestImportFailure(conftestpath, sys.exc_info())
+ 
+             self._conftest_plugins.add(mod)
+-            self._conftestpath2mod[conftestpath] = mod
+-            dirpath = conftestpath.dirpath()
++            self._conftestpath2mod[unique_conftestpath] = mod
++            dirpath = unique_conftestpath.dirpath()
+             if dirpath in self._dirpath2confmods:
+                 for path, mods in self._dirpath2confmods.items():
+                     if path and path.relto(dirpath) or path == dirpath:
+2026-10-07 03:55:30,082 - INFO - Eval script for pytest-dev__pytest-5840 written to logs\run_evaluation\pytest__debugging-and-error-recovery\deepseek__deepseek-v4-flash\pytest-dev__pytest-5840\eval.sh; copying to container...
+2026-10-07 03:55:40,079 - INFO - Test runtime: 9.96 seconds
+2026-10-07 03:55:40,080 - INFO - Test output for pytest-dev__pytest-5840 written to logs\run_evaluation\pytest__debugging-and-error-recovery\deepseek__deepseek-v4-flash\pytest-dev__pytest-5840\test_output.txt
+2026-10-07 03:55:40,115 - INFO - Git diff after:
+diff --git a/src/_pytest/config/__init__.py b/src/_pytest/config/__init__.py
+index 3a0eca546..5d79289de 100644
+--- a/src/_pytest/config/__init__.py
++++ b/src/_pytest/config/__init__.py
+@@ -406,7 +406,14 @@ class PytestPluginManager(PluginManager):
+         else:
+             directory = path
+ 
+-        directory = unique_path(directory)
++        # Use the real path (which preserves the case) to locate and import
++        # the conftest.py files, but ``unique_path`` (which lowercases on
++        # case-insensitive file systems such as Windows) as the cache key.
++        # Python's import system is case-sensitive for module names even on
++        # case-insensitive file systems, so the casing of the path used to
++        # derive the module name must be preserved.
++        directory = directory.realpath()
++        unique_directory = unique_path(directory)
+ 
+         # XXX these days we may rather want to use config.rootdir
+         # and allow users to opt into looking into the rootdir parent
+@@ -419,7 +426,7 @@ class PytestPluginManager(PluginManager):
+             if conftestpath.isfile():
+                 mod = self._importconftest(conftestpath)
+                 clist.append(mod)
+-        self._dirpath2confmods[directory] = clist
++        self._dirpath2confmods[unique_directory] = clist
+         return clist
+ 
+     def _rget_with_confmod(self, name, path):
+@@ -432,13 +439,19 @@ class PytestPluginManager(PluginManager):
+         raise KeyError(name)
+ 
+     def _importconftest(self, conftestpath):
+-        # Use realpath to avoid loading the same conftest twice
+-        # with build systems that create build directories containing
+-        # symlinks to actual files.
+-        conftestpath = unique_path(conftestpath)
++        # Use unique_path as the cache key so that the same conftest is not
++        # loaded twice when reached through different path casings or
++        # symlinks (see also the build directory comment below).
++        unique_conftestpath = unique_path(conftestpath)
+         try:
+-            return self._conftestpath2mod[conftestpath]
++            return self._conftestpath2mod[unique_conftestpath]
+         except KeyError:
++            # Use realpath to avoid loading the same conftest twice
++            # with build systems that create build directories containing
++            # symlinks to actual files.  Contrary to unique_path, realpath
++            # preserves the case of the path, which is important because the
++            # module name derived from the path is case-sensitive on Windows.
++            conftestpath = conftestpath.realpath()
+             pkgpath = conftestpath.pypkgpath()
+             if pkgpath is None:
+                 _ensure_removed_sysmodule(conftestpath.purebasename)
+@@ -454,8 +467,8 @@ class PytestPluginManager(PluginManager):
+                 raise ConftestImportFailure(conftestpath, sys.exc_info())
+ 
+             self._conftest_plugins.add(mod)
+-            self._conftestpath2mod[conftestpath] = mod
+-            dirpath = conftestpath.dirpath()
++            self._conftestpath2mod[unique_conftestpath] = mod
++            dirpath = unique_conftestpath.dirpath()
+             if dirpath in self._dirpath2confmods:
+                 for path, mods in self._dirpath2confmods.items():
+                     if path and path.relto(dirpath) or path == dirpath:
+2026-10-07 03:55:40,115 - INFO - Grading answer for pytest-dev__pytest-5840...
+2026-10-07 03:55:40,120 - INFO - report: {'pytest-dev__pytest-5840': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['testing/test_conftest.py::test_setinitial_conftest_subdirs[test]', 'testing/test_conftest.py::test_setinitial_conftest_subdirs[tests]']}, 'PASS_TO_PASS': {'success': ['testing/test_conftest.py::TestConftestValueAccessGlobal::test_basic_init[global]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_immediate_initialiation_and_incremental_are_the_same[global]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_value_access_not_existing[global]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_value_access_by_path[global]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_value_access_with_confmod[global]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_basic_init[inpackage]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_immediate_initialiation_and_incremental_are_the_same[inpackage]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_value_access_not_existing[inpackage]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_value_access_by_path[inpackage]', 'testing/test_conftest.py::TestConftestValueAccessGlobal::test_value_access_with_confmod[inpackage]', 'testing/test_conftest.py::test_conftest_in_nonpkg_with_init', 'testing/test_conftest.py::test_doubledash_considered', 'testing/test_conftest.py::test_issue151_load_all_conftests', 'testing/test_conftest.py::test_conftest_global_import', 'testing/test_conftest.py::test_conftestcutdir', 'testing/test_conftest.py::test_conftestcutdir_inplace_considered', 'testing/test_conftest.py::test_setinitial_conftest_subdirs[whatever]', 'testing/test_conftest.py::test_setinitial_conftest_subdirs[.dotdir]', 'testing/test_conftest.py::test_conftest_confcutdir', 'testing/test_conftest.py::test_conftest_symlink', 'testing/test_conftest.py::test_conftest_symlink_files', 'testing/test_conftest.py::test_conftest_uppercase', 'testing/test_conftest.py::test_no_conftest', 'testing/test_conftest.py::test_conftest_existing_resultlog', 'testing/test_conftest.py::test_conftest_existing_junitxml', 'testing/test_conftest.py::test_conftest_import_order', 'testing/test_conftest.py::test_fixture_dependency', 'testing/test_conftest.py::test_conftest_found_with_double_dash', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[runner-..-3]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[package-..-3]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[swc-../..-3]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[snc-../..-3]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[runner-../package-3]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[package-.-3]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[swc-..-3]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[snc-..-3]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[runner-../package/swc-1]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[package-./swc-1]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[swc-.-1]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[snc-../swc-1]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[runner-../package/snc-1]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[package-./snc-1]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[swc-../snc-1]', 'testing/test_conftest.py::TestConftestVisibility::test_parsefactories_relative_node_ids[snc-.-1]', 'testing/test_conftest.py::test_search_conftest_up_to_inifile[.-2-0]', 'testing/test_conftest.py::test_search_conftest_up_to_inifile[src-1-1]', 'testing/test_conftest.py::test_search_conftest_up_to_inifile[None-1-1]', 'testing/test_conftest.py::test_issue1073_conftest_special_objects', 'testing/test_conftest.py::test_conftest_exception_handling', 'testing/test_conftest.py::test_hook_proxy', 'testing/test_conftest.py::test_required_option_help'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pytest-dev__pytest-5840: resolved: False
+2026-10-07 03:55:40,121 - INFO - Attempting to stop container sweb.eval.pytest-dev__pytest-5840.pytest__debugging-and-error-recovery...
+2026-10-07 03:55:55,371 - INFO - Container sweb.eval.pytest-dev__pytest-5840.pytest__debugging-and-error-recovery stopped successfully.
+2026-10-07 03:55:55,371 - INFO - Attempting to remove container sweb.eval.pytest-dev__pytest-5840.pytest__debugging-and-error-recovery...
+2026-10-07 03:55:55,470 - INFO - Container sweb.eval.pytest-dev__pytest-5840.pytest__debugging-and-error-recovery removed successfully.

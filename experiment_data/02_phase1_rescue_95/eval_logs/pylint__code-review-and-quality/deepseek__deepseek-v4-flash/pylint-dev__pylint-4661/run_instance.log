@@ -1,0 +1,264 @@
+2026-10-03 17:34:19,603 - INFO - Creating container for pylint-dev__pylint-4661...
+2026-10-03 17:34:19,701 - INFO - Container for pylint-dev__pylint-4661 created: ab35d609046db0b2a402bf5ff619550498d381e2f89f3e211e5061e483bedffa
+2026-10-03 17:34:19,887 - INFO - Container for pylint-dev__pylint-4661 started: ab35d609046db0b2a402bf5ff619550498d381e2f89f3e211e5061e483bedffa
+2026-10-03 17:34:19,889 - INFO - Intermediate patch for pylint-dev__pylint-4661 written to logs\run_evaluation\pylint__code-review-and-quality\deepseek__deepseek-v4-flash\pylint-dev__pylint-4661\patch.diff, now applying to container...
+2026-10-03 17:34:20,061 - INFO - >>>>> Applied Patch:
+Checking patch ChangeLog...
+Checking patch doc/faq.rst...
+Checking patch doc/whatsnew/2.10.rst...
+Checking patch pylint/config/__init__.py...
+Applied patch ChangeLog cleanly.
+Applied patch doc/faq.rst cleanly.
+Applied patch doc/whatsnew/2.10.rst cleanly.
+Applied patch pylint/config/__init__.py cleanly.
+
+2026-10-03 17:34:20,239 - INFO - Git diff before:
+diff --git a/ChangeLog b/ChangeLog
+index 047ee370..325f00e0 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -21,6 +21,13 @@ Release date: TBA
+ 
+   Close #4120
+ 
++* The persistent data used to compare successive runs is now stored in the user
++  cache directory, following the XDG Base Directory Specification, instead of
++  the ``~/.pylint.d`` directory. The ``PYLINTHOME`` environment variable can
++  still be used to override the location.
++
++  Closes #4544
++
+ 
+ What's New in Pylint 2.9.6?
+ ===========================
+diff --git a/doc/faq.rst b/doc/faq.rst
+index c817855f..4c929707 100644
+--- a/doc/faq.rst
++++ b/doc/faq.rst
+@@ -93,10 +93,11 @@ localized using the following rules:
+ 
+ * value of the PYLINTHOME environment variable if set
+ 
+-* ".pylint.d" subdirectory of the user's home directory if it is found
+-	(not always findable on Windows platforms)
++* the user cache directory, as defined by the XDG Base Directory Specification
++	(``$XDG_CACHE_HOME/pylint``, which defaults to ``~/.cache/pylint`` on Linux)
+ 
+-* ".pylint.d" directory in the current directory
++* ".pylint.d" directory in the current directory (only if the user's home
++	directory cannot be determined)
+ 
+ 3.3 How do I find the option name (for pylintrc) corresponding to a specific command line option?
+ --------------------------------------------------------------------------------------------------------
+diff --git a/doc/whatsnew/2.10.rst b/doc/whatsnew/2.10.rst
+index e94530bf..8d084297 100644
+--- a/doc/whatsnew/2.10.rst
++++ b/doc/whatsnew/2.10.rst
+@@ -24,3 +24,10 @@ Other Changes
+ * Performance of the Similarity checker has been improved.
+ 
+ * Added ``time.clock`` to deprecated functions/methods for python 3.3
++
++* The persistent data used to compare successive runs is now stored in the user
++  cache directory, following the XDG Base Directory Specification, instead of
++  the ``~/.pylint.d`` directory. The ``PYLINTHOME`` environment variable can
++  still be used to override the location.
++
++  Closes #4544
+diff --git a/pylint/config/__init__.py b/pylint/config/__init__.py
+index 84774d0e..178c7484 100644
+--- a/pylint/config/__init__.py
++++ b/pylint/config/__init__.py
+@@ -36,6 +36,8 @@ import os
+ import pickle
+ import sys
+ 
++from platformdirs import user_cache_dir
++
+ from pylint.config.configuration_mixin import ConfigurationMixIn
+ from pylint.config.find_default_config_files import find_default_config_files
+ from pylint.config.man_help_formatter import _ManHelpFormatter
+@@ -55,15 +57,24 @@ __all__ = [
+     "UnsupportedAction",
+ ]
+ 
+-USER_HOME = os.path.expanduser("~")
+-if "PYLINTHOME" in os.environ:
+-    PYLINT_HOME = os.environ["PYLINTHOME"]
+-    if USER_HOME == "~":
+-        USER_HOME = os.path.dirname(PYLINT_HOME)
+-elif USER_HOME == "~":
+-    PYLINT_HOME = ".pylint.d"
+-else:
+-    PYLINT_HOME = os.path.join(USER_HOME, ".pylint.d")
++
++def _get_pylint_home() -> str:
++    """Return the directory where the persistent data is stored.
++
++    The location is determined using the XDG Base Directory Specification
++    through ``platformdirs``. It can be overridden with the ``PYLINTHOME``
++    environment variable.
++    """
++    if "PYLINTHOME" in os.environ:
++        return os.environ["PYLINTHOME"]
++    if os.path.expanduser("~") == "~":
++        # The home directory could not be determined: fall back to a local
++        # directory rather than building an invalid path.
++        return ".pylint.d"
++    return user_cache_dir("pylint")
++
++
++PYLINT_HOME = _get_pylint_home()
+ 
+ 
+ def _get_pdata_path(base_name, recurs):
+@@ -83,7 +94,7 @@ def load_results(base):
+ def save_results(results, base):
+     if not os.path.exists(PYLINT_HOME):
+         try:
+-            os.mkdir(PYLINT_HOME)
++            os.makedirs(PYLINT_HOME, exist_ok=True)
+         except OSError:
+             print("Unable to create directory %s" % PYLINT_HOME, file=sys.stderr)
+     data_file = _get_pdata_path(base, 1)
+@@ -110,8 +121,8 @@ ENV_HELP = (
+ The following environment variables are used:
+     * PYLINTHOME
+     Path to the directory where persistent data for the run will be stored. If
+-not found, it defaults to ~/.pylint.d/ or .pylint.d (in the current working
+-directory).
++not found, it defaults to the user cache directory as defined by the XDG Base
++Directory Specification (e.g. ~/.cache/pylint on Linux).
+     * PYLINTRC
+     Path to the configuration file. See the documentation for the method used
+ to search for configuration file.
+2026-10-03 17:34:20,245 - INFO - Eval script for pylint-dev__pylint-4661 written to logs\run_evaluation\pylint__code-review-and-quality\deepseek__deepseek-v4-flash\pylint-dev__pylint-4661\eval.sh; copying to container...
+2026-10-03 17:34:25,689 - INFO - Test runtime: 5.35 seconds
+2026-10-03 17:34:25,691 - INFO - Test output for pylint-dev__pylint-4661 written to logs\run_evaluation\pylint__code-review-and-quality\deepseek__deepseek-v4-flash\pylint-dev__pylint-4661\test_output.txt
+2026-10-03 17:34:25,764 - INFO - Git diff after:
+diff --git a/ChangeLog b/ChangeLog
+index 047ee370..325f00e0 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -21,6 +21,13 @@ Release date: TBA
+ 
+   Close #4120
+ 
++* The persistent data used to compare successive runs is now stored in the user
++  cache directory, following the XDG Base Directory Specification, instead of
++  the ``~/.pylint.d`` directory. The ``PYLINTHOME`` environment variable can
++  still be used to override the location.
++
++  Closes #4544
++
+ 
+ What's New in Pylint 2.9.6?
+ ===========================
+diff --git a/doc/faq.rst b/doc/faq.rst
+index c817855f..4c929707 100644
+--- a/doc/faq.rst
++++ b/doc/faq.rst
+@@ -93,10 +93,11 @@ localized using the following rules:
+ 
+ * value of the PYLINTHOME environment variable if set
+ 
+-* ".pylint.d" subdirectory of the user's home directory if it is found
+-	(not always findable on Windows platforms)
++* the user cache directory, as defined by the XDG Base Directory Specification
++	(``$XDG_CACHE_HOME/pylint``, which defaults to ``~/.cache/pylint`` on Linux)
+ 
+-* ".pylint.d" directory in the current directory
++* ".pylint.d" directory in the current directory (only if the user's home
++	directory cannot be determined)
+ 
+ 3.3 How do I find the option name (for pylintrc) corresponding to a specific command line option?
+ --------------------------------------------------------------------------------------------------------
+diff --git a/doc/whatsnew/2.10.rst b/doc/whatsnew/2.10.rst
+index e94530bf..8d084297 100644
+--- a/doc/whatsnew/2.10.rst
++++ b/doc/whatsnew/2.10.rst
+@@ -24,3 +24,10 @@ Other Changes
+ * Performance of the Similarity checker has been improved.
+ 
+ * Added ``time.clock`` to deprecated functions/methods for python 3.3
++
++* The persistent data used to compare successive runs is now stored in the user
++  cache directory, following the XDG Base Directory Specification, instead of
++  the ``~/.pylint.d`` directory. The ``PYLINTHOME`` environment variable can
++  still be used to override the location.
++
++  Closes #4544
+diff --git a/pylint/config/__init__.py b/pylint/config/__init__.py
+index 84774d0e..178c7484 100644
+--- a/pylint/config/__init__.py
++++ b/pylint/config/__init__.py
+@@ -36,6 +36,8 @@ import os
+ import pickle
+ import sys
+ 
++from platformdirs import user_cache_dir
++
+ from pylint.config.configuration_mixin import ConfigurationMixIn
+ from pylint.config.find_default_config_files import find_default_config_files
+ from pylint.config.man_help_formatter import _ManHelpFormatter
+@@ -55,15 +57,24 @@ __all__ = [
+     "UnsupportedAction",
+ ]
+ 
+-USER_HOME = os.path.expanduser("~")
+-if "PYLINTHOME" in os.environ:
+-    PYLINT_HOME = os.environ["PYLINTHOME"]
+-    if USER_HOME == "~":
+-        USER_HOME = os.path.dirname(PYLINT_HOME)
+-elif USER_HOME == "~":
+-    PYLINT_HOME = ".pylint.d"
+-else:
+-    PYLINT_HOME = os.path.join(USER_HOME, ".pylint.d")
++
++def _get_pylint_home() -> str:
++    """Return the directory where the persistent data is stored.
++
++    The location is determined using the XDG Base Directory Specification
++    through ``platformdirs``. It can be overridden with the ``PYLINTHOME``
++    environment variable.
++    """
++    if "PYLINTHOME" in os.environ:
++        return os.environ["PYLINTHOME"]
++    if os.path.expanduser("~") == "~":
++        # The home directory could not be determined: fall back to a local
++        # directory rather than building an invalid path.
++        return ".pylint.d"
++    return user_cache_dir("pylint")
++
++
++PYLINT_HOME = _get_pylint_home()
+ 
+ 
+ def _get_pdata_path(base_name, recurs):
+@@ -83,7 +94,7 @@ def load_results(base):
+ def save_results(results, base):
+     if not os.path.exists(PYLINT_HOME):
+         try:
+-            os.mkdir(PYLINT_HOME)
++            os.makedirs(PYLINT_HOME, exist_ok=True)
+         except OSError:
+             print("Unable to create directory %s" % PYLINT_HOME, file=sys.stderr)
+     data_file = _get_pdata_path(base, 1)
+@@ -110,8 +121,8 @@ ENV_HELP = (
+ The following environment variables are used:
+     * PYLINTHOME
+     Path to the directory where persistent data for the run will be stored. If
+-not found, it defaults to ~/.pylint.d/ or .pylint.d (in the current working
+-directory).
++not found, it defaults to the user cache directory as defined by the XDG Base
++Directory Specification (e.g. ~/.cache/pylint on Linux).
+     * PYLINTRC
+     Path to the configuration file. See the documentation for the method used
+ to search for configuration file.
+2026-10-03 17:34:25,764 - INFO - Grading answer for pylint-dev__pylint-4661...
+2026-10-03 17:34:25,766 - INFO - report: {'pylint-dev__pylint-4661': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/lint/unittest_lint.py::test_pylint_home']}, 'PASS_TO_PASS': {'success': [], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-4661: resolved: False
+2026-10-03 17:34:25,769 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-4661.pylint__code-review-and-quality...
+2026-10-03 17:34:41,219 - INFO - Container sweb.eval.pylint-dev__pylint-4661.pylint__code-review-and-quality stopped successfully.
+2026-10-03 17:34:41,219 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-4661.pylint__code-review-and-quality...
+2026-10-03 17:34:41,384 - INFO - Container sweb.eval.pylint-dev__pylint-4661.pylint__code-review-and-quality removed successfully.

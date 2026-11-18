@@ -1,0 +1,47 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..b2f251bbd 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,41 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++def _splitstrip_regex(value: str) -> list[str]:
++    """Split a comma separated list of regular expressions.
++
++    A comma that is part of a regular expression, for example in a quantifier
++    (``a{1,3}``) or a character class (``[a,b]``), should not be considered a
++    separator. A comma can also be escaped with a backslash (``a\\,b``) so
++    that it is never used as a separator.
++    """
++    parts: list[str] = []
++    start = 0
++    depth = 0
++    index = 0
++    length = len(value)
++    while index < length:
++        char = value[index]
++        if char == "\\" and index + 1 < length and value[index + 1] == ",":
++            # Escaped comma: part of the regular expression, not a separator.
++            index += 2
++            continue
++        if char in "([{":
++            depth += 1
++        elif char in ")]}":
++            depth = max(depth - 1, 0)
++        elif char == "," and depth == 0:
++            parts.append(value[start:index])
++            start = index + 1
++        index += 1
++    parts.append(value[start:])
++    return [part.strip().replace("\\,", ",") for part in parts if part.strip()]
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _splitstrip_regex(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 

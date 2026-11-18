@@ -1,0 +1,82 @@
+diff --git a/sympy/concrete/summations.py b/sympy/concrete/summations.py
+index 372487664..dc805c0d1 100755
+--- a/sympy/concrete/summations.py
++++ b/sympy/concrete/summations.py
+@@ -20,6 +20,46 @@
+ from sympy.tensor.indexed import Idx
+ 
+ 
++def _eval_sum_kronecker_delta(f, limits):
++    """Evaluate a sum of a KroneckerDelta over two summation variables.
++
++    Returns ``None`` if the sum is not of the supported form.
++    """
++    from sympy.functions import KroneckerDelta
++    from sympy.functions.elementary.miscellaneous import Max, Min
++
++    if len(limits) != 2:
++        return None
++    if isinstance(f, KroneckerDelta):
++        coeff = S.One
++        delta = f
++    elif f.is_Mul:
++        deltas = [arg for arg in f.args if isinstance(arg, KroneckerDelta)]
++        if len(deltas) != 1:
++            return None
++        delta = deltas[0]
++        coeff = f/delta
++    else:
++        return None
++
++    x, y = delta.args
++    if not (x.is_Symbol and y.is_Symbol) or x == y:
++        return None
++    indices = [limit[0] for limit in limits]
++    if x not in indices or y not in indices:
++        return None
++    xlimit = limits[indices.index(x)]
++    ylimit = limits[indices.index(y)]
++    a, b = xlimit[1:]
++    c, d = ylimit[1:]
++    if coeff.has(*indices) or any(i.has(x, y) for i in (a, b, c, d)):
++        return None
++
++    lo, hi = Max(a, c), Min(b, d)
++    return coeff * Piecewise(
++        (hi - lo + 1, hi >= lo), (S.Zero, True)).simplify()
++
++
+ class Sum(AddWithLimits, ExprWithIntLimits):
+     r"""Represents unevaluated summation.
+ 
+@@ -177,6 +217,13 @@ def doit(self, **hints):
+         if self.function.is_Matrix:
+             return self.expand().doit()
+ 
++        # A KroneckerDelta summed over two variables can be evaluated
++        # directly.  This avoids going through a Piecewise result of the
++        # first summation which may be difficult to sum again.
++        result = _eval_sum_kronecker_delta(f, self.limits)
++        if result is not None:
++            return result
++
+         for n, limit in enumerate(self.limits):
+             i, a, b = limit
+             dif = b - a
+diff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py
+index b4d759836..1cb0cf4df 100755
+--- a/sympy/matrices/expressions/matexpr.py
++++ b/sympy/matrices/expressions/matexpr.py
+@@ -476,10 +476,8 @@ def conjugate(self):
+         return self
+ 
+     def _entry(self, i, j):
+-        if i == j:
+-            return S.One
+-        else:
+-            return S.Zero
++        from sympy.functions.special.tensor_functions import KroneckerDelta
++        return KroneckerDelta(i, j)
+ 
+     def _eval_determinant(self):
+         return S.One

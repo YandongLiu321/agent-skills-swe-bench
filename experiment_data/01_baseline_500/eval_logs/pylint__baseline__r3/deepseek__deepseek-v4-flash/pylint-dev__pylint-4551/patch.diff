@@ -1,0 +1,122 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..ce03ade3 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -76,6 +76,95 @@ class IdGeneratorMixIn:
+         return self.id_count
+ 
+ 
++def _get_arguments_annotation(arguments, name):
++    """Return the annotation node of the argument ``name``, if any."""
++    for arg, annotation in zip(arguments.args, arguments.annotations):
++        if arg.name == name and annotation is not None:
++            return annotation
++    for arg, annotation in zip(
++        arguments.posonlyargs, arguments.posonlyargs_annotations
++    ):
++        if arg.name == name and annotation is not None:
++            return annotation
++    for arg, annotation in zip(
++        arguments.kwonlyargs, arguments.kwonlyargs_annotations
++    ):
++        if arg.name == name and annotation is not None:
++            return annotation
++    if arguments.vararg == name and arguments.varargannotation is not None:
++        return arguments.varargannotation
++    if arguments.kwarg == name and arguments.kwargannotation is not None:
++        return arguments.kwargannotation
++    return None
++
++
++def _get_assignname_annotation(node):
++    """Return the annotation node associated with an astroid.AssignName node."""
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Arguments):
++        return _get_arguments_annotation(parent, node.name)
++    return None
++
++
++def _get_name_annotation(node):
++    """Return the annotation node of the name bound to an astroid.Name node."""
++    try:
++        _, stmts = node.lookup(node.name)
++    except astroid.InferenceError:
++        return None
++    for stmt in stmts:
++        annotation = _get_assignname_annotation(stmt)
++        if annotation is not None:
++            return annotation
++    return None
++
++
++def _get_assignattr_annotation(node):
++    """Return the annotation node associated with an astroid.AssignAttr node."""
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Assign):
++        value = parent.value
++        if isinstance(value, astroid.Name):
++            return _get_name_annotation(value)
++    return None
++
++
++def _infer_annotation(annotation):
++    """Infer the node(s) denoted by an annotation node."""
++    try:
++        return {
++            inferred
++            for inferred in annotation.infer()
++            if inferred is not astroid.Uninferable
++        }
++    except astroid.InferenceError:
++        return set()
++
++
++def _get_type_from_annotation(annotation):
++    """Infer the type(s) denoted by an annotation node.
++
++    String annotations (PEP 484 forward references and PEP 563 postponed
++    evaluation) are resolved against the scope in which they are declared.
++    """
++    if annotation is None:
++        return set()
++    if isinstance(annotation, astroid.Const) and isinstance(annotation.value, str):
++        try:
++            _, stmts = annotation.frame().lookup(annotation.value)
++        except astroid.InferenceError:
++            stmts = ()
++        inferred = set()
++        for stmt in stmts:
++            inferred.update(_infer_annotation(stmt))
++        return inferred
++    return _infer_annotation(annotation)
++
++
+ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+     """Walk on the project tree and resolve relationships.
+ 
+@@ -218,7 +307,9 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _get_type_from_annotation(_get_assignname_annotation(node))
++            if not values:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +321,9 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _get_type_from_annotation(_get_assignattr_annotation(node))
++            if not values:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:

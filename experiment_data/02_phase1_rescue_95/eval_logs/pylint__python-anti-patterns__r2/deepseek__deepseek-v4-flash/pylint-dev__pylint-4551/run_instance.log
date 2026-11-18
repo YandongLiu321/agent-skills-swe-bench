@@ -1,0 +1,296 @@
+2026-10-07 04:21:38,719 - INFO - Creating container for pylint-dev__pylint-4551...
+2026-10-07 04:21:38,791 - INFO - Container for pylint-dev__pylint-4551 created: 25644b9174666c8cec23acd35b0f738cba3f588d4d3483de3c7d1a181d3e66c1
+2026-10-07 04:21:38,926 - INFO - Container for pylint-dev__pylint-4551 started: 25644b9174666c8cec23acd35b0f738cba3f588d4d3483de3c7d1a181d3e66c1
+2026-10-07 04:21:38,928 - INFO - Intermediate patch for pylint-dev__pylint-4551 written to logs\run_evaluation\pylint__python-anti-patterns__r2\deepseek__deepseek-v4-flash\pylint-dev__pylint-4551\patch.diff, now applying to container...
+2026-10-07 04:21:39,024 - INFO - >>>>> Applied Patch:
+Checking patch pylint/pyreverse/inspector.py...
+Checking patch pylint/pyreverse/writer.py...
+Applied patch pylint/pyreverse/inspector.py cleanly.
+Applied patch pylint/pyreverse/writer.py cleanly.
+
+2026-10-07 04:21:39,126 - INFO - Git diff before:
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..2a543c3f 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -39,6 +39,65 @@ def _astroid_wrapper(func, modname):
+     return None
+ 
+ 
++def _get_annotation(node, _seen=None):
++    """Return the annotation associated with an argument or an assignment.
++
++    The annotation is looked up on the node itself, on the arguments it
++    belongs to, or on the variable it is assigned from.
++    """
++    if _seen is None:
++        _seen = set()
++    if id(node) in _seen:
++        return None
++    _seen.add(id(node))
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Arguments):
++        for args, annotations in (
++            (parent.args, parent.annotations),
++            (parent.posonlyargs, parent.posonlyargs_annotations),
++            (parent.kwonlyargs, parent.kwonlyargs_annotations),
++        ):
++            for index, argument in enumerate(args):
++                if argument is node:
++                    if index < len(annotations):
++                        return annotations[index]
++                    return None
++        if parent.vararg is node:
++            return parent.varargannotation
++        if parent.kwarg is node:
++            return parent.kwargannotation
++    if isinstance(node, astroid.AssignAttr) and isinstance(parent, astroid.Assign):
++        value = parent.value
++        if isinstance(value, astroid.Name):
++            try:
++                _, definitions = value.lookup(value.name)
++            except astroid.InferenceError:
++                return None
++            for definition in definitions:
++                annotation = _get_annotation(definition, _seen)
++                if annotation is not None:
++                    return annotation
++    return None
++
++
++def _infer_type(node):
++    """Infer the possible types for a node.
++
++    When an annotation is available it takes precedence over the value
++    inferred by astroid.  This is especially useful for default values such
++    as ``None`` that would otherwise hide the real type.
++    """
++    annotation = _get_annotation(node)
++    if annotation is not None:
++        try:
++            return set(annotation.infer())
++        except astroid.InferenceError:
++            pass
++    return set(node.infer())
++
++
+ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+     """Return an iterator on interfaces implemented by the given class node."""
+     try:
+@@ -166,6 +225,25 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+             for assignattr in assignattrs:
+                 if not isinstance(assignattr, astroid.Unknown):
+                     self.handle_assignattr_type(assignattr, node)
++        # astroid's dataclass brain replaces annotated attributes with
++        # Unknown nodes, recover their annotations from the class body.
++        for child in node.body:
++            if not isinstance(child, astroid.AnnAssign):
++                continue
++            target = child.target
++            if not isinstance(target, astroid.AssignName):
++                continue
++            if target.name not in node.instance_attrs or not all(
++                isinstance(value, astroid.Unknown)
++                for value in node.instance_attrs[target.name]
++            ):
++                continue
++            try:
++                values = set(child.annotation.infer())
++            except astroid.InferenceError:
++                continue
++            current = set(node.instance_attrs_type[target.name])
++            node.instance_attrs_type[target.name] = list(current | values)
+         # resolve implemented interface
+         try:
+             node.implements = list(interfaces(node, self.inherited_interfaces))
+@@ -218,7 +296,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _infer_type(node)
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +308,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _infer_type(node)
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/writer.py b/pylint/pyreverse/writer.py
+index 0d80bb9c..c6c0324b 100644
+--- a/pylint/pyreverse/writer.py
++++ b/pylint/pyreverse/writer.py
+@@ -134,10 +134,14 @@ class DotWriter(DiagramWriter):
+         if not self.config.only_classnames:
+             label = r"{}|{}\l|".format(label, r"\l".join(obj.attrs))
+             for func in obj.methods:
+-                if func.args.args:
+-                    args = [arg.name for arg in func.args.args if arg.name != "self"]
+-                else:
+-                    args = []
++                args = []
++                for arg, annotation in zip(func.args.args, func.args.annotations):
++                    if arg.name == "self":
++                        continue
++                    if annotation is not None:
++                        args.append(f"{arg.name}: {annotation.as_string()}")
++                    else:
++                        args.append(arg.name)
+                 label = r"{}{}({})\l".format(label, func.name, ", ".join(args))
+             label = "{%s}" % label
+         if is_exception(obj.node):
+2026-10-07 04:21:39,129 - INFO - Eval script for pylint-dev__pylint-4551 written to logs\run_evaluation\pylint__python-anti-patterns__r2\deepseek__deepseek-v4-flash\pylint-dev__pylint-4551\eval.sh; copying to container...
+2026-10-07 04:21:41,367 - INFO - Test runtime: 2.19 seconds
+2026-10-07 04:21:41,368 - INFO - Test output for pylint-dev__pylint-4551 written to logs\run_evaluation\pylint__python-anti-patterns__r2\deepseek__deepseek-v4-flash\pylint-dev__pylint-4551\test_output.txt
+2026-10-07 04:21:41,410 - INFO - Git diff after:
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..2a543c3f 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -39,6 +39,65 @@ def _astroid_wrapper(func, modname):
+     return None
+ 
+ 
++def _get_annotation(node, _seen=None):
++    """Return the annotation associated with an argument or an assignment.
++
++    The annotation is looked up on the node itself, on the arguments it
++    belongs to, or on the variable it is assigned from.
++    """
++    if _seen is None:
++        _seen = set()
++    if id(node) in _seen:
++        return None
++    _seen.add(id(node))
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Arguments):
++        for args, annotations in (
++            (parent.args, parent.annotations),
++            (parent.posonlyargs, parent.posonlyargs_annotations),
++            (parent.kwonlyargs, parent.kwonlyargs_annotations),
++        ):
++            for index, argument in enumerate(args):
++                if argument is node:
++                    if index < len(annotations):
++                        return annotations[index]
++                    return None
++        if parent.vararg is node:
++            return parent.varargannotation
++        if parent.kwarg is node:
++            return parent.kwargannotation
++    if isinstance(node, astroid.AssignAttr) and isinstance(parent, astroid.Assign):
++        value = parent.value
++        if isinstance(value, astroid.Name):
++            try:
++                _, definitions = value.lookup(value.name)
++            except astroid.InferenceError:
++                return None
++            for definition in definitions:
++                annotation = _get_annotation(definition, _seen)
++                if annotation is not None:
++                    return annotation
++    return None
++
++
++def _infer_type(node):
++    """Infer the possible types for a node.
++
++    When an annotation is available it takes precedence over the value
++    inferred by astroid.  This is especially useful for default values such
++    as ``None`` that would otherwise hide the real type.
++    """
++    annotation = _get_annotation(node)
++    if annotation is not None:
++        try:
++            return set(annotation.infer())
++        except astroid.InferenceError:
++            pass
++    return set(node.infer())
++
++
+ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+     """Return an iterator on interfaces implemented by the given class node."""
+     try:
+@@ -166,6 +225,25 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+             for assignattr in assignattrs:
+                 if not isinstance(assignattr, astroid.Unknown):
+                     self.handle_assignattr_type(assignattr, node)
++        # astroid's dataclass brain replaces annotated attributes with
++        # Unknown nodes, recover their annotations from the class body.
++        for child in node.body:
++            if not isinstance(child, astroid.AnnAssign):
++                continue
++            target = child.target
++            if not isinstance(target, astroid.AssignName):
++                continue
++            if target.name not in node.instance_attrs or not all(
++                isinstance(value, astroid.Unknown)
++                for value in node.instance_attrs[target.name]
++            ):
++                continue
++            try:
++                values = set(child.annotation.infer())
++            except astroid.InferenceError:
++                continue
++            current = set(node.instance_attrs_type[target.name])
++            node.instance_attrs_type[target.name] = list(current | values)
+         # resolve implemented interface
+         try:
+             node.implements = list(interfaces(node, self.inherited_interfaces))
+@@ -218,7 +296,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _infer_type(node)
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +308,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _infer_type(node)
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/writer.py b/pylint/pyreverse/writer.py
+index 0d80bb9c..c6c0324b 100644
+--- a/pylint/pyreverse/writer.py
++++ b/pylint/pyreverse/writer.py
+@@ -134,10 +134,14 @@ class DotWriter(DiagramWriter):
+         if not self.config.only_classnames:
+             label = r"{}|{}\l|".format(label, r"\l".join(obj.attrs))
+             for func in obj.methods:
+-                if func.args.args:
+-                    args = [arg.name for arg in func.args.args if arg.name != "self"]
+-                else:
+-                    args = []
++                args = []
++                for arg, annotation in zip(func.args.args, func.args.annotations):
++                    if arg.name == "self":
++                        continue
++                    if annotation is not None:
++                        args.append(f"{arg.name}: {annotation.as_string()}")
++                    else:
++                        args.append(arg.name)
+                 label = r"{}{}({})\l".format(label, func.name, ", ".join(args))
+             label = "{%s}" % label
+         if is_exception(obj.node):
+2026-10-07 04:21:41,410 - INFO - Grading answer for pylint-dev__pylint-4551...
+2026-10-07 04:21:41,411 - INFO - report: {'pylint-dev__pylint-4551': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/unittest_pyreverse_writer.py::test_dot_files[packages_No_Name.dot]', 'tests/unittest_pyreverse_writer.py::test_dot_files[classes_No_Name.dot]', 'tests/unittest_pyreverse_writer.py::test_get_visibility[names0-special]', 'tests/unittest_pyreverse_writer.py::test_get_visibility[names1-private]', 'tests/unittest_pyreverse_writer.py::test_get_visibility[names2-public]', 'tests/unittest_pyreverse_writer.py::test_get_visibility[names3-protected]', 'tests/unittest_pyreverse_writer.py::test_get_annotation_annassign[a:', 'tests/unittest_pyreverse_writer.py::test_get_annotation_assignattr[def', 'tests/unittest_pyreverse_writer.py::test_infer_node_1', 'tests/unittest_pyreverse_writer.py::test_infer_node_2']}, 'PASS_TO_PASS': {'success': [], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-4551: resolved: False
+2026-10-07 04:21:41,413 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-4551.pylint__python-anti-patterns__r2...
+2026-10-07 04:21:56,844 - INFO - Container sweb.eval.pylint-dev__pylint-4551.pylint__python-anti-patterns__r2 stopped successfully.
+2026-10-07 04:21:56,844 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-4551.pylint__python-anti-patterns__r2...
+2026-10-07 04:21:56,937 - INFO - Container sweb.eval.pylint-dev__pylint-4551.pylint__python-anti-patterns__r2 removed successfully.

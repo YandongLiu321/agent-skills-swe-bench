@@ -1,0 +1,134 @@
+2026-10-18 15:33:20,057 - INFO - Creating container for pytest-dev__pytest-7324...
+2026-10-18 15:33:20,125 - INFO - Container for pytest-dev__pytest-7324 created: 37147c9080e2468972df5d182405b13fef8fb2b1ec9108a00062f032d458c49a
+2026-10-18 15:33:20,242 - INFO - Container for pytest-dev__pytest-7324 started: 37147c9080e2468972df5d182405b13fef8fb2b1ec9108a00062f032d458c49a
+2026-10-18 15:33:20,246 - INFO - Intermediate patch for pytest-dev__pytest-7324 written to logs\run_evaluation\pilot_neutral_r1\deepseek__deepseek-v4-flash\pytest-dev__pytest-7324\patch.diff, now applying to container...
+2026-10-18 15:33:20,368 - INFO - >>>>> Applied Patch:
+Checking patch src/_pytest/mark/expression.py...
+Applied patch src/_pytest/mark/expression.py cleanly.
+
+2026-10-18 15:33:20,495 - INFO - Git diff before:
+diff --git a/src/_pytest/mark/expression.py b/src/_pytest/mark/expression.py
+index 04c73411a..69c175b47 100644
+--- a/src/_pytest/mark/expression.py
++++ b/src/_pytest/mark/expression.py
+@@ -19,6 +19,7 @@ import ast
+ import enum
+ import re
+ import types
++from typing import Any
+ from typing import Callable
+ from typing import Iterator
+ from typing import Mapping
+@@ -33,6 +34,11 @@ if TYPE_CHECKING:
+     from typing import NoReturn
+ 
+ 
++# This name is not valid in a match expression, so it cannot collide with an
++# identifier from the expression itself.
++_MATCHER_NAME = "@pytest_matcher"
++
++
+ __all__ = [
+     "Expression",
+     "ParseError",
+@@ -161,17 +167,29 @@ def not_expr(s: Scanner) -> ast.expr:
+         return ret
+     ident = s.accept(TokenType.IDENT)
+     if ident:
+-        return ast.Name(ident.value, ast.Load())
++        # Use a call instead of an ast.Name to support identifiers such as
++        # "True", "False" and "None", which CPython reserves as constants.
++        return ast.Call(
++            func=ast.Name(_MATCHER_NAME, ast.Load()),
++            args=[ast.Str(ident.value)],
++            keywords=[],
++        )
+     s.reject((TokenType.NOT, TokenType.LPAREN, TokenType.IDENT))
+ 
+ 
+ class MatcherAdapter(Mapping[str, bool]):
+-    """Adapts a matcher function to a locals mapping as required by eval()."""
++    """Adapt a matcher function to a mapping usable by eval().
++
++    Evaluated identifiers are compiled as calls to ``_MATCHER_NAME``, which
++    resolves to the matcher callable below.
++    """
+ 
+     def __init__(self, matcher: Callable[[str], bool]) -> None:
+         self.matcher = matcher
+ 
+-    def __getitem__(self, key: str) -> bool:
++    def __getitem__(self, key: str) -> Any:
++        if key == _MATCHER_NAME:
++            return self.matcher
+         return self.matcher(key)
+ 
+     def __iter__(self) -> Iterator[str]:
+2026-10-18 15:33:20,498 - INFO - Eval script for pytest-dev__pytest-7324 written to logs\run_evaluation\pilot_neutral_r1\deepseek__deepseek-v4-flash\pytest-dev__pytest-7324\eval.sh; copying to container...
+2026-10-18 15:33:26,383 - INFO - Test runtime: 5.82 seconds
+2026-10-18 15:33:26,383 - INFO - Test output for pytest-dev__pytest-7324 written to logs\run_evaluation\pilot_neutral_r1\deepseek__deepseek-v4-flash\pytest-dev__pytest-7324\test_output.txt
+2026-10-18 15:33:26,428 - INFO - Git diff after:
+diff --git a/src/_pytest/mark/expression.py b/src/_pytest/mark/expression.py
+index 04c73411a..69c175b47 100644
+--- a/src/_pytest/mark/expression.py
++++ b/src/_pytest/mark/expression.py
+@@ -19,6 +19,7 @@ import ast
+ import enum
+ import re
+ import types
++from typing import Any
+ from typing import Callable
+ from typing import Iterator
+ from typing import Mapping
+@@ -33,6 +34,11 @@ if TYPE_CHECKING:
+     from typing import NoReturn
+ 
+ 
++# This name is not valid in a match expression, so it cannot collide with an
++# identifier from the expression itself.
++_MATCHER_NAME = "@pytest_matcher"
++
++
+ __all__ = [
+     "Expression",
+     "ParseError",
+@@ -161,17 +167,29 @@ def not_expr(s: Scanner) -> ast.expr:
+         return ret
+     ident = s.accept(TokenType.IDENT)
+     if ident:
+-        return ast.Name(ident.value, ast.Load())
++        # Use a call instead of an ast.Name to support identifiers such as
++        # "True", "False" and "None", which CPython reserves as constants.
++        return ast.Call(
++            func=ast.Name(_MATCHER_NAME, ast.Load()),
++            args=[ast.Str(ident.value)],
++            keywords=[],
++        )
+     s.reject((TokenType.NOT, TokenType.LPAREN, TokenType.IDENT))
+ 
+ 
+ class MatcherAdapter(Mapping[str, bool]):
+-    """Adapts a matcher function to a locals mapping as required by eval()."""
++    """Adapt a matcher function to a mapping usable by eval().
++
++    Evaluated identifiers are compiled as calls to ``_MATCHER_NAME``, which
++    resolves to the matcher callable below.
++    """
+ 
+     def __init__(self, matcher: Callable[[str], bool]) -> None:
+         self.matcher = matcher
+ 
+-    def __getitem__(self, key: str) -> bool:
++    def __getitem__(self, key: str) -> Any:
++        if key == _MATCHER_NAME:
++            return self.matcher
+         return self.matcher(key)
+ 
+     def __iter__(self) -> Iterator[str]:
+2026-10-18 15:33:26,428 - INFO - Grading answer for pytest-dev__pytest-7324...
+2026-10-18 15:33:26,429 - INFO - report: {'pytest-dev__pytest-7324': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['testing/test_mark_expression.py::test_valid_idents[True]', 'testing/test_mark_expression.py::test_valid_idents[False]', 'testing/test_mark_expression.py::test_valid_idents[None]'], 'failure': []}, 'PASS_TO_PASS': {'success': ['testing/test_mark_expression.py::test_empty_is_false', 'testing/test_mark_expression.py::test_basic[true-True0]', 'testing/test_mark_expression.py::test_basic[true-True1]', 'testing/test_mark_expression.py::test_basic[false-False]', 'testing/test_mark_expression.py::test_basic[not', 'testing/test_mark_expression.py::test_basic[true', 'testing/test_mark_expression.py::test_basic[false', 'testing/test_mark_expression.py::test_basic[(not', 'testing/test_mark_expression.py::test_syntax_oddeties[', 'testing/test_mark_expression.py::test_syntax_oddeties[(', 'testing/test_mark_expression.py::test_syntax_oddeties[not', 'testing/test_mark_expression.py::test_syntax_errors[(-2-expected', 'testing/test_mark_expression.py::test_syntax_errors[', 'testing/test_mark_expression.py::test_syntax_errors[)-1-expected', 'testing/test_mark_expression.py::test_syntax_errors[)', 'testing/test_mark_expression.py::test_syntax_errors[not-4-expected', 'testing/test_mark_expression.py::test_syntax_errors[not', 'testing/test_mark_expression.py::test_syntax_errors[(not)-5-expected', 'testing/test_mark_expression.py::test_syntax_errors[and-1-expected', 'testing/test_mark_expression.py::test_syntax_errors[ident', 'testing/test_mark_expression.py::test_valid_idents[.]', 'testing/test_mark_expression.py::test_valid_idents[...]', 'testing/test_mark_expression.py::test_valid_idents[:::]', 'testing/test_mark_expression.py::test_valid_idents[a:::c]', 'testing/test_mark_expression.py::test_valid_idents[a+-b]', 'testing/test_mark_expression.py::test_valid_idents[\\u05d0\\u05d1\\u05d2\\u05d3]', 'testing/test_mark_expression.py::test_valid_idents[aa\\u05d0\\u05d1\\u05d2\\u05d3cc]', 'testing/test_mark_expression.py::test_valid_idents[a[bcd]]', 'testing/test_mark_expression.py::test_valid_idents[1234]', 'testing/test_mark_expression.py::test_valid_idents[1234abcd]', 'testing/test_mark_expression.py::test_valid_idents[1234and]', 'testing/test_mark_expression.py::test_valid_idents[notandor]', 'testing/test_mark_expression.py::test_valid_idents[not_and_or]', 'testing/test_mark_expression.py::test_valid_idents[not[and]or]', 'testing/test_mark_expression.py::test_valid_idents[1234+5678]', 'testing/test_mark_expression.py::test_valid_idents[123.232]', 'testing/test_mark_expression.py::test_valid_idents[if]', 'testing/test_mark_expression.py::test_valid_idents[else]', 'testing/test_mark_expression.py::test_valid_idents[while]', 'testing/test_mark_expression.py::test_invalid_idents[/]', 'testing/test_mark_expression.py::test_invalid_idents[\\\\]', 'testing/test_mark_expression.py::test_invalid_idents[^]', 'testing/test_mark_expression.py::test_invalid_idents[*]', 'testing/test_mark_expression.py::test_invalid_idents[=]', 'testing/test_mark_expression.py::test_invalid_idents[&]', 'testing/test_mark_expression.py::test_invalid_idents[%]', 'testing/test_mark_expression.py::test_invalid_idents[$]', 'testing/test_mark_expression.py::test_invalid_idents[#]', 'testing/test_mark_expression.py::test_invalid_idents[@]', 'testing/test_mark_expression.py::test_invalid_idents[!]', 'testing/test_mark_expression.py::test_invalid_idents[~]', 'testing/test_mark_expression.py::test_invalid_idents[{]', 'testing/test_mark_expression.py::test_invalid_idents[}]', 'testing/test_mark_expression.py::test_invalid_idents["]', "testing/test_mark_expression.py::test_invalid_idents[']", 'testing/test_mark_expression.py::test_invalid_idents[|]', 'testing/test_mark_expression.py::test_invalid_idents[;]', 'testing/test_mark_expression.py::test_invalid_idents[\\u2190]'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pytest-dev__pytest-7324: resolved: True
+2026-10-18 15:33:26,430 - INFO - Attempting to stop container sweb.eval.pytest-dev__pytest-7324.pilot_neutral_r1...
+2026-10-18 15:33:41,685 - INFO - Container sweb.eval.pytest-dev__pytest-7324.pilot_neutral_r1 stopped successfully.
+2026-10-18 15:33:41,685 - INFO - Attempting to remove container sweb.eval.pytest-dev__pytest-7324.pilot_neutral_r1...
+2026-10-18 15:33:41,862 - INFO - Container sweb.eval.pytest-dev__pytest-7324.pilot_neutral_r1 removed successfully.

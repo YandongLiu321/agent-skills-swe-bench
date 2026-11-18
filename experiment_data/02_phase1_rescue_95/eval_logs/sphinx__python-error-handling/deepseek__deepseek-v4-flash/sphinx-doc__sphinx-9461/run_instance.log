@@ -1,0 +1,268 @@
+2026-10-07 02:02:29,658 - INFO - Creating container for sphinx-doc__sphinx-9461...
+2026-10-07 02:02:29,703 - INFO - Container for sphinx-doc__sphinx-9461 created: 62cb04a0585d41857b5831f27ad99b3375ab3718c91803577f849106bbfa3043
+2026-10-07 02:02:29,803 - INFO - Container for sphinx-doc__sphinx-9461 started: 62cb04a0585d41857b5831f27ad99b3375ab3718c91803577f849106bbfa3043
+2026-10-07 02:02:29,805 - INFO - Intermediate patch for sphinx-doc__sphinx-9461 written to logs\run_evaluation\sphinx__python-error-handling\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-9461\patch.diff, now applying to container...
+2026-10-07 02:02:29,880 - INFO - >>>>> Applied Patch:
+Checking patch sphinx/domains/python.py...
+Checking patch sphinx/ext/autodoc/__init__.py...
+Checking patch sphinx/ext/autodoc/importer.py...
+Applied patch sphinx/domains/python.py cleanly.
+Applied patch sphinx/ext/autodoc/__init__.py cleanly.
+Applied patch sphinx/ext/autodoc/importer.py cleanly.
+
+2026-10-07 02:02:30,029 - INFO - Git diff before:
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..4708104e3 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -865,9 +866,12 @@ class PyProperty(PyObject):
+         return fullname, prefix
+ 
+     def get_signature_prefix(self, sig: str) -> str:
+-        prefix = ['property']
++        prefix = []
+         if 'abstractmethod' in self.options:
+-            prefix.insert(0, 'abstract')
++            prefix.append('abstract')
++        if 'classmethod' in self.options:
++            prefix.append('classmethod')
++        prefix.append('property')
+ 
+         return ' '.join(prefix) + ' '
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..fb66f73dc 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -2661,6 +2661,8 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+     @classmethod
+     def can_document_member(cls, member: Any, membername: str, isattr: bool, parent: Any
+                             ) -> bool:
++        if inspect.isclassmethod(member):
++            member = safe_getattr(member, '__func__', member)
+         return inspect.isproperty(member) and isinstance(parent, ClassDocumenter)
+ 
+     def document_members(self, all_members: bool = False) -> None:
+@@ -2670,11 +2672,38 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         real_modname = self.get_attr(self.parent or self.object, '__module__', None)
+         return real_modname or self.modname
+ 
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++        if not ret:
++            return ret
++
++        # to distinguish classmethod/property
++        obj = self.object
++        for cls in inspect.getmro(self.parent):
++            if self.object_name in cls.__dict__:
++                obj = cls.__dict__[self.object_name]
++                break
++
++        func = safe_getattr(obj, '__func__', None)
++        if inspect.isclassmethod(obj) and inspect.isproperty(func):
++            self.object = func
++
++        return ret
++
+     def add_directive_header(self, sig: str) -> None:
+         super().add_directive_header(sig)
+         sourcename = self.get_sourcename()
+-        if inspect.isabstractmethod(self.object):
++
++        obj = self.object
++        for cls in inspect.getmro(self.parent):
++            if self.object_name in cls.__dict__:
++                obj = cls.__dict__[self.object_name]
++                break
++
++        if inspect.isabstractmethod(obj):
+             self.add_line('   :abstractmethod:', sourcename)
++        if inspect.isclassmethod(obj):
++            self.add_line('   :classmethod:', sourcename)
+ 
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..96f05d037 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -17,8 +17,8 @@ from sphinx.deprecation import RemovedInSphinx50Warning
+ from sphinx.ext.autodoc.mock import ismock, undecorate
+ from sphinx.pycode import ModuleAnalyzer, PycodeError
+ from sphinx.util import logging
+-from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isenumclass,
+-                                 safe_getattr)
++from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isclassmethod,
++                                 isenumclass, isproperty, safe_getattr)
+ 
+ if False:
+     # For type annotation
+@@ -274,9 +274,23 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+     # other members
+     for name in dir(subject):
+         try:
+-            value = attrgetter(subject, name)
+-            if ismock(value):
+-                value = undecorate(value)
++            if name in obj_dict:
++                obj = obj_dict[name]
++            else:
++                obj = None
++                for cls in getmro(subject):
++                    if name in cls.__dict__:
++                        obj = cls.__dict__[name]
++                        break
++
++            func = safe_getattr(obj, '__func__', None)
++            if isclassmethod(obj) and isproperty(func):
++                # a classmethod wrapping a property (refs: #9445)
++                value = func
++            else:
++                value = attrgetter(subject, name)
++                if ismock(value):
++                    value = undecorate(value)
+ 
+             unmangled = unmangle(subject, name)
+             if unmangled and unmangled not in members:
+2026-10-07 02:02:30,030 - INFO - Eval script for sphinx-doc__sphinx-9461 written to logs\run_evaluation\sphinx__python-error-handling\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-9461\eval.sh; copying to container...
+2026-10-07 02:02:34,745 - INFO - Test runtime: 4.67 seconds
+2026-10-07 02:02:34,746 - INFO - Test output for sphinx-doc__sphinx-9461 written to logs\run_evaluation\sphinx__python-error-handling\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-9461\test_output.txt
+2026-10-07 02:02:34,786 - INFO - Git diff after:
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..4708104e3 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -865,9 +866,12 @@ class PyProperty(PyObject):
+         return fullname, prefix
+ 
+     def get_signature_prefix(self, sig: str) -> str:
+-        prefix = ['property']
++        prefix = []
+         if 'abstractmethod' in self.options:
+-            prefix.insert(0, 'abstract')
++            prefix.append('abstract')
++        if 'classmethod' in self.options:
++            prefix.append('classmethod')
++        prefix.append('property')
+ 
+         return ' '.join(prefix) + ' '
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..fb66f73dc 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -2661,6 +2661,8 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+     @classmethod
+     def can_document_member(cls, member: Any, membername: str, isattr: bool, parent: Any
+                             ) -> bool:
++        if inspect.isclassmethod(member):
++            member = safe_getattr(member, '__func__', member)
+         return inspect.isproperty(member) and isinstance(parent, ClassDocumenter)
+ 
+     def document_members(self, all_members: bool = False) -> None:
+@@ -2670,11 +2672,38 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         real_modname = self.get_attr(self.parent or self.object, '__module__', None)
+         return real_modname or self.modname
+ 
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++        if not ret:
++            return ret
++
++        # to distinguish classmethod/property
++        obj = self.object
++        for cls in inspect.getmro(self.parent):
++            if self.object_name in cls.__dict__:
++                obj = cls.__dict__[self.object_name]
++                break
++
++        func = safe_getattr(obj, '__func__', None)
++        if inspect.isclassmethod(obj) and inspect.isproperty(func):
++            self.object = func
++
++        return ret
++
+     def add_directive_header(self, sig: str) -> None:
+         super().add_directive_header(sig)
+         sourcename = self.get_sourcename()
+-        if inspect.isabstractmethod(self.object):
++
++        obj = self.object
++        for cls in inspect.getmro(self.parent):
++            if self.object_name in cls.__dict__:
++                obj = cls.__dict__[self.object_name]
++                break
++
++        if inspect.isabstractmethod(obj):
+             self.add_line('   :abstractmethod:', sourcename)
++        if inspect.isclassmethod(obj):
++            self.add_line('   :classmethod:', sourcename)
+ 
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..96f05d037 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -17,8 +17,8 @@ from sphinx.deprecation import RemovedInSphinx50Warning
+ from sphinx.ext.autodoc.mock import ismock, undecorate
+ from sphinx.pycode import ModuleAnalyzer, PycodeError
+ from sphinx.util import logging
+-from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isenumclass,
+-                                 safe_getattr)
++from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isclassmethod,
++                                 isenumclass, isproperty, safe_getattr)
+ 
+ if False:
+     # For type annotation
+@@ -274,9 +274,23 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+     # other members
+     for name in dir(subject):
+         try:
+-            value = attrgetter(subject, name)
+-            if ismock(value):
+-                value = undecorate(value)
++            if name in obj_dict:
++                obj = obj_dict[name]
++            else:
++                obj = None
++                for cls in getmro(subject):
++                    if name in cls.__dict__:
++                        obj = cls.__dict__[name]
++                        break
++
++            func = safe_getattr(obj, '__func__', None)
++            if isclassmethod(obj) and isproperty(func):
++                # a classmethod wrapping a property (refs: #9445)
++                value = func
++            else:
++                value = attrgetter(subject, name)
++                if ismock(value):
++                    value = undecorate(value)
+ 
+             unmangled = unmangle(subject, name)
+             if unmangled and unmangled not in members:
+2026-10-07 02:02:34,786 - INFO - Grading answer for sphinx-doc__sphinx-9461...
+2026-10-07 02:02:34,794 - INFO - report: {'sphinx-doc__sphinx-9461': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_ext_autodoc_autoclass.py::test_properties', 'tests/test_ext_autodoc_autoproperty.py::test_class_properties'], 'failure': ['tests/test_domain_py.py::test_pyproperty']}, 'PASS_TO_PASS': {'success': ['tests/test_domain_py.py::test_function_signatures', 'tests/test_domain_py.py::test_domain_py_xrefs', 'tests/test_domain_py.py::test_domain_py_xrefs_abbreviations', 'tests/test_domain_py.py::test_domain_py_objects', 'tests/test_domain_py.py::test_resolve_xref_for_properties', 'tests/test_domain_py.py::test_domain_py_find_obj', 'tests/test_domain_py.py::test_domain_py_canonical', 'tests/test_domain_py.py::test_get_full_qualified_name', 'tests/test_domain_py.py::test_parse_annotation', 'tests/test_domain_py.py::test_pyfunction_signature', 'tests/test_domain_py.py::test_pyfunction_signature_full', 'tests/test_domain_py.py::test_pyfunction_signature_full_py38', 'tests/test_domain_py.py::test_pyfunction_with_number_literals', 'tests/test_domain_py.py::test_pyfunction_with_union_type_operator', 'tests/test_domain_py.py::test_optional_pyfunction_signature', 'tests/test_domain_py.py::test_pyexception_signature', 'tests/test_domain_py.py::test_pydata_signature', 'tests/test_domain_py.py::test_pydata_signature_old', 'tests/test_domain_py.py::test_pydata_with_union_type_operator', 'tests/test_domain_py.py::test_pyobject_prefix', 'tests/test_domain_py.py::test_pydata', 'tests/test_domain_py.py::test_pyfunction', 'tests/test_domain_py.py::test_pyclass_options', 'tests/test_domain_py.py::test_pymethod_options', 'tests/test_domain_py.py::test_pyclassmethod', 'tests/test_domain_py.py::test_pystaticmethod', 'tests/test_domain_py.py::test_pyattribute', 'tests/test_domain_py.py::test_pydecorator_signature', 'tests/test_domain_py.py::test_pydecoratormethod_signature', 'tests/test_domain_py.py::test_canonical', 'tests/test_domain_py.py::test_canonical_definition_overrides', 'tests/test_domain_py.py::test_canonical_definition_skip', 'tests/test_domain_py.py::test_canonical_duplicated', 'tests/test_domain_py.py::test_info_field_list', 'tests/test_domain_py.py::test_info_field_list_piped_type', 'tests/test_domain_py.py::test_info_field_list_var', 'tests/test_domain_py.py::test_module_index', 'tests/test_domain_py.py::test_module_index_submodule', 'tests/test_domain_py.py::test_module_index_not_collapsed', 'tests/test_domain_py.py::test_modindex_common_prefix', 'tests/test_domain_py.py::test_noindexentry', 'tests/test_domain_py.py::test_python_python_use_unqualified_type_names', 'tests/test_domain_py.py::test_python_python_use_unqualified_type_names_disabled', 'tests/test_domain_py.py::test_warn_missing_reference', 'tests/test_ext_autodoc_autoclass.py::test_classes', 'tests/test_ext_autodoc_autoclass.py::test_instance_variable', 'tests/test_ext_autodoc_autoclass.py::test_inherited_instance_variable', 'tests/test_ext_autodoc_autoclass.py::test_uninitialized_attributes', 'tests/test_ext_autodoc_autoclass.py::test_undocumented_uninitialized_attributes', 'tests/test_ext_autodoc_autoclass.py::test_decorators', 'tests/test_ext_autodoc_autoclass.py::test_slots_attribute', 'tests/test_ext_autodoc_autoclass.py::test_show_inheritance_for_subclass_of_generic_type', 'tests/test_ext_autodoc_autoclass.py::test_autodoc_process_bases', 'tests/test_ext_autodoc_autoclass.py::test_class_doc_from_class', 'tests/test_ext_autodoc_autoclass.py::test_class_doc_from_init', 'tests/test_ext_autodoc_autoclass.py::test_class_doc_from_both', 'tests/test_ext_autodoc_autoclass.py::test_class_alias', 'tests/test_ext_autodoc_autoclass.py::test_class_alias_having_doccomment', 'tests/test_ext_autodoc_autoproperty.py::test_properties'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-9461: resolved: False
+2026-10-07 02:02:34,795 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-9461.sphinx__python-error-handling...
+2026-10-07 02:02:50,113 - INFO - Container sweb.eval.sphinx-doc__sphinx-9461.sphinx__python-error-handling stopped successfully.
+2026-10-07 02:02:50,114 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-9461.sphinx__python-error-handling...
+2026-10-07 02:02:50,208 - INFO - Container sweb.eval.sphinx-doc__sphinx-9461.sphinx__python-error-handling removed successfully.

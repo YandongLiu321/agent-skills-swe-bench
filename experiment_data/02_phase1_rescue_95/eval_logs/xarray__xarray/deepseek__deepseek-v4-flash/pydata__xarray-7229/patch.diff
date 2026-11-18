@@ -1,0 +1,77 @@
+diff --git a/xarray/core/computation.py b/xarray/core/computation.py
+index 3f7e8f74..3e1410e8 100644
+--- a/xarray/core/computation.py
++++ b/xarray/core/computation.py
+@@ -419,7 +419,7 @@ def apply_dict_of_variables_vfunc(
+ 
+     result_vars = {}
+     for name, variable_args in zip(names, grouped_by_name):
+-        result_vars[name] = func(*variable_args)
++        result_vars[name] = func(*variable_args, context=name)
+ 
+     if signature.num_outputs > 1:
+         return _unpack_dict_tuples(result_vars, signature.num_outputs)
+@@ -668,6 +668,7 @@ def apply_variable_ufunc(
+     vectorize=False,
+     keep_attrs="override",
+     dask_gufunc_kwargs=None,
++    context=None,
+ ) -> Variable | tuple[Variable, ...]:
+     """Apply a ndarray level function over Variable and/or ndarray objects."""
+     from .variable import Variable, as_compatible_data
+@@ -787,6 +788,7 @@ def apply_variable_ufunc(
+     attrs = merge_attrs(
+         [obj.attrs for obj in objs],
+         combine_attrs=keep_attrs,
++        context=context,
+     )
+ 
+     output: list[Variable] = []
+@@ -1860,7 +1862,23 @@ def where(cond, x, y, keep_attrs=None):
+     if keep_attrs is True:
+         # keep the attributes of x, the second parameter, by default to
+         # be consistent with the `where` method of `DataArray` and `Dataset`
+-        keep_attrs = lambda attrs, context: getattr(x, "attrs", {})
++        def _keep_attrs(attrs, context):
++            # When merging coordinates or the variables of a Dataset the name
++            # of the variable is passed as ``context``. In that case preserve
++            # the attributes of the matching variable on ``x`` so that
++            # coordinate attributes are not overwritten by the attributes of
++            # the data variable (:issue:`7358`).
++            if context is not None:
++                coords = getattr(x, "coords", None)
++                if coords is not None and context in coords:
++                    return dict(coords[context].attrs)
++                data_vars = getattr(x, "data_vars", None)
++                if data_vars is not None and context in data_vars:
++                    return dict(data_vars[context].attrs)
++                return attrs[0] if attrs else {}
++            return getattr(x, "attrs", {})
++
++        keep_attrs = _keep_attrs
+ 
+     # alignment for three arguments is complicated, so don't support it yet
+     return apply_ufunc(
+diff --git a/xarray/core/merge.py b/xarray/core/merge.py
+index 859b3aef..c809218a 100644
+--- a/xarray/core/merge.py
++++ b/xarray/core/merge.py
+@@ -294,6 +294,7 @@ def merge_collected(
+                 merged_vars[name].attrs = merge_attrs(
+                     [var.attrs for var, _ in indexed_elements],
+                     combine_attrs=combine_attrs,
++                    context=name,
+                 )
+                 merged_indexes[name] = index
+             else:
+@@ -310,7 +311,9 @@ def merge_collected(
+ 
+                 if name in merged_vars:
+                     merged_vars[name].attrs = merge_attrs(
+-                        [var.attrs for var in variables], combine_attrs=combine_attrs
++                        [var.attrs for var in variables],
++                        combine_attrs=combine_attrs,
++                        context=name,
+                     )
+ 
+     return merged_vars, merged_indexes

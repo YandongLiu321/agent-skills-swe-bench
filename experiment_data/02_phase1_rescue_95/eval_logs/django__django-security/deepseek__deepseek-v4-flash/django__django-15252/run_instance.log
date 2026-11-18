@@ -1,0 +1,142 @@
+2026-10-07 00:25:07,958 - INFO - Creating container for django__django-15252...
+2026-10-07 00:25:08,004 - INFO - Container for django__django-15252 created: 545f3dda46d318a00157a3d1cb61f11e7d3ad2848e914cf5c70d1f73e275605f
+2026-10-07 00:25:08,114 - INFO - Container for django__django-15252 started: 545f3dda46d318a00157a3d1cb61f11e7d3ad2848e914cf5c70d1f73e275605f
+2026-10-07 00:25:08,115 - INFO - Intermediate patch for django__django-15252 written to logs\run_evaluation\django__django-security\deepseek__deepseek-v4-flash\django__django-15252\patch.diff, now applying to container...
+2026-10-07 00:25:08,192 - INFO - >>>>> Applied Patch:
+Checking patch django/db/migrations/executor.py...
+Applied patch django/db/migrations/executor.py cleanly.
+
+2026-10-07 00:25:09,541 - INFO - Git diff before:
+diff --git a/django/db/migrations/executor.py b/django/db/migrations/executor.py
+index aa2fe0883b..edee912bb1 100755
+--- a/django/db/migrations/executor.py
++++ b/django/db/migrations/executor.py
+@@ -88,6 +88,33 @@ class MigrationExecutor:
+                     migration.mutate_state(state, preserve=False)
+         return state
+ 
++    def _state_has_migratable_model(self, state):
++        """
++        Return True if the router allows migrating at least one model in the
++        given project state to this connection.
++        """
++        for (app_label, model_name), model_state in state.models.items():
++            options = model_state.options
++            if options.get('managed', True) is False or options.get('proxy', False):
++                continue
++            if router.allow_migrate(self.connection.alias, app_label, model_name=model_name):
++                return True
++        return False
++
++    def _migratable(self):
++        """
++        Return True if the router allows migrating at least one of the models
++        in the migrations to this connection.
++        """
++        if not router.routers:
++            return True
++        state = ProjectState(real_apps=self.loader.unmigrated_apps)
++        for migration, _ in self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True):
++            state = migration.mutate_state(state, preserve=False)
++            if self._state_has_migratable_model(state):
++                return True
++        return False
++
+     def migrate(self, targets, plan=None, state=None, fake=False, fake_initial=False):
+         """
+         Migrate the database up to the given targets.
+@@ -95,12 +122,19 @@ class MigrationExecutor:
+         Django first needs to create all project states before a migration is
+         (un)applied and in a second step run all the database operations.
+         """
+-        # The django_migrations table must be present to record applied
+-        # migrations.
+-        self.recorder.ensure_schema()
+-
+         if plan is None:
+             plan = self.migration_plan(targets)
++        # The django_migrations table must be present to record applied
++        # migrations, but don't create it if there are no migrations to apply
++        # or if the database router disallows migrating on this connection.
++        if not self._migratable():
++            if state is None:
++                # The resulting state should include applied migrations.
++                state = self._create_project_state(with_applied_migrations=True)
++            return state
++        if plan:
++            self.recorder.ensure_schema()
++
+         # Create the forwards plan Django would follow on an empty database
+         full_plan = self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True)
+2026-10-07 00:25:09,542 - INFO - Eval script for django__django-15252 written to logs\run_evaluation\django__django-security\deepseek__deepseek-v4-flash\django__django-15252\eval.sh; copying to container...
+2026-10-07 00:25:16,896 - INFO - Test runtime: 7.31 seconds
+2026-10-07 00:25:16,899 - INFO - Test output for django__django-15252 written to logs\run_evaluation\django__django-security\deepseek__deepseek-v4-flash\django__django-15252\test_output.txt
+2026-10-07 00:25:16,938 - INFO - Git diff after:
+diff --git a/django/db/migrations/executor.py b/django/db/migrations/executor.py
+index aa2fe0883b..edee912bb1 100755
+--- a/django/db/migrations/executor.py
++++ b/django/db/migrations/executor.py
+@@ -88,6 +88,33 @@ class MigrationExecutor:
+                     migration.mutate_state(state, preserve=False)
+         return state
+ 
++    def _state_has_migratable_model(self, state):
++        """
++        Return True if the router allows migrating at least one model in the
++        given project state to this connection.
++        """
++        for (app_label, model_name), model_state in state.models.items():
++            options = model_state.options
++            if options.get('managed', True) is False or options.get('proxy', False):
++                continue
++            if router.allow_migrate(self.connection.alias, app_label, model_name=model_name):
++                return True
++        return False
++
++    def _migratable(self):
++        """
++        Return True if the router allows migrating at least one of the models
++        in the migrations to this connection.
++        """
++        if not router.routers:
++            return True
++        state = ProjectState(real_apps=self.loader.unmigrated_apps)
++        for migration, _ in self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True):
++            state = migration.mutate_state(state, preserve=False)
++            if self._state_has_migratable_model(state):
++                return True
++        return False
++
+     def migrate(self, targets, plan=None, state=None, fake=False, fake_initial=False):
+         """
+         Migrate the database up to the given targets.
+@@ -95,12 +122,19 @@ class MigrationExecutor:
+         Django first needs to create all project states before a migration is
+         (un)applied and in a second step run all the database operations.
+         """
+-        # The django_migrations table must be present to record applied
+-        # migrations.
+-        self.recorder.ensure_schema()
+-
+         if plan is None:
+             plan = self.migration_plan(targets)
++        # The django_migrations table must be present to record applied
++        # migrations, but don't create it if there are no migrations to apply
++        # or if the database router disallows migrating on this connection.
++        if not self._migratable():
++            if state is None:
++                # The resulting state should include applied migrations.
++                state = self._create_project_state(with_applied_migrations=True)
++            return state
++        if plan:
++            self.recorder.ensure_schema()
++
+         # Create the forwards plan Django would follow on an empty database
+         full_plan = self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True)
+2026-10-07 00:25:16,938 - INFO - Grading answer for django__django-15252...
+2026-10-07 00:25:16,946 - INFO - report: {'django__django-15252': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_migrate_test_setting_false_ensure_schema (backends.base.test_creation.TestDbCreationTests)', 'The django_migrations table is not created if there are no migrations'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_mark_expected_failures_and_skips (backends.base.test_creation.TestMarkTests)', 'test_custom_test_name (backends.base.test_creation.TestDbSignatureTests)', 'test_custom_test_name_with_test_prefix (backends.base.test_creation.TestDbSignatureTests)', 'test_default_name (backends.base.test_creation.TestDbSignatureTests)', 'If the current state satisfies the given target, do nothing.', 'Minimize unnecessary rollbacks in connected apps.', 'Minimize rollbacks when target has multiple in-app children.', "mark_expected_failures_and_skips() isn't called unless", 'test_migrate_test_setting_false (backends.base.test_creation.TestDbCreationTests)', 'test_migrate_test_setting_true (backends.base.test_creation.TestDbCreationTests)', 'test_circular_reference (backends.base.test_creation.TestDeserializeDbFromString)', 'test_circular_reference_with_natural_key (backends.base.test_creation.TestDeserializeDbFromString)', 'test_self_reference (backends.base.test_creation.TestDeserializeDbFromString)', 'test_serialize_db_to_string_base_manager (backends.base.test_creation.TestDeserializeDbFromString)', 'test_alter_id_type_with_fk (migrations.test_executor.ExecutorTests)', 'Applying all replaced migrations marks replacement as applied (#24628).', 'An atomic operation is properly rolled back inside a non-atomic', 'Regression test for #22325 - references to a custom user model defined in the', 'executor.detect_soft_applied() detects ManyToManyField tables from an', "Re-planning a full migration of a fully-migrated set doesn't", 'test_migrate_backward_to_squashed_migration (migrations.test_executor.ExecutorTests)', 'A new squash migration will be marked as applied even if all its', 'test_migrate_marks_replacement_unapplied (migrations.test_executor.ExecutorTests)', 'Migrations are applied and recorded atomically.', 'Migrations are not recorded if deferred SQL application fails.', 'Although the MigrationExecutor interfaces allows for mixed migration', 'Applying a non-atomic migration works as expected.', '#24129 - Tests callback process', 'Tests running a simple set of migrations.', 'Tests running a squashed migration from zero (should ignore what it replaces)', 'Tests detection of initial migrations already having been applied.', '#26647 - Unrelated applied migrations should be part of the final', '#24123 - All models of apps being unapplied which are', '#24123 - All models of apps already applied which are'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-15252: resolved: True
+2026-10-07 00:25:16,948 - INFO - Attempting to stop container sweb.eval.django__django-15252.django__django-security...
+2026-10-07 00:25:32,196 - INFO - Container sweb.eval.django__django-15252.django__django-security stopped successfully.
+2026-10-07 00:25:32,196 - INFO - Attempting to remove container sweb.eval.django__django-15252.django__django-security...
+2026-10-07 00:25:32,285 - INFO - Container sweb.eval.django__django-15252.django__django-security removed successfully.

@@ -1,0 +1,58 @@
+diff --git a/CHANGES b/CHANGES
+index c7e781de8..67788c8dd 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -40,6 +40,8 @@ Bugs fixed
+ * #9267: html theme: CSS and JS files added by theme were loaded twice
+ * #9585: py domain: ``:type:`` option for :rst:dir:`py:property` directive does
+   not create a hyperlink
++* #9609: py domain: literal values (ex. ``True``) in type annotations are
++  rendered as a cross-reference
+ * #9535 comment: C++, fix parsing of defaulted function parameters that are
+   function pointers.
+ * #9564: smartquotes: don't adjust typography for text with
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index 9875a9f4b..88079f65e 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -122,7 +122,17 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+         elif isinstance(node, ast.Constant):  # type: ignore
+             if node.value is Ellipsis:
+                 return [addnodes.desc_sig_punctuation('', "...")]
++            elif isinstance(node.value, bool):
++                return [addnodes.desc_sig_keyword('', repr(node.value))]
++            elif isinstance(node.value, int):
++                return [addnodes.desc_sig_literal_number('', repr(node.value))]
++            elif isinstance(node.value, float):
++                return [addnodes.desc_sig_literal_number('', repr(node.value))]
++            elif isinstance(node.value, (str, bytes)):
++                return [addnodes.desc_sig_literal_string('', repr(node.value))]
+             else:
++                # handles None, which is further handled by type_to_xref later
++                # and fallback for other types that should be converted to xref
+                 return [nodes.Text(node.value)]
+         elif isinstance(node, ast.Expr):
+             return unparse(node.value)
+@@ -162,12 +172,21 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+                           addnodes.desc_sig_punctuation('', ')')]
+ 
+             return result
++        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
++            return [addnodes.desc_sig_operator('', '-'), *unparse(node.operand)]
+         else:
+             if sys.version_info < (3, 8):
+                 if isinstance(node, ast.Ellipsis):
+                     return [addnodes.desc_sig_punctuation('', "...")]
+                 elif isinstance(node, ast.NameConstant):
+-                    return [nodes.Text(node.value)]
++                    if isinstance(node.value, bool):
++                        return [addnodes.desc_sig_keyword('', repr(node.value))]
++                    else:
++                        return [nodes.Text(node.value)]
++                elif isinstance(node, ast.Num):
++                    return [addnodes.desc_sig_literal_number('', repr(node.n))]
++                elif isinstance(node, ast.Str):
++                    return [addnodes.desc_sig_literal_string('', repr(node.s))]
+ 
+             raise SyntaxError  # unsupported syntax
+ 

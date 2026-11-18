@@ -1,0 +1,61 @@
+diff --git a/ChangeLog b/ChangeLog
+index 97af302a..44650c31 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -10,6 +10,11 @@ Release date: TBA
+ ..
+   Put new features here and also in 'doc/whatsnew/2.11.rst'
+ 
++* The ``duplicate-code`` check can now be disabled by setting the
++  ``min-similarity-lines`` option to ``0``.
++
++  Closes #214
++
+ * The python3 porting mode checker and it's ``py3k`` option were removed. You can still find it in older pylint
+   versions.
+ 
+diff --git a/pylint/checkers/similar.py b/pylint/checkers/similar.py
+index c65b1c89..5cce5b95 100644
+--- a/pylint/checkers/similar.py
++++ b/pylint/checkers/similar.py
+@@ -818,6 +818,15 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
+             nb_duplicated_lines=0, percent_duplicated_lines=0
+         )
+ 
++    @property
++    def _is_disabled(self) -> bool:
++        """Check if the duplicate code check is disabled.
++
++        The duplicate code check can be disabled by setting the
++        ``min-similarity-lines`` option to ``0``.
++        """
++        return self.config.min_similarity_lines == 0 or self.min_lines == 0
++
+     def process_module(self, node):
+         """process a module
+ 
+@@ -825,11 +834,15 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
+ 
+         stream must implement the readlines method
+         """
++        if self._is_disabled:
++            return
+         with node.stream() as stream:
+             self.append_stream(self.linter.current_name, stream, node.file_encoding)
+ 
+     def close(self):
+         """compute and display similarities on closing (i.e. end of parsing)"""
++        if self._is_disabled:
++            return
+         total = sum(len(lineset) for lineset in self.linesets)
+         duplicated = 0
+         stats = self.stats
+@@ -851,6 +864,8 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
+ 
+     def get_map_data(self):
+         """Passthru override"""
++        if self._is_disabled:
++            return []
+         return Similar.get_map_data(self)
+ 
+     def reduce_map_data(self, linter, data):

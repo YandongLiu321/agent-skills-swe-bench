@@ -1,0 +1,178 @@
+2026-10-07 14:18:21,778 - INFO - Creating container for mwaskom__seaborn-3069...
+2026-10-07 14:18:21,828 - INFO - Container for mwaskom__seaborn-3069 created: 8fd8eddabd6897511438d175c762955ff7934efb0db4c33acf70d9a7d2da72f2
+2026-10-07 14:18:21,956 - INFO - Container for mwaskom__seaborn-3069 started: 8fd8eddabd6897511438d175c762955ff7934efb0db4c33acf70d9a7d2da72f2
+2026-10-07 14:18:21,957 - INFO - Intermediate patch for mwaskom__seaborn-3069 written to logs\run_evaluation\seaborn__python-error-handling\deepseek__deepseek-v4-flash\mwaskom__seaborn-3069\patch.diff, now applying to container...
+2026-10-07 14:18:22,036 - INFO - >>>>> Applied Patch:
+Checking patch seaborn/_core/plot.py...
+Checking patch seaborn/_core/scales.py...
+Applied patch seaborn/_core/plot.py cleanly.
+Applied patch seaborn/_core/scales.py cleanly.
+
+2026-10-07 14:18:22,109 - INFO - Git diff before:
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..8ea0bda4 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1644,6 +1644,22 @@ class Plotter:
+                         hi = cast(float, hi) + 0.5
+                     ax.set(**{f"{axis}lim": (lo, hi)})
+ 
++                # Nominal scales should be drawn like categorical axes
++                if isinstance(self._scales.get(axis_key), Nominal):
++                    axis_obj = getattr(ax, f"{axis}axis")
++                    # The categorical axis never shows a grid, regardless of style
++                    axis_obj.grid(False)
++                    # Show a half-unit margin around the extreme categories, and
++                    # invert the axis when it is drawn vertically. Explicit limits
++                    # provided by the user take precedence over these defaults.
++                    if axis_key not in p._limits:
++                        n = len(getattr(ax, f"get_{axis}ticks")())
++                        if n:
++                            if axis == "x":
++                                ax.set_xlim(-.5, n - .5)
++                            else:
++                                ax.set_ylim(n - .5, -.5)
++
+         engine_default = None if p._target is not None else "tight"
+         layout_engine = p._layout_spec.get("engine", engine_default)
+         set_layout_engine(self._figure, layout_engine)
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..25aae8e5 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -184,6 +184,7 @@ class Nominal(Scale):
+                 # axis.set_major_formatter(major_formatter)
+ 
+         mpl_scale = CatScale(data.name)
++        axis_obj = None
+         if axis is None:
+             axis = PseudoAxis(mpl_scale)
+ 
+@@ -191,6 +192,8 @@ class Nominal(Scale):
+             # we use this to (A) set the padding we want for categorial plots
+             # and (B) allow the values parameter for a Coordinate to set xlim/ylim
+             axis.set_view_interval(0, len(units_seed) - 1)
++        else:
++            axis_obj = axis
+ 
+         new._matplotlib_scale = mpl_scale
+ 
+@@ -199,6 +202,20 @@ class Nominal(Scale):
+         # (i.e. if we have [1, 2.5], do we want [1.0, 2.5]? Unclear)
+         axis.update_units(stringify(np.array(units_seed)))
+ 
++        # We want a nominal axis to look like a categorical axis: draw a half
++        # unit margin beyond the extreme categories, hide the grid, and invert
++        # the axis when it is vertical. Matplotlib's autoscaling would otherwise
++        # apply a proportional margin, so we fix the limits explicitly here.
++        if axis_obj is not None:
++            axis_obj.grid(False)
++            n = len(units_seed)
++            if n:
++                ax = axis_obj.axes
++                if axis_obj.axis_name == "x":
++                    ax.set_xlim(-.5, n - .5)
++                else:
++                    ax.set_ylim(n - .5, -.5)
++
+         # TODO define this more centrally
+         def convert_units(x):
+             # TODO only do this with explicit order?
+2026-10-07 14:18:22,110 - INFO - Eval script for mwaskom__seaborn-3069 written to logs\run_evaluation\seaborn__python-error-handling\deepseek__deepseek-v4-flash\mwaskom__seaborn-3069\eval.sh; copying to container...
+2026-10-07 14:18:40,221 - INFO - Test runtime: 18.07 seconds
+2026-10-07 14:18:40,223 - INFO - Test output for mwaskom__seaborn-3069 written to logs\run_evaluation\seaborn__python-error-handling\deepseek__deepseek-v4-flash\mwaskom__seaborn-3069\test_output.txt
+2026-10-07 14:18:40,276 - INFO - Git diff after:
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..8ea0bda4 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1644,6 +1644,22 @@ class Plotter:
+                         hi = cast(float, hi) + 0.5
+                     ax.set(**{f"{axis}lim": (lo, hi)})
+ 
++                # Nominal scales should be drawn like categorical axes
++                if isinstance(self._scales.get(axis_key), Nominal):
++                    axis_obj = getattr(ax, f"{axis}axis")
++                    # The categorical axis never shows a grid, regardless of style
++                    axis_obj.grid(False)
++                    # Show a half-unit margin around the extreme categories, and
++                    # invert the axis when it is drawn vertically. Explicit limits
++                    # provided by the user take precedence over these defaults.
++                    if axis_key not in p._limits:
++                        n = len(getattr(ax, f"get_{axis}ticks")())
++                        if n:
++                            if axis == "x":
++                                ax.set_xlim(-.5, n - .5)
++                            else:
++                                ax.set_ylim(n - .5, -.5)
++
+         engine_default = None if p._target is not None else "tight"
+         layout_engine = p._layout_spec.get("engine", engine_default)
+         set_layout_engine(self._figure, layout_engine)
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..25aae8e5 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -184,6 +184,7 @@ class Nominal(Scale):
+                 # axis.set_major_formatter(major_formatter)
+ 
+         mpl_scale = CatScale(data.name)
++        axis_obj = None
+         if axis is None:
+             axis = PseudoAxis(mpl_scale)
+ 
+@@ -191,6 +192,8 @@ class Nominal(Scale):
+             # we use this to (A) set the padding we want for categorial plots
+             # and (B) allow the values parameter for a Coordinate to set xlim/ylim
+             axis.set_view_interval(0, len(units_seed) - 1)
++        else:
++            axis_obj = axis
+ 
+         new._matplotlib_scale = mpl_scale
+ 
+@@ -199,6 +202,20 @@ class Nominal(Scale):
+         # (i.e. if we have [1, 2.5], do we want [1.0, 2.5]? Unclear)
+         axis.update_units(stringify(np.array(units_seed)))
+ 
++        # We want a nominal axis to look like a categorical axis: draw a half
++        # unit margin beyond the extreme categories, hide the grid, and invert
++        # the axis when it is vertical. Matplotlib's autoscaling would otherwise
++        # apply a proportional margin, so we fix the limits explicitly here.
++        if axis_obj is not None:
++            axis_obj.grid(False)
++            n = len(units_seed)
++            if n:
++                ax = axis_obj.axes
++                if axis_obj.axis_name == "x":
++                    ax.set_xlim(-.5, n - .5)
++                else:
++                    ax.set_ylim(n - .5, -.5)
++
+         # TODO define this more centrally
+         def convert_units(x):
+             # TODO only do this with explicit order?
+2026-10-07 14:18:40,276 - INFO - Grading answer for mwaskom__seaborn-3069...
+2026-10-07 14:18:40,280 - INFO - report: {'mwaskom__seaborn-3069': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks', 'tests/_core/test_plot.py::TestScaling::test_nominal_y_axis_tweaks'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/_core/test_plot.py::TestInit::test_empty', 'tests/_core/test_plot.py::TestInit::test_data_only', 'tests/_core/test_plot.py::TestInit::test_df_and_named_variables', 'tests/_core/test_plot.py::TestInit::test_df_and_mixed_variables', 'tests/_core/test_plot.py::TestInit::test_vector_variables_only', 'tests/_core/test_plot.py::TestInit::test_vector_variables_no_index', 'tests/_core/test_plot.py::TestInit::test_data_only_named', 'tests/_core/test_plot.py::TestInit::test_positional_and_named_data', 'tests/_core/test_plot.py::TestInit::test_positional_and_named_xy[x]', 'tests/_core/test_plot.py::TestInit::test_positional_and_named_xy[y]', 'tests/_core/test_plot.py::TestInit::test_positional_data_x_y', 'tests/_core/test_plot.py::TestInit::test_positional_x_y', 'tests/_core/test_plot.py::TestInit::test_positional_data_x', 'tests/_core/test_plot.py::TestInit::test_positional_x', 'tests/_core/test_plot.py::TestInit::test_positional_too_many', 'tests/_core/test_plot.py::TestInit::test_unknown_keywords', 'tests/_core/test_plot.py::TestLayerAddition::test_stat_nondefault', 'tests/_core/test_plot.py::TestLayerAddition::test_variable_list', 'tests/_core/test_plot.py::TestLayerAddition::test_type_checks', 'tests/_core/test_plot.py::TestScaling::test_faceted_log_scale', 'tests/_core/test_plot.py::TestScaling::test_paired_single_log_scale', 'tests/_core/test_plot.py::TestPlotting::test_matplotlib_object_creation', 'tests/_core/test_plot.py::TestPlotting::test_empty', 'tests/_core/test_plot.py::TestPlotting::test_theme_default', 'tests/_core/test_plot.py::TestPlotting::test_theme_params', 'tests/_core/test_plot.py::TestPlotting::test_theme_error', 'tests/_core/test_plot.py::TestPlotting::test_methods_clone', 'tests/_core/test_plot.py::TestPlotting::test_default_is_no_pyplot', 'tests/_core/test_plot.py::TestPlotting::test_with_pyplot', 'tests/_core/test_plot.py::TestPlotting::test_show', 'tests/_core/test_plot.py::TestPlotting::test_png_repr', 'tests/_core/test_plot.py::TestPlotting::test_save', 'tests/_core/test_plot.py::TestPlotting::test_layout_size', 'tests/_core/test_plot.py::TestPlotting::test_on_type_check', 'tests/_core/test_plot.py::TestPlotting::test_on_axes_with_subplots_error', 'tests/_core/test_plot.py::TestPlotting::test_on_disables_layout_algo', 'tests/_core/test_plot.py::TestPlotting::test_axis_labels_from_constructor', 'tests/_core/test_plot.py::TestPlotting::test_limits', 'tests/_core/test_plot.py::TestPlotting::test_labels_axis', 'tests/_core/test_plot.py::TestPlotting::test_labels_facets', 'tests/_core/test_plot.py::TestPlotting::test_title_single', 'tests/_core/test_plot.py::TestPlotting::test_title_facet_function', 'tests/_core/test_plot.py::TestFacetInterface::test_1d[row]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d_as_vector[row]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d_with_order[row-reverse]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d_with_order[col-reverse]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d[col]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d_as_vector[col]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d_with_order[col-subset]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d_with_order[row-subset]', 'tests/_core/test_plot.py::TestFacetInterface::test_2d_with_order[subset]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d_with_order[col-expand]', 'tests/_core/test_plot.py::TestFacetInterface::test_1d_with_order[row-expand]', 'tests/_core/test_plot.py::TestFacetInterface::test_2d_with_order[expand]', 'tests/_core/test_plot.py::TestFacetInterface::test_2d_with_order[reverse]', 'tests/_core/test_plot.py::TestFacetInterface::test_2d', 'tests/_core/test_plot.py::TestFacetInterface::test_layout_algo[tight]', 'tests/_core/test_plot.py::TestFacetInterface::test_layout_algo[constrained]', 'tests/_core/test_plot.py::TestFacetInterface::test_axis_sharing', 'tests/_core/test_plot.py::TestFacetInterface::test_col_wrapping', 'tests/_core/test_plot.py::TestFacetInterface::test_row_wrapping', 'tests/_core/test_plot.py::TestPairInterface::test_all_numeric[list]', 'tests/_core/test_plot.py::TestPairInterface::test_all_numeric[Index]', 'tests/_core/test_plot.py::TestPairInterface::test_single_variable_key_raises', 'tests/_core/test_plot.py::TestPairInterface::test_single_dimension[x]', 'tests/_core/test_plot.py::TestPairInterface::test_single_dimension[y]', 'tests/_core/test_plot.py::TestPairInterface::test_non_cross', 'tests/_core/test_plot.py::TestPairInterface::test_list_of_vectors', 'tests/_core/test_plot.py::TestPairInterface::test_with_no_variables', 'tests/_core/test_plot.py::TestPairInterface::test_with_facets', 'tests/_core/test_plot.py::TestPairInterface::test_error_on_facet_overlap[variables0]', 'tests/_core/test_plot.py::TestPairInterface::test_error_on_facet_overlap[variables1]', 'tests/_core/test_plot.py::TestPairInterface::test_error_on_wrap_overlap[variables0]', 'tests/_core/test_plot.py::TestPairInterface::test_error_on_wrap_overlap[variables1]', 'tests/_core/test_plot.py::TestPairInterface::test_axis_sharing', 'tests/_core/test_plot.py::TestPairInterface::test_axis_sharing_with_facets', 'tests/_core/test_plot.py::TestPairInterface::test_x_wrapping', 'tests/_core/test_plot.py::TestPairInterface::test_y_wrapping', 'tests/_core/test_plot.py::TestPairInterface::test_non_cross_wrapping', 'tests/_core/test_plot.py::TestPairInterface::test_cross_mismatched_lengths', 'tests/_core/test_plot.py::TestPairInterface::test_two_variables_single_order_error', 'tests/_core/test_plot.py::TestPairInterface::test_limits', 'tests/_core/test_plot.py::TestPairInterface::test_labels', 'tests/_core/test_plot.py::TestLabelVisibility::test_single_subplot', 'tests/_core/test_plot.py::TestLabelVisibility::test_1d_column[facet_kws0-pair_kws0]', 'tests/_core/test_plot.py::TestLabelVisibility::test_1d_column[facet_kws1-pair_kws1]', 'tests/_core/test_plot.py::TestLabelVisibility::test_1d_row[facet_kws0-pair_kws0]', 'tests/_core/test_plot.py::TestLabelVisibility::test_1d_row[facet_kws1-pair_kws1]', 'tests/_core/test_plot.py::TestLabelVisibility::test_1d_column_wrapped', 'tests/_core/test_plot.py::TestLabelVisibility::test_1d_row_wrapped', 'tests/_core/test_plot.py::TestLabelVisibility::test_1d_column_wrapped_non_cross', 'tests/_core/test_plot.py::TestLabelVisibility::test_2d', 'tests/_core/test_plot.py::TestLabelVisibility::test_2d_unshared', 'tests/_core/test_plot.py::TestDefaultObject::test_default_repr'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for mwaskom__seaborn-3069: resolved: True
+2026-10-07 14:18:40,281 - INFO - Attempting to stop container sweb.eval.mwaskom__seaborn-3069.seaborn__python-error-handling...
+2026-10-07 14:18:55,499 - INFO - Container sweb.eval.mwaskom__seaborn-3069.seaborn__python-error-handling stopped successfully.
+2026-10-07 14:18:55,499 - INFO - Attempting to remove container sweb.eval.mwaskom__seaborn-3069.seaborn__python-error-handling...
+2026-10-07 14:18:55,596 - INFO - Container sweb.eval.mwaskom__seaborn-3069.seaborn__python-error-handling removed successfully.

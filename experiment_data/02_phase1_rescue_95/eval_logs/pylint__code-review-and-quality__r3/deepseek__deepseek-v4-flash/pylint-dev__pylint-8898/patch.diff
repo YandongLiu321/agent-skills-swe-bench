@@ -1,0 +1,154 @@
+diff --git a/pylint/config/utils.py b/pylint/config/utils.py
+index 91e4ff86f..b8e955411 100644
+--- a/pylint/config/utils.py
++++ b/pylint/config/utils.py
+@@ -6,8 +6,10 @@
+ 
+ from __future__ import annotations
+ 
++import csv
+ import re
+ from collections.abc import Callable, Sequence
++from io import StringIO
+ from pathlib import Path
+ from typing import TYPE_CHECKING, Any
+ 
+@@ -134,7 +136,13 @@ def _convert_option_to_argument(
+ def _parse_rich_type_value(value: Any) -> str:
+     """Parse rich (toml) types into strings."""
+     if isinstance(value, (list, tuple)):
+-        return ",".join(_parse_rich_type_value(i) for i in value)
++        # Use the csv module to join the elements so that values that contain
++        # the separator (for example regular expressions containing commas)
++        # survive the round-trip through the option parsers.
++        output = StringIO()
++        writer = csv.writer(output, lineterminator="")
++        writer.writerow([_parse_rich_type_value(i) for i in value])
++        return output.getvalue()
+     if isinstance(value, re.Pattern):
+         return str(value.pattern)
+     if isinstance(value, dict):
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..5ae1c1f6a 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -16,6 +16,7 @@ except ImportError:  # isort < 5
+ 
+ import argparse
+ import codecs
++import csv
+ import os
+ import re
+ import sys
+@@ -23,7 +24,7 @@ import textwrap
+ import tokenize
+ import warnings
+ from collections.abc import Sequence
+-from io import BufferedReader, BytesIO
++from io import BufferedReader, BytesIO, StringIO
+ from typing import (
+     TYPE_CHECKING,
+     Any,
+@@ -210,8 +211,12 @@ def register_plugins(linter: PyLinter, directory: str) -> None:
+ 
+ 
+ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+-    """Return a list of stripped string by splitting the string given as
+-    argument on `sep` (',' by default), empty strings are discarded.
++    """Split string and strip each component.
++
++    Commas can be escaped with a backslash or by surrounding the value with
++    double quotes.  This makes it possible to use option values that contain
++    the separator itself, for example regular expressions like
++    ``"(foo{1,3})"`` or ``foo{1\\,3}``.
+ 
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+@@ -219,6 +224,10 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     ['a']
+     >>> _splitstrip('a,\nb,\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip('"(foo{1,3})"')
++    ['(foo{1,3})']
++    >>> _splitstrip('foo{1\\,3},bar')
++    ['foo{1,3}', 'bar']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -229,7 +238,63 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    if not string:
++        return []
++    if len(sep) != 1:
++        return [word.strip() for word in string.split(sep) if word.strip()]
++
++    values: list[str] = []
++    current: list[str] = []
++    in_quotes = False
++    index = 0
++    while index < len(string):
++        char = string[index]
++        if char == '"':
++            if in_quotes:
++                # A double quote inside a quoted value is escaped by doubling it.
++                if index + 1 < len(string) and string[index + 1] == '"':
++                    current.append('"')
++                    index += 2
++                    continue
++                in_quotes = False
++                index += 1
++                continue
++            # Only a quote at the beginning of a value starts quoting. Quotes
++            # in the middle of a value are kept as regular characters so that
++            # regular expressions containing quotes are not mangled.
++            if not current or all(character.isspace() for character in current):
++                in_quotes = True
++                index += 1
++                continue
++            current.append(char)
++            index += 1
++            continue
++        if char == sep and not in_quotes:
++            # A separator escaped with an odd number of backslashes belongs
++            # to the current value instead of terminating it.
++            backslashes = 0
++            previous = len(current) - 1
++            while previous >= 0 and current[previous] == "\\":
++                backslashes += 1
++                previous -= 1
++            if backslashes % 2:
++                current.pop()
++                current.append(sep)
++                index += 1
++                continue
++            word = "".join(current).strip()
++            if word:
++                values.append(word)
++            current = []
++            index += 1
++            continue
++        current.append(char)
++        index += 1
++
++    word = "".join(current).strip()
++    if word:
++        values.append(word)
++    return values
+ 
+ 
+ def _unquote(string: str) -> str:
+@@ -268,7 +333,10 @@ def _format_option_value(optdict: OptionDict, value: Any) -> str:
+     if optdict.get("type", None) == "py_version":
+         value = ".".join(str(item) for item in value)
+     elif isinstance(value, (list, tuple)):
+-        value = ",".join(_format_option_value(optdict, item) for item in value)
++        output = StringIO()
++        writer = csv.writer(output, lineterminator="")
++        writer.writerow([_format_option_value(optdict, item) for item in value])
++        value = output.getvalue()
+     elif isinstance(value, dict):
+         value = ",".join(f"{k}:{v}" for k, v in value.items())
+     elif hasattr(value, "match"):  # optdict.get('type') == 'regexp'

@@ -1,0 +1,61 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..030eedde2 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,55 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++def _split_regexes(value: str | Sequence[str]) -> list[str]:
++    """Split a comma separated list of regular expressions.
++
++    Unlike a naive split on commas, commas that are part of a regular
++    expression (i.e. inside a character class, a group or a repetition) are not
++    treated as separators. A comma can also be escaped with a backslash in order
++    to be part of a regular expression.
++    """
++    if not isinstance(value, str):
++        return [str(regex).strip() for regex in value]
++
++    regexes: list[str] = []
++    current: list[str] = []
++    depth = 0
++    in_character_class = False
++    escaped = False
++    for char in value:
++        if escaped:
++            current.append(char)
++            escaped = False
++        elif char == "\\":
++            current.append(char)
++            escaped = True
++        elif in_character_class:
++            current.append(char)
++            if char == "]":
++                in_character_class = False
++        elif char == "[":
++            in_character_class = True
++            current.append(char)
++        else:
++            if char in "({":
++                depth += 1
++            elif char in ")}" and depth > 0:
++                depth -= 1
++            elif char == "," and depth == 0:
++                regexes.append("".join(current).strip())
++                current = []
++                continue
++            current.append(char)
++
++    regexes.append("".join(current).strip())
++    return [regex for regex in regexes if regex]
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regexes(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 

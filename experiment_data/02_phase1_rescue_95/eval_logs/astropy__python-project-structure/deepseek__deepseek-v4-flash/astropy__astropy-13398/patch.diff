@@ -1,0 +1,152 @@
+diff --git a/astropy/coordinates/builtin_frames/__init__.py b/astropy/coordinates/builtin_frames/__init__.py
+index 6fd688c28..17f464246 100644
+--- a/astropy/coordinates/builtin_frames/__init__.py
++++ b/astropy/coordinates/builtin_frames/__init__.py
+@@ -49,6 +49,7 @@ from . import icrs_cirs_transforms
+ from . import cirs_observed_transforms
+ from . import icrs_observed_transforms
+ from . import intermediate_rotation_transforms
++from . import itrs_observed_transforms
+ from . import ecliptic_transforms
+ 
+ # Import this after importing other frames, since this requires various
+diff --git a/astropy/coordinates/builtin_frames/itrs_observed_transforms.py b/astropy/coordinates/builtin_frames/itrs_observed_transforms.py
+new file mode 100644
+index 000000000..506b793af
+--- /dev/null
++++ b/astropy/coordinates/builtin_frames/itrs_observed_transforms.py
+@@ -0,0 +1,69 @@
++# Licensed under a 3-clause BSD style license - see LICENSE.rst
++"""
++Contains the transformation functions for getting to/from ITRS and observed
++frames, i.e., AltAz and HADec.  These are distinct from the ICRS/CIRS
++functions, because they are just rotations without aberration corrections or
++offsets.
++"""
++
++import numpy as np
++
++from astropy import units as u
++from astropy.coordinates.baseframe import frame_transform_graph
++from astropy.coordinates.transformations import FunctionTransformWithFiniteDifference
++from astropy.coordinates.matrix_utilities import rotation_matrix, matrix_transpose
++
++from .altaz import AltAz
++from .hadec import HADec
++from .itrs import ITRS
++from .utils import PIOVER2
++
++
++def itrs_to_observed_mat(observed_frame):
++    lon, lat, height = observed_frame.location.to_geodetic('WGS84')
++    elong = lon.to_value(u.radian)
++
++    if isinstance(observed_frame, AltAz):
++        # form ITRS to AltAz matrix
++        elat = lat.to_value(u.radian)
++        # AltAz frame is left handed
++        minus_x = np.eye(3)
++        minus_x[0][0] = -1.0
++        mat = (minus_x
++               @ rotation_matrix(PIOVER2 - elat, 'y', unit=u.radian)
++               @ rotation_matrix(elong, 'z', unit=u.radian))
++
++    else:
++        # form ITRS to HADec matrix
++        # HADec frame is left handed
++        minus_y = np.eye(3)
++        minus_y[1][1] = -1.0
++        mat = (minus_y
++               @ rotation_matrix(elong, 'z', unit=u.radian))
++    return mat
++
++
++@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, AltAz)
++@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, ITRS, HADec)
++def itrs_to_observed(itrs_coo, observed_frame):
++    # Trying to synchronize the obstimes here makes no sense. In fact,
++    # it's a real gotcha as doing an ITRS->ITRS transform references
++    # ITRS coordinates, which should be tied to the Earth, to the SSB.
++    # Instead, we treat ITRS coordinates as time invariant here.
++
++    # form the Topocentric ITRS position
++    topocentric_itrs_repr = (itrs_coo.cartesian
++                             - observed_frame.location.get_itrs().cartesian)
++    rep = topocentric_itrs_repr.transform(itrs_to_observed_mat(observed_frame))
++    return observed_frame.realize_frame(rep)
++
++
++@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, AltAz, ITRS)
++@frame_transform_graph.transform(FunctionTransformWithFiniteDifference, HADec, ITRS)
++def observed_to_itrs(observed_coo, itrs_frame):
++    # form the Topocentric ITRS position
++    topocentric_itrs_repr = observed_coo.cartesian.transform(
++        matrix_transpose(itrs_to_observed_mat(observed_coo)))
++    # form the Geocentric ITRS position
++    rep = topocentric_itrs_repr + observed_coo.location.get_itrs().cartesian
++    return itrs_frame.realize_frame(rep)
+diff --git a/docs/coordinates/common_errors.rst b/docs/coordinates/common_errors.rst
+index 335fb24db..16092129c 100644
+--- a/docs/coordinates/common_errors.rst
++++ b/docs/coordinates/common_errors.rst
+@@ -35,7 +35,8 @@ geocentric frame.
+ AltAz calculations for Earth-based objects
+ ------------------------------------------
+ 
+-One might expect that the following code snippet would produce an altitude of exactly 90 degrees::
++One might expect that the following code snippet would produce an altitude of
++exactly 90 degrees::
+ 
+     >>> from astropy.coordinates import EarthLocation, AltAz
+     >>> from astropy.time import Time
+@@ -46,41 +47,13 @@ One might expect that the following code snippet would produce an altitude of ex
+     >>> home = EarthLocation(-1*u.deg, 52*u.deg, height=0.*u.km)
+     >>> altaz_frame = AltAz(obstime=t, location=home)
+     >>> obj.get_itrs(t).transform_to(altaz_frame).alt # doctest: +FLOAT_CMP
+-    <Latitude 86.32878441 deg>
+-
+-Why is the result over three degrees away from the zenith? It is only possible to understand by taking a very careful
+-look at what ``obj.get_itrs(t)`` returns. This call provides the ITRS position of the source ``obj``. ITRS is
+-a geocentric coordinate system, and includes the aberration of light. So the code above provides the ITRS position
+-of a source that appears directly overhead *for an observer at the geocenter*.
+-
+-Due to aberration, the actual position of this source will be displaced from its apparent position, by an angle of
+-approximately 20.5 arcseconds. Because this source is about one Earth radius away, it's actual position is therefore
+-around 600 metres away from where it appears to be. This 600 metre shift, for an object 10 km above the Earth's surface
+-is an angular difference of just over three degrees - which is why this object does not appear overhead for a topocentric
+-observer - one on the surface of the Earth.
+-
+-The correct way to construct a |SkyCoord| object for a source that is directly overhead a topocentric observer is
+-as follows::
+-
+-    >>> from astropy.coordinates import EarthLocation, AltAz, ITRS, CIRS
+-    >>> from astropy.time import Time
+-    >>> from astropy import units as u
+-
+-    >>> t = Time('J2010')
+-    >>> obj = EarthLocation(-1*u.deg, 52*u.deg, height=10.*u.km)
+-    >>> home = EarthLocation(-1*u.deg, 52*u.deg, height=0.*u.km)
+-
+-    >>> # Now we make a ITRS vector of a straight overhead object
+-    >>> itrs_vec = obj.get_itrs(t).cartesian - home.get_itrs(t).cartesian
+-
+-    >>> # Now we create a topocentric coordinate with this data
+-    >>> # Any topocentric frame will work, we use CIRS
+-    >>> # Start by transforming the ITRS vector to CIRS
+-    >>> cirs_vec = ITRS(itrs_vec, obstime=t).transform_to(CIRS(obstime=t)).cartesian
+-    >>> # Finally, make CIRS frame object with the correct data
+-    >>> cirs_topo = CIRS(cirs_vec, obstime=t, location=home)
+-
+-    >>> # convert to AltAz
+-    >>> aa = cirs_topo.transform_to(AltAz(obstime=t, location=home))
+-    >>> aa.alt # doctest: +FLOAT_CMP
+     <Latitude 90. deg>
++
++Indeed it does. The transformation between ``ITRS`` and ``AltAz`` (and between
++``ITRS`` and ``HADec``) is carried out directly, staying within the ``ITRS``.
++The ``ITRS`` position is treated as time invariant, the position of the observer
++is subtracted to form a topocentric ``ITRS`` vector, and that vector is then
++rotated into the local horizontal frame.  This is the appropriate treatment for
++nearby sources such as Earth-orbiting satellites, for which aberration
++corrections are negligible and the old route through ``CIRS`` gave incorrect
++results.

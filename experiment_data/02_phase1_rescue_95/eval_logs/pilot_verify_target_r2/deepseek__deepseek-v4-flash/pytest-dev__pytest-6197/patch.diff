@@ -1,0 +1,28 @@
+diff --git a/src/_pytest/python.py b/src/_pytest/python.py
+index 306e5f217..9f88e5970 100644
+--- a/src/_pytest/python.py
++++ b/src/_pytest/python.py
+@@ -444,6 +444,15 @@ class Module(nodes.File, PyCollector):
+         return self._importtestmodule()
+ 
+     def collect(self):
++        # Package-level marks need to be loaded before collecting the test
++        # module, otherwise marks such as ``pytestmark = pytest.mark.skip``
++        # would not be applied to the tests in this package.  Do this lazily
++        # here instead of in ``Package.collect`` so that packages which do not
++        # contain any test modules are not imported.
++        for parent in self.listchain():
++            if isinstance(parent, Package):
++                parent._mount_obj_if_needed()
++
+         self._inject_setup_module_fixture()
+         self._inject_setup_function_fixture()
+         self.session._fixturemanager.parsefactories(self)
+@@ -639,7 +648,6 @@ class Package(Module):
+         return path in self.session._initialpaths
+ 
+     def collect(self):
+-        self._mount_obj_if_needed()
+         this_path = self.fspath.dirpath()
+         init_module = this_path.join("__init__.py")
+         if init_module.check(file=1) and path_matches_patterns(

@@ -1,0 +1,39 @@
+diff --git a/sympy/printing/pycode.py b/sympy/printing/pycode.py
+index b669a2c783..82cbfce679 100644
+--- a/sympy/printing/pycode.py
++++ b/sympy/printing/pycode.py
+@@ -5,8 +5,8 @@
+ """
+ from collections import defaultdict
+ from itertools import chain
+-from sympy.core import S
+-from .precedence import precedence
++from sympy.core import S, Mod
++from .precedence import precedence, PRECEDENCE
+ from .codeprinter import CodePrinter
+ 
+ _kw_py2and3 = {
+@@ -236,6 +236,23 @@ def _print_Mod(self, expr):
+         PREC = precedence(expr)
+         return ('{} % {}'.format(*map(lambda x: self.parenthesize(x, PREC), expr.args)))
+ 
++    def parenthesize(self, item, level, strict=False):
++        # Mod is printed using the infix ``%`` operator.  In Python this
++        # operator binds less tightly than unary minus (``-a % b`` is
++        # ``(-a) % b``), so a Mod appearing as a factor has to be
++        # parenthesized like an additive expression.  The SymPy precedence of
++        # Mod is that of a function because it is a ``Function`` subclass,
++        # which is too high here.  Printers that override ``_print_Mod`` to
++        # emit something with a different precedence (e.g. a function call)
++        # are not affected.
++        if (isinstance(item, Mod)
++                and type(self)._print_Mod is AbstractPythonCodePrinter._print_Mod):
++            prec = PRECEDENCE["Add"]
++            if (prec < level) or ((not strict) and prec <= level):
++                return "(%s)" % self._print(item)
++            return self._print(item)
++        return super().parenthesize(item, level, strict)
++
+     def _print_Piecewise(self, expr):
+         result = []
+         i = 0

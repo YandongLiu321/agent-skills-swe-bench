@@ -1,0 +1,70 @@
+diff --git a/pylint/lint/expand_modules.py b/pylint/lint/expand_modules.py
+index 5cacc037..16cba230 100755
+--- a/pylint/lint/expand_modules.py
++++ b/pylint/lint/expand_modules.py
+@@ -53,10 +53,22 @@ def _is_ignored_file(
+     ignore_list_paths_re: list[Pattern[str]],
+ ) -> bool:
+     basename = os.path.basename(element)
+-    return (
+-        basename in ignore_list
+-        or _is_in_ignore_list_re(basename, ignore_list_re)
+-        or _is_in_ignore_list_re(element, ignore_list_paths_re)
++    if basename in ignore_list or _is_in_ignore_list_re(basename, ignore_list_re):
++        return True
++
++    # A path can contain a mix of separators on Windows when a directory is
++    # given with a POSIX-style separator (for example ``src/gen\\file.py``).
++    # Normalize the path so that ``ignore-paths`` patterns written with either
++    # separator style are still honoured.
++    normalized_path = os.path.normpath(element)
++    paths_to_check = (
++        element,
++        normalized_path,
++        normalized_path.replace("\\", "/"),
++        normalized_path.replace("/", "\\"),
++    )
++    return any(
++        _is_in_ignore_list_re(path, ignore_list_paths_re) for path in paths_to_check
+     )
+ 
+ 
+@@ -140,9 +152,12 @@ def expand_modules(
+             ):
+                 if filepath == subfilepath:
+                     continue
+-                if _is_in_ignore_list_re(
+-                    os.path.basename(subfilepath), ignore_list_re
+-                ) or _is_in_ignore_list_re(subfilepath, ignore_list_paths_re):
++                if _is_ignored_file(
++                    subfilepath,
++                    ignore_list,
++                    ignore_list_re,
++                    ignore_list_paths_re,
++                ):
+                     continue
+ 
+                 modpath = _modpath_from_file(
+diff --git a/pylint/lint/pylinter.py b/pylint/lint/pylinter.py
+index e2bbf061..eea7da9b 100755
+--- a/pylint/lint/pylinter.py
++++ b/pylint/lint/pylinter.py
+@@ -611,9 +611,15 @@ class PyLinter(
+                         yield root
+                     else:
+                         yield from (
+-                            os.path.join(root, file)
+-                            for file in files
+-                            if file.endswith(".py")
++                            path
++                            for path in (os.path.join(root, file) for file in files)
++                            if path.endswith(".py")
++                            and not _is_ignored_file(
++                                path,
++                                self.config.ignore,
++                                self.config.ignore_patterns,
++                                self.config.ignore_paths,
++                            )
+                         )
+             else:
+                 yield something

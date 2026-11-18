@@ -1,0 +1,40 @@
+diff --git a/src/_pytest/mark/expression.py b/src/_pytest/mark/expression.py
+index 04c73411a..a6c5a63cb 100644
+--- a/src/_pytest/mark/expression.py
++++ b/src/_pytest/mark/expression.py
+@@ -39,6 +39,17 @@ __all__ = [
+ ]
+ 
+ 
++# Python's compiler requires ``None``, ``True`` and ``False`` to be
++# represented as constants rather than ``ast.Name`` nodes; using them as
++# names raises an error (and crashes the interpreter on debug builds).
++# In match expressions they are ordinary identifiers which should be looked
++# up in the matcher, so escape them with a prefix that cannot appear in an
++# identifier according to the grammar, and undo the escaping in
++# ``MatcherAdapter``.
++_NAME_ESCAPE = "@"
++_ESCAPED_NAMES = frozenset({"None", "True", "False"})
++
++
+ class TokenType(enum.Enum):
+     LPAREN = "left parenthesis"
+     RPAREN = "right parenthesis"
+@@ -161,6 +172,8 @@ def not_expr(s: Scanner) -> ast.expr:
+         return ret
+     ident = s.accept(TokenType.IDENT)
+     if ident:
++        if ident.value in _ESCAPED_NAMES:
++            return ast.Name(_NAME_ESCAPE + ident.value, ast.Load())
+         return ast.Name(ident.value, ast.Load())
+     s.reject((TokenType.NOT, TokenType.LPAREN, TokenType.IDENT))
+ 
+@@ -172,6 +185,8 @@ class MatcherAdapter(Mapping[str, bool]):
+         self.matcher = matcher
+ 
+     def __getitem__(self, key: str) -> bool:
++        if key.startswith(_NAME_ESCAPE):
++            key = key[len(_NAME_ESCAPE) :]
+         return self.matcher(key)
+ 
+     def __iter__(self) -> Iterator[str]:

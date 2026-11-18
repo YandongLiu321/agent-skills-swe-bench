@@ -1,0 +1,282 @@
+2026-10-07 02:10:25,694 - INFO - Creating container for sphinx-doc__sphinx-11510...
+2026-10-07 02:10:25,760 - INFO - Container for sphinx-doc__sphinx-11510 created: 9c25569cbba7a31c278d2bbbf71ec2b6b83b00f22165e51db8da0cea0607d809
+2026-10-07 02:10:25,931 - INFO - Container for sphinx-doc__sphinx-11510 started: 9c25569cbba7a31c278d2bbbf71ec2b6b83b00f22165e51db8da0cea0607d809
+2026-10-07 02:10:25,932 - INFO - Intermediate patch for sphinx-doc__sphinx-11510 written to logs\run_evaluation\sphinx__verification-before-completion\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-11510\patch.diff, now applying to container...
+2026-10-07 02:10:26,025 - INFO - >>>>> Applied Patch:
+Checking patch sphinx/directives/other.py...
+Checking patch sphinx/events.py...
+Applied patch sphinx/directives/other.py cleanly.
+Applied patch sphinx/events.py cleanly.
+
+2026-10-07 02:10:26,202 - INFO - Git diff before:
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..872c5dc0b 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,8 +1,12 @@
+ from __future__ import annotations
+ 
++import os
+ import re
++from contextlib import contextmanager
++from io import StringIO
+ from typing import TYPE_CHECKING, Any, cast
+ 
++from docutils import io as docutils_io
+ from docutils import nodes
+ from docutils.parsers.rst import directives
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+@@ -19,6 +23,8 @@ from sphinx.util.matching import Matcher, patfilter
+ from sphinx.util.nodes import explicit_title_re
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Iterator
++
+     from docutils.nodes import Element, Node
+ 
+     from sphinx.application import Sphinx
+@@ -362,6 +368,26 @@ class Only(SphinxDirective):
+             memo.section_level = surrounding_section_level
+ 
+ 
++@contextmanager
++def _patch_docutils_file_input(path: str, content: str) -> Iterator[None]:
++    """Temporarily patch ``docutils.io.FileInput`` for a single file."""
++    original = docutils_io.FileInput
++
++    class _FileInput(original):  # type: ignore[misc, valid-type]
++        def __init__(self, source=None, source_path=None, *args, **kwargs):
++            if source is None and source_path is not None and \
++               os.path.normcase(os.path.abspath(source_path)) == \
++               os.path.normcase(os.path.abspath(path)):
++                source = StringIO(content)
++            super().__init__(source, source_path, *args, **kwargs)
++
++    docutils_io.FileInput = _FileInput  # type: ignore[assignment]
++    try:
++        yield
++    finally:
++        docutils_io.FileInput = original  # type: ignore[assignment]
++
++
+ class Include(BaseInclude, SphinxDirective):
+     """
+     Like the standard "Include" directive, but interprets absolute paths
+@@ -373,9 +399,41 @@ class Include(BaseInclude, SphinxDirective):
+            self.arguments[0].endswith('>'):
+             # docutils "standard" includes, do not do path processing
+             return super().run()
++
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
++
++        # Read the included file and let extensions modify its contents.
++        encoding = self.options.get('encoding', self.state.document.settings.input_encoding)
++        error_handler = self.state.document.settings.input_encoding_error_handler
++        try:
++            include_file = docutils_io.FileInput(source_path=filename,
++                                                 encoding=encoding,
++                                                 error_handler=error_handler)
++            content = include_file.read()
++        except (OSError, UnicodeError):
++            # Let docutils report the error with its usual message.
++            return super().run()
++
++        original_content = content
++
++        # Let extensions modify the included content via the legacy
++        # source-read event when the file is also a document.
++        docname = self.env.path2doc(filename)
++        if (docname and
++                self.env.events.listeners.get('source-read') and
++                not self.env.events.listeners.get('include-read')):
++            source = [content]
++            self.env.events.emit('source-read', docname, source)
++            content = source[0]
++
++        source = [content]
++        self.env.events.emit('include-read', rel_filename, self.env.docname, source)
++
++        if source[0] != original_content:
++            with _patch_docutils_file_input(filename, source[0]):
++                return super().run()
+         return super().run()
+ 
+ 
+diff --git a/sphinx/events.py b/sphinx/events.py
+index c3fdb37c1..dad33aa63 100644
+--- a/sphinx/events.py
++++ b/sphinx/events.py
+@@ -38,6 +38,7 @@ core_events = {
+     'env-before-read-docs': 'env, docnames',
+     'env-check-consistency': 'env',
+     'source-read': 'docname, source text',
++    'include-read': 'relative path, parent docname, source text',
+     'doctree-read': 'the doctree before being pickled',
+     'env-merge-info': 'env, read docnames, other env instance',
+     'missing-reference': 'env, node, contnode',
+2026-10-07 02:10:26,203 - INFO - Eval script for sphinx-doc__sphinx-11510 written to logs\run_evaluation\sphinx__verification-before-completion\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-11510\eval.sh; copying to container...
+2026-10-07 02:10:30,833 - INFO - Test runtime: 4.58 seconds
+2026-10-07 02:10:30,834 - INFO - Test output for sphinx-doc__sphinx-11510 written to logs\run_evaluation\sphinx__verification-before-completion\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-11510\test_output.txt
+2026-10-07 02:10:30,869 - INFO - Git diff after:
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..872c5dc0b 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,8 +1,12 @@
+ from __future__ import annotations
+ 
++import os
+ import re
++from contextlib import contextmanager
++from io import StringIO
+ from typing import TYPE_CHECKING, Any, cast
+ 
++from docutils import io as docutils_io
+ from docutils import nodes
+ from docutils.parsers.rst import directives
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+@@ -19,6 +23,8 @@ from sphinx.util.matching import Matcher, patfilter
+ from sphinx.util.nodes import explicit_title_re
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Iterator
++
+     from docutils.nodes import Element, Node
+ 
+     from sphinx.application import Sphinx
+@@ -362,6 +368,26 @@ class Only(SphinxDirective):
+             memo.section_level = surrounding_section_level
+ 
+ 
++@contextmanager
++def _patch_docutils_file_input(path: str, content: str) -> Iterator[None]:
++    """Temporarily patch ``docutils.io.FileInput`` for a single file."""
++    original = docutils_io.FileInput
++
++    class _FileInput(original):  # type: ignore[misc, valid-type]
++        def __init__(self, source=None, source_path=None, *args, **kwargs):
++            if source is None and source_path is not None and \
++               os.path.normcase(os.path.abspath(source_path)) == \
++               os.path.normcase(os.path.abspath(path)):
++                source = StringIO(content)
++            super().__init__(source, source_path, *args, **kwargs)
++
++    docutils_io.FileInput = _FileInput  # type: ignore[assignment]
++    try:
++        yield
++    finally:
++        docutils_io.FileInput = original  # type: ignore[assignment]
++
++
+ class Include(BaseInclude, SphinxDirective):
+     """
+     Like the standard "Include" directive, but interprets absolute paths
+@@ -373,9 +399,41 @@ class Include(BaseInclude, SphinxDirective):
+            self.arguments[0].endswith('>'):
+             # docutils "standard" includes, do not do path processing
+             return super().run()
++
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
++
++        # Read the included file and let extensions modify its contents.
++        encoding = self.options.get('encoding', self.state.document.settings.input_encoding)
++        error_handler = self.state.document.settings.input_encoding_error_handler
++        try:
++            include_file = docutils_io.FileInput(source_path=filename,
++                                                 encoding=encoding,
++                                                 error_handler=error_handler)
++            content = include_file.read()
++        except (OSError, UnicodeError):
++            # Let docutils report the error with its usual message.
++            return super().run()
++
++        original_content = content
++
++        # Let extensions modify the included content via the legacy
++        # source-read event when the file is also a document.
++        docname = self.env.path2doc(filename)
++        if (docname and
++                self.env.events.listeners.get('source-read') and
++                not self.env.events.listeners.get('include-read')):
++            source = [content]
++            self.env.events.emit('source-read', docname, source)
++            content = source[0]
++
++        source = [content]
++        self.env.events.emit('include-read', rel_filename, self.env.docname, source)
++
++        if source[0] != original_content:
++            with _patch_docutils_file_input(filename, source[0]):
++                return super().run()
+         return super().run()
+ 
+ 
+diff --git a/sphinx/events.py b/sphinx/events.py
+index c3fdb37c1..dad33aa63 100644
+--- a/sphinx/events.py
++++ b/sphinx/events.py
+@@ -38,6 +38,7 @@ core_events = {
+     'env-before-read-docs': 'env, docnames',
+     'env-check-consistency': 'env',
+     'source-read': 'docname, source text',
++    'include-read': 'relative path, parent docname, source text',
+     'doctree-read': 'the doctree before being pickled',
+     'env-merge-info': 'env, read docnames, other env instance',
+     'missing-reference': 'env, node, contnode',
+diff --git a/tests/test_directive_other.py b/tests/test_directive_other.py
+index f221db075..45bd03304 100644
+--- a/tests/test_directive_other.py
++++ b/tests/test_directive_other.py
+@@ -148,3 +148,40 @@ def test_toctree_twice(app):
+     assert_node(doctree[0][0],
+                 entries=[(None, 'foo'), (None, 'foo')],
+                 includefiles=['foo', 'foo'])
++
++
++@pytest.mark.sphinx(testroot='directive-include')
++def test_include_source_read_event(app):
++    sources_reported = {}
++
++    def source_read_handler(app, doc, source):
++        sources_reported[doc] = source[0]
++
++    app.connect("source-read", source_read_handler)
++    text = (".. include:: baz/baz.rst\n"
++            "   :start-line: 4\n\n"
++            ".. include:: text.txt\n"
++            "   :literal:    \n")
++    app.env.find_files(app.config, app.builder)
++    restructuredtext.parse(app, text, 'index')
++    assert "index" in sources_reported
++    assert "text.txt" not in sources_reported  # text was included as literal, no rst parsing
++    assert "baz/baz" in sources_reported
++    assert sources_reported["baz/baz"] == "\nBaz was here."
++
++
++@pytest.mark.sphinx(testroot='directive-include')
++def test_include_source_read_event_nested_includes(app):
++
++    def source_read_handler(app, doc, source):
++        text = source[0].replace("#magical", "amazing")
++        source[0] = text
++
++    app.connect("source-read", source_read_handler)
++    text = (".. include:: baz/baz.rst\n")
++    app.env.find_files(app.config, app.builder)
++    doctree = restructuredtext.parse(app, text, 'index')
++    assert_node(doctree, addnodes.document)
++    assert len(doctree.children) == 3
++    assert_node(doctree.children[1], nodes.paragraph)
++    assert doctree.children[1].rawsource == "The amazing foo."
+2026-10-07 02:10:30,870 - INFO - Git diff changed after running eval script
+2026-10-07 02:10:30,870 - INFO - Grading answer for sphinx-doc__sphinx-11510...
+2026-10-07 02:10:30,871 - INFO - report: {'sphinx-doc__sphinx-11510': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_directive_other.py::test_include_source_read_event_nested_includes'], 'failure': ['tests/test_directive_other.py::test_include_source_read_event']}, 'PASS_TO_PASS': {'success': ['tests/test_directive_other.py::test_toctree', 'tests/test_directive_other.py::test_relative_toctree', 'tests/test_directive_other.py::test_toctree_urls_and_titles', 'tests/test_directive_other.py::test_toctree_glob', 'tests/test_directive_other.py::test_toctree_glob_and_url', 'tests/test_directive_other.py::test_reversed_toctree', 'tests/test_directive_other.py::test_toctree_twice'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-11510: resolved: False
+2026-10-07 02:10:30,872 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-11510.sphinx__verification-before-completion...
+2026-10-07 02:10:46,107 - INFO - Container sweb.eval.sphinx-doc__sphinx-11510.sphinx__verification-before-completion stopped successfully.
+2026-10-07 02:10:46,107 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-11510.sphinx__verification-before-completion...
+2026-10-07 02:10:46,186 - INFO - Container sweb.eval.sphinx-doc__sphinx-11510.sphinx__verification-before-completion removed successfully.

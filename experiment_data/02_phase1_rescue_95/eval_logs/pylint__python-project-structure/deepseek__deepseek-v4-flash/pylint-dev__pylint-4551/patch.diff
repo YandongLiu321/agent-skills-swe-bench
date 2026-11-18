@@ -1,0 +1,137 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..26d17772 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -23,6 +23,76 @@ import astroid
+ from pylint.pyreverse import utils
+ 
+ 
++def _get_argument_annotation(node):
++    """Return the annotation node of an argument node, if any.
++
++    ``node`` is expected to be an ``astroid.AssignName`` that belongs to an
++    ``astroid.Arguments`` node (i.e. a function or lambda parameter).
++    """
++    parent = node.parent
++    if not isinstance(parent, astroid.Arguments):
++        return None
++    for args, annotations in (
++        (parent.posonlyargs or (), parent.posonlyargs_annotations or ()),
++        (parent.args or (), parent.annotations or ()),
++        (parent.kwonlyargs or (), parent.kwonlyargs_annotations or ()),
++    ):
++        if node in args:
++            index = args.index(node)
++            if index < len(annotations):
++                return annotations[index]
++            return None
++    if node is parent.vararg:
++        return parent.varargannotation
++    if node is parent.kwarg:
++        return parent.kwargannotation
++    return None
++
++
++def _get_annotation(node):
++    """Return the annotation node bound to the given assignment node.
++
++    The annotation can be attached directly to the node (``x: int``,
++    ``self.x: int``) or to a function argument which is assigned to the
++    attribute (``self.x = x`` where ``x`` is an annotated argument).
++    """
++    if isinstance(node.parent, astroid.AnnAssign):
++        return node.parent.annotation
++    annotation = _get_argument_annotation(node)
++    if annotation is not None:
++        return annotation
++    if isinstance(node, astroid.AssignAttr):
++        assigned = node.parent
++        value = getattr(assigned, "value", None)
++        if isinstance(value, astroid.Name):
++            try:
++                _scope, definitions = value.lookup(value.name)
++            except astroid.exceptions.AstroidError:
++                return None
++            for definition in definitions:
++                annotation = _get_annotation(definition)
++                if annotation is not None:
++                    return annotation
++    return None
++
++
++def _get_type_values(node):
++    """Return the set of inferred nodes used as the type of an assignment.
++
++    Prefer the type annotation when one is available, otherwise fall back to
++    the inferred value of the assigned expression.
++    """
++    annotation = _get_annotation(node)
++    if annotation is not None:
++        try:
++            inferred = list(annotation.infer())
++        except astroid.InferenceError:
++            inferred = []
++        if inferred:
++            return set(inferred)
++    return set(node.infer())
++
++
+ def _iface_hdlr(_):
+     """Handler used by interfaces to handle suspicious interface nodes."""
+     return True
+@@ -218,7 +288,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            values = _get_type_values(node)
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +300,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            values = _get_type_values(node)
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/utils.py b/pylint/pyreverse/utils.py
+index a24d227e..1b46edec 100644
+--- a/pylint/pyreverse/utils.py
++++ b/pylint/pyreverse/utils.py
+@@ -20,6 +20,8 @@ import os
+ import re
+ import sys
+ 
++import astroid
++
+ RCFILE = ".pyreverserc"
+ 
+ 
+@@ -93,6 +95,24 @@ def is_exception(node):
+     return node.type == "exception"
+ 
+ 
++def get_annotation(node, annotation):
++    """Return the annotation of the given node as a string, if any.
++
++    :param node: The node which may carry an annotation through its parent
++        (for instance an ``astroid.AssignName`` or ``astroid.AssignAttr``).
++    :param annotation: A potentially already resolved annotation node, which
++        is used when the annotation is not directly attached to ``node``.
++    """
++    if isinstance(node.parent, astroid.AnnAssign):
++        annotation = node.parent.annotation
++    if annotation is not None:
++        if isinstance(annotation, astroid.Subscript):
++            return annotation.as_string()
++        if isinstance(annotation, astroid.Name):
++            return annotation.name
++    return None
++
++
+ # Helpers #####################################################################
+ 
+ _CONSTRUCTOR = 1

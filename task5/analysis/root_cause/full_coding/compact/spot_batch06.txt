@@ -1,0 +1,694 @@
+
+##########################################################################################
+## [0203] sympy__sympy-14248 · code-review-and-quality | B=wrong_fix
+files: patch=sympy/printing/latex.py;sympy/printing/pretty/pretty.py;sympy/printing/str.py | gold=sympy/printing/latex.py;sympy/printing/pretty/pretty.py;sympy/printing/str.py | test=sympy/printing/pretty/tests/test_pretty.py;sympy/printing/tests/test_ccode.py;sympy/printing/tests/test_fcode.py;sympy/printing/tests/test_jscode.py;sympy/printing/tests/test_julia.py;sympy/printing/tests/test_latex.py;sympy/printing/tests/test_octave.py;sympy/printing/tests/test_rcode.py;sympy/printing/tests/test_str.py
+overlap: exact=True subset=True disjoint=False touched_gold=3/3 func_jaccard=0.8
+signals: eq=16 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 三个printer补丁未满足目标精确输出；官方MatrixSymbol打印断言失败，局部pytest缺失使实际验证受阻。 | 最终补丁第1行：diff --git a/sympy/printing/latex.py b/sympy/printing/latex.py
+F2P: test_MatrixElement_printing | test_MatrixSymbol_printing
+--- FINAL PATCH ---
+diff --git a/sympy/printing/latex.py b/sympy/printing/latex.py
+index 8253b2f68..32f8f5bee 100644
+--- a/sympy/printing/latex.py
++++ b/sympy/printing/latex.py
+@@ -1477,9 +1477,17 @@ def _print_Adjoint(self, expr):
+             return r"%s^\dagger" % self._print(mat)
+ 
+     def _print_MatAdd(self, expr):
+-        terms = list(expr.args)
+-        tex = " + ".join(map(self._print, terms))
+-        return tex
++        s = None
++        for item in expr.args:
++            pform = self._print(item)
++            if s is None:
++                s = pform     # First element
++            else:
++                if S(item.args[0]).is_negative:
++                    s = s + ' ' + pform
++                else:
++                    s = s + ' + ' + pform
++        return s
+ 
+     def _print_MatMul(self, expr):
+         from sympy import Add, MatAdd, HadamardProduct
+@@ -1488,6 +1496,8 @@ def parens(x):
+             if isinstance(x, (Add, MatAdd, HadamardProduct)):
+                 return r"\left(%s\right)" % self._print(x)
+             return self._print(x)
++        if expr.args[0] == -1:
++            return '-' + ' '.join(map(parens, expr.args[1:]))
+         return ' '.join(map(parens, expr.args))
+ 
+     def _print_Mod(self, expr, exp=None):
+diff --git a/sympy/printing/pretty/pretty.py b/sympy/printing/pretty/pretty.py
+index db24f4c61..1858ffc95 100644
+--- a/sympy/printing/pretty/pretty.py
++++ b/sympy/printing/pretty/pretty.py
+@@ -819,7 +819,20 @@ def _print_BlockMatrix(self, B):
+         return self._print(B.blocks)
+ 
+     def _print_MatAdd(self, expr):
+-        return self._print_seq(expr.args, None, None, ' + ')
++        s = None
++        for item in expr.args:
++            pform = self._print(item)
++            if s is None:
++                s = pform     # First element
++            else:
++                if S(item.args[0]).is_negative:
++                    s = prettyForm(*stringPict.next(s, ' '))
++                    s = prettyForm(*stringPict.next(s, pform))
++                else:
++                    s = prettyForm(*stringPict.next(s, ' + '))
++                    s = prettyForm(*stringPict.next(s, pform))
++
++        return s
+ 
+     def _print_MatMul(self, expr):
+         args = list(expr.args)
+diff --git a/sympy/printing/str.py b/sympy/printing/str.py
+index 0baefe0f7..4ccb6efbb 100644
+--- a/sympy/printing/str.py
++++ b/sympy/printing/str.py
+@@ -304,6 +304,9 @@ def _print_Mul(self, expr):
+             return sign + '*'.join(a_str) + "/(%s)" % '*'.join(b_str)
+ 
+     def _print_MatMul(self, expr):
++        if expr.args[0] == -1:
++            return '-' + '*'.join([self.parenthesize(arg, precedence(expr))
++                for arg in expr.args[1:]])
+         return '*'.join([self.parenthesize(arg, precedence(expr))
+             for arg in expr.args])
+ 
+@@ -312,8 +315,17 @@ def _print_HadamardProduct(self, expr):
+             for arg in expr.args])
+ 
+     def _print_MatAdd(self, expr):
+-        return ' + '.join([self.parenthesize(arg, precedence(expr))
+-            for arg in expr.args])
++        s = None
++        for item in expr.args:
++            pform = self._print(item)
++            if s is None:
++                s = pform     # First element
++            else:
++                if S(item.args[0]).is_negative:
++                    s = s + ' ' + pform
++                else:
++                    s = s + ' + ' + pform
++        return s
+ 
+     def _print_NaN(self, expr):
+         return 'nan'
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/printing/latex.py b/sympy/printing/latex.py
++++ b/sympy/printing/latex.py
+@@ -1477,18 +1477,33 @@ def _print_Adjoint(self, expr):
++        terms = [self._print(t) for t in expr.args]
++        l = []
++        for t in terms:
++            if t.startswith('-'):
++                sign = "-"
++                t = t[1:]
++            else:
++                sign = "+"
++            l.extend([sign, t])
++        sign = l.pop(0)
++        if sign == '+':
++            sign = ""
++        return sign + ' '.join(l)
++        from sympy import Add, MatAdd, HadamardProduct, MatMul, Mul
++
++        if isinstance(expr, MatMul) and expr.args[0].is_Number and expr.args[0]<0:
++            expr = Mul(-1*expr.args[0], MatMul(*expr.args[1:]))
++            return '-' + ' '.join(map(parens, expr.args))
++        else:
++            return ' '.join(map(parens, expr.args))
+diff --git a/sympy/printing/pretty/pretty.py b/sympy/printing/pretty/pretty.py
++++ b/sympy/printing/pretty/pretty.py
+@@ -819,7 +819,20 @@ def _print_BlockMatrix(self, B):
++        s = None
++        for item in expr.args:
++            pform = self._print(item)
++            if s is None:
++                s = pform     # First element
++            else:
++                if S(item.args[0]).is_negative:
++                    s = prettyForm(*stringPict.next(s, ' '))
++                    pform = self._print(item)
++                else:
++                    s = prettyForm(*stringPict.next(s, ' + '))
++                s = prettyForm(*stringPict.next(s, pform))
++
++        return s
+diff --git a/sympy/printing/str.py b/sympy/printing/str.py
++++ b/sympy/printing/str.py
+@@ -304,7 +304,14 @@ def _print_Mul(self, expr):
++        c, m = expr.as_coeff_mmul()
++        if c.is_number and c < 0:
++            expr = _keep_coeff(-c, m)
++            sign = "-"
++        else:
++            sign = ""
++
++        return sign + '*'.join([self.parenthesize(arg, precedence(expr))
+@@ -312,8 +319,20 @@ def _print_HadamardProduct(self, expr):
++        terms = [self.parenthesize(arg, precedence(expr))
++             for arg in expr.args]
++        l = []
++        for t in terms:
++            if t.startswith('-'):
++                sign = "-"
++                t = t[1:]
++            else:
++                sign = "+"
++            l.extend([sign, t])
++        sign = l.pop(0)
++        if sign == '+':
++            sign = ""
++        return sign + ' '.join(l)
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/printing/pretty/tests/test_pretty.py b/sympy/printing/pretty/tests/test_pretty.py
+@@ -6089,6 +6089,17 @@ def test_MatrixElement_printing():
++def test_MatrixSymbol_printing():
++    # test cases for issue #14237
++    A = MatrixSymbol("A", 3, 3)
++    B = MatrixSymbol("B", 3, 3)
++    C = MatrixSymbol("C", 3, 3)
++
++    assert pretty(-A*B*C) == "-A*B*C"
++    assert pretty(A - B) == "-B + A"
++    assert pretty(A*B*C - A*B - B*C) == "-A*B -B*C + A*B*C"
++
++
+diff --git a/sympy/printing/tests/test_ccode.py b/sympy/printing/tests/test_ccode.py
+@@ -755,7 +755,7 @@ def test_MatrixElement_printing():
++    assert(ccode(F) == "(-B + A)[0]")
+diff --git a/sympy/printing/tests/test_fcode.py b/sympy/printing/tests/test_fcode.py
+@@ -756,4 +756,4 @@ def test_MatrixElement_printing():
++    assert(fcode(F) == "      (-B + A)(1, 1)")
+diff --git a/sympy/printing/tests/test_jscode.py b/sympy/printing/tests/test_jscode.py
+@@ -382,4 +382,4 @@ def test_MatrixElement_printing():
++    assert(jscode(F) == "(-B + A)[0]")
+diff --git a/sympy/printing/tests/test_julia.py b/sympy/printing/tests/test_julia.py
+@@ -374,4 +374,4 @@ def test_MatrixElement_printing():
++    assert(julia_code(F) == "(-B + A)[1,1]")
+diff --git a/sympy/printing/tests/test_latex.py b/sympy/printing/tests/test_latex.py
+@@ -1710,7 +1710,18 @@ def test_MatrixElement_printing():
++    assert latex(F) == r"\left(-B + A\right)_{0, 0}"
++
++
++def test_MatrixSymbol_printing():
++    # test cases for issue #14237
++    A = MatrixSymbol("A", 3, 3)
++    B = MatrixSymbol("B", 3, 3)
++    C = MatrixSymbol("C", 3, 3)
++
++    assert latex(-A) == r"-A"
++    assert latex(A - A*B - B) == r"-B - A B + A"
++    assert latex(-A*B - A*B*C - B) == r"-B - A B - A B C"
+diff --git a/sympy/printing/tests/test_octave.py b/sympy/printing/tests/test_octave.py
+@@ -394,4 +394,4 @@ def test_MatrixElement_printing():
++    assert mcode(F) == "(-B + A)(1, 1)"
+diff --git a/sympy/printing/tests/test_rcode.py b/sympy/printing/tests/test_rcode.py
+@@ -488,4 +488,4 @@ def test_MatrixElement_printing():
++    assert(rcode(F) == "(-B + A)[0]")
+diff --git a/sympy/printing/tests/test_str.py b/sympy/printing/tests/test_str.py
+@@ -784,4 +784,12 @@ def test_MatrixElement_printing():
++    assert str(F) == "(-B + A)[0, 0]"
++
++
++def test_MatrixSymbol_printing():
++    A = MatrixSymbol("A", 3, 3)
++    B = MatrixSymbol("B", 3, 3)
++
++    assert str(A - A*B - B) == "-B - A*B + A"
++    assert str(A*B - (A+B)) == "-(A + B) + A*B"
+
+##########################################################################################
+## [0204] sympy__sympy-15017 · code-review-and-quality | B=wrong_fix
+files: patch=sympy/tensor/array/dense_ndim_array.py;sympy/tensor/array/ndim_array.py;sympy/tensor/array/sparse_ndim_array.py | gold=sympy/tensor/array/dense_ndim_array.py | test=sympy/tensor/array/tests/test_immutable_ndim_array.py
+overlap: exact=False subset=False disjoint=False touched_gold=1/1 func_jaccard=0.3333333333333333
+signals: eq=4 is=0 in=0 raises=0 new_tests_in_f2p=n/a conflict=False status=patch
+evidence: 新增rank-0整数索引禁用条件；正式断言rank_zero_array[0] == x触发ValueError，recovery还写了期待该异常的本地断言。 | 最终补丁第32行：+            if self._rank == 0 or index >= self._loop_size:
+F2P: test_ndim_array_initiation
+--- FINAL PATCH ---
+diff --git a/sympy/tensor/array/dense_ndim_array.py b/sympy/tensor/array/dense_ndim_array.py
+index 9be94a863..9cf377d6d 100644
+--- a/sympy/tensor/array/dense_ndim_array.py
++++ b/sympy/tensor/array/dense_ndim_array.py
+@@ -149,7 +149,7 @@ def _new(cls, iterable, shape, **kwargs):
+         self._shape = shape
+         self._array = list(flat_list)
+         self._rank = len(shape)
+-        self._loop_size = functools.reduce(lambda x,y: x*y, shape) if shape else 0
++        self._loop_size = functools.reduce(lambda x, y: x*y, shape, 1)
+         return self
+ 
+     def __setitem__(self, index, value):
+@@ -174,7 +174,7 @@ def _new(cls, iterable, shape, **kwargs):
+         self._shape = shape
+         self._array = list(flat_list)
+         self._rank = len(shape)
+-        self._loop_size = functools.reduce(lambda x,y: x*y, shape) if shape else 0
++        self._loop_size = functools.reduce(lambda x, y: x*y, shape, 1)
+         return self
+ 
+     def __setitem__(self, index, value):
+diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py
+index 099b29116..8b7fc2fd7 100644
+--- a/sympy/tensor/array/ndim_array.py
++++ b/sympy/tensor/array/ndim_array.py
+@@ -66,7 +66,7 @@ def __new__(cls, iterable, shape=None, **kwargs):
+     def _parse_index(self, index):
+ 
+         if isinstance(index, (SYMPY_INTS, Integer)):
+-            if index >= self._loop_size:
++            if self._rank == 0 or index >= self._loop_size:
+                 raise ValueError("index out of range")
+             return index
+ 
+diff --git a/sympy/tensor/array/sparse_ndim_array.py b/sympy/tensor/array/sparse_ndim_array.py
+index 72b5d5129..32d0dd780 100644
+--- a/sympy/tensor/array/sparse_ndim_array.py
++++ b/sympy/tensor/array/sparse_ndim_array.py
+@@ -112,7 +112,7 @@ def tomatrix(self):
+     def __iter__(self):
+         def iterator():
+             for i in range(self._loop_size):
+-                yield self[i]
++                yield self._sparse_array.get(i, S.Zero)
+         return iterator()
+ 
+     def reshape(self, *newshape):
+@@ -130,7 +130,7 @@ def __new__(cls, iterable=None, shape=None, **kwargs):
+ 
+         shape, flat_list = cls._handle_ndarray_creation_inputs(iterable, shape, **kwargs)
+         shape = Tuple(*map(_sympify, shape))
+-        loop_size = functools.reduce(lambda x,y: x*y, shape) if shape else 0
++        loop_size = functools.reduce(lambda x, y: x*y, shape, 1)
+ 
+         # Sparse array:
+         if isinstance(flat_list, (dict, Dict)):
+@@ -167,7 +167,7 @@ def __new__(cls, iterable=None, shape=None, **kwargs):
+         self = object.__new__(cls)
+         self._shape = shape
+         self._rank = len(shape)
+-        self._loop_size = functools.reduce(lambda x,y: x*y, shape) if shape else 0
++        self._loop_size = functools.reduce(lambda x, y: x*y, shape, 1)
+ 
+         # Sparse array:
+         if isinstance(flat_list, (dict, Dict)):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/tensor/array/dense_ndim_array.py b/sympy/tensor/array/dense_ndim_array.py
++++ b/sympy/tensor/array/dense_ndim_array.py
+@@ -149,7 +149,7 @@ def _new(cls, iterable, shape, **kwargs):
++        self._loop_size = functools.reduce(lambda x,y: x*y, shape, 1)
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/tensor/array/tests/test_immutable_ndim_array.py b/sympy/tensor/array/tests/test_immutable_ndim_array.py
+@@ -9,6 +9,10 @@
++    arr_with_no_elements = ImmutableDenseNDimArray([], shape=(0,))
++    assert len(arr_with_no_elements) == 0
++    assert arr_with_no_elements.rank() == 1
++
+@@ -73,11 +77,11 @@ def test_ndim_array_initiation():
++    assert len(rank_zero_array) == 1
++    assert rank_zero_array[0] == x
+
+##########################################################################################
+## [0207] sympy__sympy-14248 · debugging-and-error-recovery | B=wrong_fix
+files: patch=sympy/printing/latex.py;sympy/printing/pretty/pretty.py;sympy/printing/str.py | gold=sympy/printing/latex.py;sympy/printing/pretty/pretty.py;sympy/printing/str.py | test=sympy/printing/pretty/tests/test_pretty.py;sympy/printing/tests/test_ccode.py;sympy/printing/tests/test_fcode.py;sympy/printing/tests/test_jscode.py;sympy/printing/tests/test_julia.py;sympy/printing/tests/test_latex.py;sympy/printing/tests/test_octave.py;sympy/printing/tests/test_rcode.py;sympy/printing/tests/test_str.py
+overlap: exact=True subset=True disjoint=False touched_gold=3/3 func_jaccard=0.75
+signals: eq=16 is=0 in=0 raises=0 new_tests_in_f2p=all conflict=False status=patch
+evidence: 三个printer补丁未满足目标精确输出；官方MatrixSymbol打印断言失败，局部pytest缺失使实际验证受阻。 | 最终补丁第1行：diff --git a/sympy/printing/latex.py b/sympy/printing/latex.py
+F2P: test_MatrixElement_printing | test_MatrixSymbol_printing
+--- FINAL PATCH ---
+diff --git a/sympy/printing/latex.py b/sympy/printing/latex.py
+index 8253b2f68..9a282a347 100644
+--- a/sympy/printing/latex.py
++++ b/sympy/printing/latex.py
+@@ -1478,7 +1478,23 @@ def _print_Adjoint(self, expr):
+ 
+     def _print_MatAdd(self, expr):
+         terms = list(expr.args)
+-        tex = " + ".join(map(self._print, terms))
++        tex = ""
++        for i, term in enumerate(terms):
++            coeff, mat = term.as_coeff_mmul()
++            coeff = S(coeff)
++            if _coeff_isneg(coeff):
++                sign = "-"
++                term = -coeff*mat
++            else:
++                sign = "+"
++            if i:
++                tex += " %s " % sign
++            elif sign == "-":
++                tex += "-"
++            term_tex = self._print(term)
++            if self._needs_add_brackets(term):
++                term_tex = r"\left(%s\right)" % term_tex
++            tex += term_tex
+         return tex
+ 
+     def _print_MatMul(self, expr):
+diff --git a/sympy/printing/pretty/pretty.py b/sympy/printing/pretty/pretty.py
+index db24f4c61..0c754197b 100644
+--- a/sympy/printing/pretty/pretty.py
++++ b/sympy/printing/pretty/pretty.py
+@@ -819,7 +819,36 @@ def _print_BlockMatrix(self, B):
+         return self._print(B.blocks)
+ 
+     def _print_MatAdd(self, expr):
+-        return self._print_seq(expr.args, None, None, ' + ')
++        terms = list(expr.args)
++
++        def pretty_negative(pform, index):
++            """Prepend a minus sign to a pretty form. """
++            if index == 0:
++                if pform.height() > 1:
++                    pform_neg = '- '
++                else:
++                    pform_neg = '-'
++            else:
++                pform_neg = ' - '
++
++            if (pform.binding > prettyForm.NEG
++                or pform.binding == prettyForm.ADD):
++                p = stringPict(*pform.parens())
++            else:
++                p = pform
++            p = stringPict.next(pform_neg, p)
++            return prettyForm(binding=prettyForm.NEG, *p)
++
++        pforms = []
++        for i, term in enumerate(terms):
++            coeff, mat = term.as_coeff_mmul()
++            coeff = S(coeff)
++            if _coeff_isneg(coeff):
++                term = -coeff*mat
++                pforms.append(pretty_negative(self._print(term), i))
++            else:
++                pforms.append(self._print(term))
++        return prettyForm.__add__(*pforms)
+ 
+     def _print_MatMul(self, expr):
+         args = list(expr.args)
+diff --git a/sympy/printing/str.py b/sympy/printing/str.py
+index 0baefe0f7..af8b1ce42 100644
+--- a/sympy/printing/str.py
++++ b/sympy/printing/str.py
+@@ -5,6 +5,7 @@
+ from __future__ import print_function, division
+ 
+ from sympy.core import S, Rational, Pow, Basic, Mul
++from sympy.core.function import _coeff_isneg
+ from sympy.core.mul import _keep_coeff
+ from .printer import Printer
+ from sympy.printing.precedence import precedence, PRECEDENCE
+@@ -312,8 +313,26 @@ def _print_HadamardProduct(self, expr):
+             for arg in expr.args])
+ 
+     def _print_MatAdd(self, expr):
+-        return ' + '.join([self.parenthesize(arg, precedence(expr))
+-            for arg in expr.args])
++        terms = list(expr.args)
++        PREC = precedence(expr)
++        l = []
++        for term in terms:
++            coeff, mat = term.as_coeff_mmul()
++            coeff = S(coeff)
++            if _coeff_isneg(coeff):
++                sign = "-"
++                term = -coeff*mat
++            else:
++                sign = "+"
++            t = self._print(term)
++            if precedence(term) < PREC:
++                l.extend([sign, "(%s)" % t])
++            else:
++                l.extend([sign, t])
++        sign = l.pop(0)
++        if sign == '+':
++            sign = ""
++        return sign + ' '.join(l)
+ 
+     def _print_NaN(self, expr):
+         return 'nan'
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/printing/latex.py b/sympy/printing/latex.py
++++ b/sympy/printing/latex.py
+@@ -1477,18 +1477,33 @@ def _print_Adjoint(self, expr):
++        terms = [self._print(t) for t in expr.args]
++        l = []
++        for t in terms:
++            if t.startswith('-'):
++                sign = "-"
++                t = t[1:]
++            else:
++                sign = "+"
++            l.extend([sign, t])
++        sign = l.pop(0)
++        if sign == '+':
++            sign = ""
++        return sign + ' '.join(l)
++        from sympy import Add, MatAdd, HadamardProduct, MatMul, Mul
++
++        if isinstance(expr, MatMul) and expr.args[0].is_Number and expr.args[0]<0:
++            expr = Mul(-1*expr.args[0], MatMul(*expr.args[1:]))
++            return '-' + ' '.join(map(parens, expr.args))
++        else:
++            return ' '.join(map(parens, expr.args))
+diff --git a/sympy/printing/pretty/pretty.py b/sympy/printing/pretty/pretty.py
++++ b/sympy/printing/pretty/pretty.py
+@@ -819,7 +819,20 @@ def _print_BlockMatrix(self, B):
++        s = None
++        for item in expr.args:
++            pform = self._print(item)
++            if s is None:
++                s = pform     # First element
++            else:
++                if S(item.args[0]).is_negative:
++                    s = prettyForm(*stringPict.next(s, ' '))
++                    pform = self._print(item)
++                else:
++                    s = prettyForm(*stringPict.next(s, ' + '))
++                s = prettyForm(*stringPict.next(s, pform))
++
++        return s
+diff --git a/sympy/printing/str.py b/sympy/printing/str.py
++++ b/sympy/printing/str.py
+@@ -304,7 +304,14 @@ def _print_Mul(self, expr):
++        c, m = expr.as_coeff_mmul()
++        if c.is_number and c < 0:
++            expr = _keep_coeff(-c, m)
++            sign = "-"
++        else:
++            sign = ""
++
++        return sign + '*'.join([self.parenthesize(arg, precedence(expr))
+@@ -312,8 +319,20 @@ def _print_HadamardProduct(self, expr):
++        terms = [self.parenthesize(arg, precedence(expr))
++             for arg in expr.args]
++        l = []
++        for t in terms:
++            if t.startswith('-'):
++                sign = "-"
++                t = t[1:]
++            else:
++                sign = "+"
++            l.extend([sign, t])
++        sign = l.pop(0)
++        if sign == '+':
++            sign = ""
++        return sign + ' '.join(l)
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/printing/pretty/tests/test_pretty.py b/sympy/printing/pretty/tests/test_pretty.py
+@@ -6089,6 +6089,17 @@ def test_MatrixElement_printing():
++def test_MatrixSymbol_printing():
++    # test cases for issue #14237
++    A = MatrixSymbol("A", 3, 3)
++    B = MatrixSymbol("B", 3, 3)
++    C = MatrixSymbol("C", 3, 3)
++
++    assert pretty(-A*B*C) == "-A*B*C"
++    assert pretty(A - B) == "-B + A"
++    assert pretty(A*B*C - A*B - B*C) == "-A*B -B*C + A*B*C"
++
++
+diff --git a/sympy/printing/tests/test_ccode.py b/sympy/printing/tests/test_ccode.py
+@@ -755,7 +755,7 @@ def test_MatrixElement_printing():
++    assert(ccode(F) == "(-B + A)[0]")
+diff --git a/sympy/printing/tests/test_fcode.py b/sympy/printing/tests/test_fcode.py
+@@ -756,4 +756,4 @@ def test_MatrixElement_printing():
++    assert(fcode(F) == "      (-B + A)(1, 1)")
+diff --git a/sympy/printing/tests/test_jscode.py b/sympy/printing/tests/test_jscode.py
+@@ -382,4 +382,4 @@ def test_MatrixElement_printing():
++    assert(jscode(F) == "(-B + A)[0]")
+diff --git a/sympy/printing/tests/test_julia.py b/sympy/printing/tests/test_julia.py
+@@ -374,4 +374,4 @@ def test_MatrixElement_printing():
++    assert(julia_code(F) == "(-B + A)[1,1]")
+diff --git a/sympy/printing/tests/test_latex.py b/sympy/printing/tests/test_latex.py
+@@ -1710,7 +1710,18 @@ def test_MatrixElement_printing():
++    assert latex(F) == r"\left(-B + A\right)_{0, 0}"
++
++
++def test_MatrixSymbol_printing():
++    # test cases for issue #14237
++    A = MatrixSymbol("A", 3, 3)
++    B = MatrixSymbol("B", 3, 3)
++    C = MatrixSymbol("C", 3, 3)
++
++    assert latex(-A) == r"-A"
++    assert latex(A - A*B - B) == r"-B - A B + A"
++    assert latex(-A*B - A*B*C - B) == r"-B - A B - A B C"
+diff --git a/sympy/printing/tests/test_octave.py b/sympy/printing/tests/test_octave.py
+@@ -394,4 +394,4 @@ def test_MatrixElement_printing():
++    assert mcode(F) == "(-B + A)(1, 1)"
+diff --git a/sympy/printing/tests/test_rcode.py b/sympy/printing/tests/test_rcode.py
+@@ -488,4 +488,4 @@ def test_MatrixElement_printing():
++    assert(rcode(F) == "(-B + A)[0]")
+diff --git a/sympy/printing/tests/test_str.py b/sympy/printing/tests/test_str.py
+@@ -784,4 +784,12 @@ def test_MatrixElement_printing():
++    assert str(F) == "(-B + A)[0, 0]"
++
++
++def test_MatrixSymbol_printing():
++    A = MatrixSymbol("A", 3, 3)
++    B = MatrixSymbol("B", 3, 3)
++
++    assert str(A - A*B - B) == "-B - A*B + A"
++    assert str(A*B - (A+B)) == "-(A + B) + A*B"
+
+##########################################################################################
+## [0209] sympy__sympy-15017 · debugging-and-error-recovery | B=wrong_fix
+files: patch=sympy/tensor/array/dense_ndim_array.py;sympy/tensor/array/ndim_array.py;sympy/tensor/array/sparse_ndim_array.py | gold=sympy/tensor/array/dense_ndim_array.py | test=sympy/tensor/array/tests/test_immutable_ndim_array.py
+overlap: exact=False subset=False disjoint=False touched_gold=1/1 func_jaccard=0.16666666666666666
+signals: eq=4 is=0 in=0 raises=0 new_tests_in_f2p=n/a conflict=False status=patch
+evidence: 新增rank-0整数索引禁用条件；正式断言rank_zero_array[0] == x触发ValueError，recovery还写了期待该异常的本地断言。 | 最终补丁第49行：+            if self._rank == 0:
+F2P: test_ndim_array_initiation
+--- FINAL PATCH ---
+diff --git a/sympy/tensor/array/dense_ndim_array.py b/sympy/tensor/array/dense_ndim_array.py
+index 9be94a863..b97ebf7f5 100644
+--- a/sympy/tensor/array/dense_ndim_array.py
++++ b/sympy/tensor/array/dense_ndim_array.py
+@@ -69,7 +69,7 @@ def slice_expand(s, dim):
+ 
+     @classmethod
+     def zeros(cls, *shape):
+-        list_length = functools.reduce(lambda x, y: x*y, shape)
++        list_length = functools.reduce(lambda x, y: x*y, shape, 1)
+         return cls._new(([0]*list_length,), shape)
+ 
+     def tomatrix(self):
+@@ -121,7 +121,7 @@ def reshape(self, *newshape):
+         [[1, 2], [3, 4], [5, 6]]
+ 
+         """
+-        new_total_size = functools.reduce(lambda x,y: x*y, newshape)
++        new_total_size = functools.reduce(lambda x,y: x*y, newshape, 1)
+         if new_total_size != self._loop_size:
+             raise ValueError("Invalid reshape parameters " + newshape)
+ 
+@@ -149,7 +149,7 @@ def _new(cls, iterable, shape, **kwargs):
+         self._shape = shape
+         self._array = list(flat_list)
+         self._rank = len(shape)
+-        self._loop_size = functools.reduce(lambda x,y: x*y, shape) if shape else 0
++        self._loop_size = functools.reduce(lambda x,y: x*y, shape, 1)
+         return self
+ 
+     def __setitem__(self, index, value):
+@@ -174,7 +174,7 @@ def _new(cls, iterable, shape, **kwargs):
+         self._shape = shape
+         self._array = list(flat_list)
+         self._rank = len(shape)
+-        self._loop_size = functools.reduce(lambda x,y: x*y, shape) if shape else 0
++        self._loop_size = functools.reduce(lambda x,y: x*y, shape, 1)
+         return self
+ 
+     def __setitem__(self, index, value):
+diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py
+index 099b29116..edd847cf3 100644
+--- a/sympy/tensor/array/ndim_array.py
++++ b/sympy/tensor/array/ndim_array.py
+@@ -66,6 +66,8 @@ def __new__(cls, iterable, shape=None, **kwargs):
+     def _parse_index(self, index):
+ 
+         if isinstance(index, (SYMPY_INTS, Integer)):
++            if self._rank == 0:
++                raise ValueError("index out of range")
+             if index >= self._loop_size:
+                 raise ValueError("index out of range")
+             return index
+@@ -307,6 +309,9 @@ def tolist(self):
+         [[1, 2], [3, 4]]
+         """
+ 
++        if self.rank() == 0:
++            return self[()]
++
+         def f(sh, shape_left, i, j):
+             if len(shape_left) == 1:
+                 return [self[e] for e in range(i, j)]
+diff --git a/sympy/tensor/array/sparse_ndim_array.py b/sympy/tensor/array/sparse_ndim_array.py
+index 72b5d5129..4351a63f2 100644
+--- a/sympy/tensor/array/sparse_ndim_array.py
++++ b/sympy/tensor/array/sparse_ndim_array.py
+@@ -111,12 +111,15 @@ def tomatrix(self):
+ 
+     def __iter__(self):
+         def iterator():
+-            for i in range(self._loop_size):
+-                yield self[i]
++            if self._rank == 0:
++                yield self[()]
++            else:
++                for i in range(self._loop_size):
++                    yield self[i]
+         return iterator()
+ 
+     def reshape(self, *newshape):
+-        new_total_size = functools.reduce(lambda x,y: x*y, newshape)
++        new_total_size = functools.reduce(lambda x,y: x*y, newshape, 1)
+         if new_total_size != self._loop_size:
+             raise ValueError("Invalid reshape parameters " + newshape)
+ 
+@@ -130,7 +133,7 @@ def __new__(cls, iterable=None, shape=None, **kwargs):
+ 
+         shape, flat_list = cls._handle_ndarray_creation_inputs(iterable, shape, **kwargs)
+         shape = Tuple(*map(_sympify, shape))
+-        loop_size = functools.reduce(lambda x,y: x*y, shape) if shape else 0
++        loop_size = functools.reduce(lambda x,y: x*y, shape, 1)
+ 
+         # Sparse array:
+         if isinstance(flat_list, (dict, Dict)):
+@@ -167,7 +170,7 @@ def __new__(cls, iterable=None, shape=None, **kwargs):
+         self = object.__new__(cls)
+         self._shape = shape
+         self._rank = len(shape)
+-        self._loop_size = functools.reduce(lambda x,y: x*y, shape) if shape else 0
++        self._loop_size = functools.reduce(lambda x,y: x*y, shape, 1)
+ 
+         # Sparse array:
+         if isinstance(flat_list, (dict, Dict)):
+
+--- GOLD (headers/+ lines) ---
+diff --git a/sympy/tensor/array/dense_ndim_array.py b/sympy/tensor/array/dense_ndim_array.py
++++ b/sympy/tensor/array/dense_ndim_array.py
+@@ -149,7 +149,7 @@ def _new(cls, iterable, shape, **kwargs):
++        self._loop_size = functools.reduce(lambda x,y: x*y, shape, 1)
+--- TEST (headers/+ lines) ---
+diff --git a/sympy/tensor/array/tests/test_immutable_ndim_array.py b/sympy/tensor/array/tests/test_immutable_ndim_array.py
+@@ -9,6 +9,10 @@
++    arr_with_no_elements = ImmutableDenseNDimArray([], shape=(0,))
++    assert len(arr_with_no_elements) == 0
++    assert arr_with_no_elements.rank() == 1
++
+@@ -73,11 +77,11 @@ def test_ndim_array_initiation():
++    assert len(rank_zero_array) == 1
++    assert rank_zero_array[0] == x

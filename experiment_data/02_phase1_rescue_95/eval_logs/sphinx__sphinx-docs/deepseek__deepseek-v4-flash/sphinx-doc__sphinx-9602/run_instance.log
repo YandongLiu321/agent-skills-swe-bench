@@ -1,0 +1,244 @@
+2026-10-07 02:06:59,316 - INFO - Creating container for sphinx-doc__sphinx-9602...
+2026-10-07 02:06:59,369 - INFO - Container for sphinx-doc__sphinx-9602 created: 34829dc0846903150646eb8fc1416b93eb28549d3a7bb319cf943ebc5c23f62b
+2026-10-07 02:06:59,493 - INFO - Container for sphinx-doc__sphinx-9602 started: 34829dc0846903150646eb8fc1416b93eb28549d3a7bb319cf943ebc5c23f62b
+2026-10-07 02:06:59,494 - INFO - Intermediate patch for sphinx-doc__sphinx-9602 written to logs\run_evaluation\sphinx__sphinx-docs\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-9602\patch.diff, now applying to container...
+2026-10-07 02:06:59,570 - INFO - >>>>> Applied Patch:
+Checking patch sphinx/domains/python.py...
+Applied patch sphinx/domains/python.py cleanly.
+
+2026-10-07 02:06:59,731 - INFO - Git diff before:
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index 9875a9f4b..5ea27fd31 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -109,7 +109,18 @@ def type_to_xref(text: str, env: BuildEnvironment = None) -> addnodes.pending_xr
+ 
+ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Node]:
+     """Parse type annotation."""
+-    def unparse(node: ast.AST) -> List[Node]:
++    literals: List[Node] = []
++
++    def _is_literal(node: ast.AST) -> bool:
++        """Check if the given node represents ``typing.Literal``."""
++        if isinstance(node, ast.Name):
++            return node.id == 'Literal'
++        elif isinstance(node, ast.Attribute):
++            return node.attr == 'Literal'
++        else:
++            return False
++
++    def unparse(node: ast.AST, literal: bool = False) -> List[Node]:
+         if isinstance(node, ast.Attribute):
+             return [nodes.Text("%s.%s" % (unparse(node.value)[0], node.attr))]
+         elif isinstance(node, ast.BinOp):
+@@ -122,12 +133,18 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+         elif isinstance(node, ast.Constant):  # type: ignore
+             if node.value is Ellipsis:
+                 return [addnodes.desc_sig_punctuation('', "...")]
++            elif literal:
++                # a value of ``Literal`` is not a type; render it as-is and
++                # never turn it into a cross-reference
++                text = nodes.Text(repr(node.value))
++                literals.append(text)
++                return [text]
+             else:
+                 return [nodes.Text(node.value)]
+         elif isinstance(node, ast.Expr):
+-            return unparse(node.value)
++            return unparse(node.value, literal)
+         elif isinstance(node, ast.Index):
+-            return unparse(node.value)
++            return unparse(node.value, literal)
+         elif isinstance(node, ast.List):
+             result = [addnodes.desc_sig_punctuation('', '[')]
+             if node.elts:
+@@ -135,7 +152,7 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+                 # last element of result if the for-loop was run at least
+                 # once
+                 for elem in node.elts:
+-                    result.extend(unparse(elem))
++                    result.extend(unparse(elem, literal))
+                     result.append(addnodes.desc_sig_punctuation('', ', '))
+                 result.pop()
+             result.append(addnodes.desc_sig_punctuation('', ']'))
+@@ -145,16 +162,21 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+         elif isinstance(node, ast.Name):
+             return [nodes.Text(node.id)]
+         elif isinstance(node, ast.Subscript):
++            if _is_literal(node.value):
++                context = True
++            else:
++                context = literal
++
+             result = unparse(node.value)
+             result.append(addnodes.desc_sig_punctuation('', '['))
+-            result.extend(unparse(node.slice))
++            result.extend(unparse(node.slice, context))
+             result.append(addnodes.desc_sig_punctuation('', ']'))
+             return result
+         elif isinstance(node, ast.Tuple):
+             if node.elts:
+                 result = []
+                 for elem in node.elts:
+-                    result.extend(unparse(elem))
++                    result.extend(unparse(elem, literal))
+                     result.append(addnodes.desc_sig_punctuation('', ', '))
+                 result.pop()
+             else:
+@@ -167,7 +189,12 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+                 if isinstance(node, ast.Ellipsis):
+                     return [addnodes.desc_sig_punctuation('', "...")]
+                 elif isinstance(node, ast.NameConstant):
+-                    return [nodes.Text(node.value)]
++                    if literal:
++                        text = nodes.Text(repr(node.value))
++                        literals.append(text)
++                        return [text]
++                    else:
++                        return [nodes.Text(node.value)]
+ 
+             raise SyntaxError  # unsupported syntax
+ 
+@@ -180,6 +207,9 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+         result = unparse(tree)
+         for i, node in enumerate(result):
+             if isinstance(node, nodes.Text) and node.strip():
++                if any(node is literal_node for literal_node in literals):
++                    # do not turn the value of ``Literal`` into a xref
++                    continue
+                 result[i] = type_to_xref(str(node), env)
+         return result
+     except SyntaxError:
+@@ -1391,7 +1421,8 @@ def builtin_resolver(app: Sphinx, env: BuildEnvironment,
+ 
+     if node.get('refdomain') != 'py':
+         return None
+-    elif node.get('reftype') in ('class', 'obj') and node.get('reftarget') == 'None':
++    elif (node.get('reftype') in ('class', 'obj') and
++          node.get('reftarget') in ('None', 'True', 'False')):
+         return contnode
+     elif node.get('reftype') in ('class', 'exc'):
+         reftarget = node.get('reftarget')
+2026-10-07 02:06:59,732 - INFO - Eval script for sphinx-doc__sphinx-9602 written to logs\run_evaluation\sphinx__sphinx-docs\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-9602\eval.sh; copying to container...
+2026-10-07 02:07:03,669 - INFO - Test runtime: 3.90 seconds
+2026-10-07 02:07:03,671 - INFO - Test output for sphinx-doc__sphinx-9602 written to logs\run_evaluation\sphinx__sphinx-docs\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-9602\test_output.txt
+2026-10-07 02:07:03,704 - INFO - Git diff after:
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index 9875a9f4b..5ea27fd31 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -109,7 +109,18 @@ def type_to_xref(text: str, env: BuildEnvironment = None) -> addnodes.pending_xr
+ 
+ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Node]:
+     """Parse type annotation."""
+-    def unparse(node: ast.AST) -> List[Node]:
++    literals: List[Node] = []
++
++    def _is_literal(node: ast.AST) -> bool:
++        """Check if the given node represents ``typing.Literal``."""
++        if isinstance(node, ast.Name):
++            return node.id == 'Literal'
++        elif isinstance(node, ast.Attribute):
++            return node.attr == 'Literal'
++        else:
++            return False
++
++    def unparse(node: ast.AST, literal: bool = False) -> List[Node]:
+         if isinstance(node, ast.Attribute):
+             return [nodes.Text("%s.%s" % (unparse(node.value)[0], node.attr))]
+         elif isinstance(node, ast.BinOp):
+@@ -122,12 +133,18 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+         elif isinstance(node, ast.Constant):  # type: ignore
+             if node.value is Ellipsis:
+                 return [addnodes.desc_sig_punctuation('', "...")]
++            elif literal:
++                # a value of ``Literal`` is not a type; render it as-is and
++                # never turn it into a cross-reference
++                text = nodes.Text(repr(node.value))
++                literals.append(text)
++                return [text]
+             else:
+                 return [nodes.Text(node.value)]
+         elif isinstance(node, ast.Expr):
+-            return unparse(node.value)
++            return unparse(node.value, literal)
+         elif isinstance(node, ast.Index):
+-            return unparse(node.value)
++            return unparse(node.value, literal)
+         elif isinstance(node, ast.List):
+             result = [addnodes.desc_sig_punctuation('', '[')]
+             if node.elts:
+@@ -135,7 +152,7 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+                 # last element of result if the for-loop was run at least
+                 # once
+                 for elem in node.elts:
+-                    result.extend(unparse(elem))
++                    result.extend(unparse(elem, literal))
+                     result.append(addnodes.desc_sig_punctuation('', ', '))
+                 result.pop()
+             result.append(addnodes.desc_sig_punctuation('', ']'))
+@@ -145,16 +162,21 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+         elif isinstance(node, ast.Name):
+             return [nodes.Text(node.id)]
+         elif isinstance(node, ast.Subscript):
++            if _is_literal(node.value):
++                context = True
++            else:
++                context = literal
++
+             result = unparse(node.value)
+             result.append(addnodes.desc_sig_punctuation('', '['))
+-            result.extend(unparse(node.slice))
++            result.extend(unparse(node.slice, context))
+             result.append(addnodes.desc_sig_punctuation('', ']'))
+             return result
+         elif isinstance(node, ast.Tuple):
+             if node.elts:
+                 result = []
+                 for elem in node.elts:
+-                    result.extend(unparse(elem))
++                    result.extend(unparse(elem, literal))
+                     result.append(addnodes.desc_sig_punctuation('', ', '))
+                 result.pop()
+             else:
+@@ -167,7 +189,12 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+                 if isinstance(node, ast.Ellipsis):
+                     return [addnodes.desc_sig_punctuation('', "...")]
+                 elif isinstance(node, ast.NameConstant):
+-                    return [nodes.Text(node.value)]
++                    if literal:
++                        text = nodes.Text(repr(node.value))
++                        literals.append(text)
++                        return [text]
++                    else:
++                        return [nodes.Text(node.value)]
+ 
+             raise SyntaxError  # unsupported syntax
+ 
+@@ -180,6 +207,9 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
+         result = unparse(tree)
+         for i, node in enumerate(result):
+             if isinstance(node, nodes.Text) and node.strip():
++                if any(node is literal_node for literal_node in literals):
++                    # do not turn the value of ``Literal`` into a xref
++                    continue
+                 result[i] = type_to_xref(str(node), env)
+         return result
+     except SyntaxError:
+@@ -1391,7 +1421,8 @@ def builtin_resolver(app: Sphinx, env: BuildEnvironment,
+ 
+     if node.get('refdomain') != 'py':
+         return None
+-    elif node.get('reftype') in ('class', 'obj') and node.get('reftarget') == 'None':
++    elif (node.get('reftype') in ('class', 'obj') and
++          node.get('reftarget') in ('None', 'True', 'False')):
+         return contnode
+     elif node.get('reftype') in ('class', 'exc'):
+         reftarget = node.get('reftarget')
+2026-10-07 02:07:03,704 - INFO - Grading answer for sphinx-doc__sphinx-9602...
+2026-10-07 02:07:03,709 - INFO - report: {'sphinx-doc__sphinx-9602': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_domain_py.py::test_parse_annotation_Literal'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/test_domain_py.py::test_function_signatures', 'tests/test_domain_py.py::test_domain_py_xrefs', 'tests/test_domain_py.py::test_domain_py_xrefs_abbreviations', 'tests/test_domain_py.py::test_domain_py_objects', 'tests/test_domain_py.py::test_resolve_xref_for_properties', 'tests/test_domain_py.py::test_domain_py_find_obj', 'tests/test_domain_py.py::test_domain_py_canonical', 'tests/test_domain_py.py::test_get_full_qualified_name', 'tests/test_domain_py.py::test_parse_annotation', 'tests/test_domain_py.py::test_pyfunction_signature', 'tests/test_domain_py.py::test_pyfunction_signature_full', 'tests/test_domain_py.py::test_pyfunction_signature_full_py38', 'tests/test_domain_py.py::test_pyfunction_with_number_literals', 'tests/test_domain_py.py::test_pyfunction_with_union_type_operator', 'tests/test_domain_py.py::test_optional_pyfunction_signature', 'tests/test_domain_py.py::test_pyexception_signature', 'tests/test_domain_py.py::test_pydata_signature', 'tests/test_domain_py.py::test_pydata_signature_old', 'tests/test_domain_py.py::test_pydata_with_union_type_operator', 'tests/test_domain_py.py::test_pyobject_prefix', 'tests/test_domain_py.py::test_pydata', 'tests/test_domain_py.py::test_pyfunction', 'tests/test_domain_py.py::test_pyclass_options', 'tests/test_domain_py.py::test_pymethod_options', 'tests/test_domain_py.py::test_pyclassmethod', 'tests/test_domain_py.py::test_pystaticmethod', 'tests/test_domain_py.py::test_pyattribute', 'tests/test_domain_py.py::test_pyproperty', 'tests/test_domain_py.py::test_pydecorator_signature', 'tests/test_domain_py.py::test_pydecoratormethod_signature', 'tests/test_domain_py.py::test_canonical', 'tests/test_domain_py.py::test_canonical_definition_overrides', 'tests/test_domain_py.py::test_canonical_definition_skip', 'tests/test_domain_py.py::test_canonical_duplicated', 'tests/test_domain_py.py::test_info_field_list', 'tests/test_domain_py.py::test_info_field_list_piped_type', 'tests/test_domain_py.py::test_info_field_list_var', 'tests/test_domain_py.py::test_module_index', 'tests/test_domain_py.py::test_module_index_submodule', 'tests/test_domain_py.py::test_module_index_not_collapsed', 'tests/test_domain_py.py::test_modindex_common_prefix', 'tests/test_domain_py.py::test_noindexentry', 'tests/test_domain_py.py::test_python_python_use_unqualified_type_names', 'tests/test_domain_py.py::test_python_python_use_unqualified_type_names_disabled', 'tests/test_domain_py.py::test_warn_missing_reference'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-9602: resolved: True
+2026-10-07 02:07:03,710 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-9602.sphinx__sphinx-docs...
+2026-10-07 02:07:18,961 - INFO - Container sweb.eval.sphinx-doc__sphinx-9602.sphinx__sphinx-docs stopped successfully.
+2026-10-07 02:07:18,962 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-9602.sphinx__sphinx-docs...
+2026-10-07 02:07:19,045 - INFO - Container sweb.eval.sphinx-doc__sphinx-9602.sphinx__sphinx-docs removed successfully.

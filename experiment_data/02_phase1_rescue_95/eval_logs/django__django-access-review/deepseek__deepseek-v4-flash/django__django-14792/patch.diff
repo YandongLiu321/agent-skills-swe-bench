@@ -1,0 +1,103 @@
+diff --git a/django/db/backends/mysql/operations.py b/django/db/backends/mysql/operations.py
+index 89730cee29..86f6724315 100644
+--- a/django/db/backends/mysql/operations.py
++++ b/django/db/backends/mysql/operations.py
+@@ -76,6 +76,11 @@ class DatabaseOperations(BaseDatabaseOperations):
+             return "DATE(%s)" % (field_name)
+ 
+     def _prepare_tzname_delta(self, tzname):
++        # Only UTC offsets (e.g. "+05:00" or "UTC+05:00") need to be
++        # converted to an offset, not IANA time zone names that contain a
++        # sign (e.g. "Etc/GMT-10").
++        if not tzname.startswith(('+', '-', 'UTC+', 'UTC-', 'GMT+', 'GMT-')):
++            return tzname
+         if '+' in tzname:
+             return tzname[tzname.find('+'):]
+         elif '-' in tzname:
+diff --git a/django/db/backends/oracle/operations.py b/django/db/backends/oracle/operations.py
+index 4cfc7da070..f7e9268ef5 100644
+--- a/django/db/backends/oracle/operations.py
++++ b/django/db/backends/oracle/operations.py
+@@ -108,6 +108,11 @@ END;
+     _tzname_re = _lazy_re_compile(r'^[\w/:+-]+$')
+ 
+     def _prepare_tzname_delta(self, tzname):
++        # Only UTC offsets (e.g. "+05:00" or "UTC+05:00") need to be
++        # converted to an offset, not IANA time zone names that contain a
++        # sign (e.g. "Etc/GMT-10").
++        if not tzname.startswith(('+', '-', 'UTC+', 'UTC-', 'GMT+', 'GMT-')):
++            return tzname
+         if '+' in tzname:
+             return tzname[tzname.find('+'):]
+         elif '-' in tzname:
+diff --git a/django/db/backends/postgresql/operations.py b/django/db/backends/postgresql/operations.py
+index 8d19872bea..8b8d5ee955 100644
+--- a/django/db/backends/postgresql/operations.py
++++ b/django/db/backends/postgresql/operations.py
+@@ -44,6 +44,11 @@ class DatabaseOperations(BaseDatabaseOperations):
+         return "DATE_TRUNC('%s', %s)" % (lookup_type, field_name)
+ 
+     def _prepare_tzname_delta(self, tzname):
++        # Only UTC offsets (e.g. "+05:00" or "UTC+05:00") need to have
++        # their sign reversed, not IANA time zone names that contain a
++        # sign (e.g. "Etc/GMT-10").
++        if not tzname.startswith(('+', '-', 'UTC+', 'UTC-', 'GMT+', 'GMT-')):
++            return tzname
+         if '+' in tzname:
+             return tzname.replace('+', '-')
+         elif '-' in tzname:
+diff --git a/django/db/backends/sqlite3/base.py b/django/db/backends/sqlite3/base.py
+index a64190f0d0..0b5efd72e7 100644
+--- a/django/db/backends/sqlite3/base.py
++++ b/django/db/backends/sqlite3/base.py
+@@ -401,6 +401,11 @@ class DatabaseWrapper(BaseDatabaseWrapper):
+ 
+ 
+ FORMAT_QMARK_REGEX = _lazy_re_compile(r'(?<!%)%s')
++# Matches UTC offsets such as "+01:00" or "UTC+01:00" (but not IANA time
++# zone names that happen to contain a sign, e.g. "Etc/GMT-10").
++_TZNAME_OFFSET_RE = _lazy_re_compile(
++    r'^(?P<name>UTC|GMT)?(?P<sign>[+-])(?P<hours>\d{1,2}):?(?P<minutes>\d{2})?$'
++)
+ 
+ 
+ class SQLiteCursorWrapper(Database.Cursor):
+@@ -433,14 +438,16 @@ def _sqlite_datetime_parse(dt, tzname=None, conn_tzname=None):
+     if conn_tzname:
+         dt = dt.replace(tzinfo=pytz.timezone(conn_tzname))
+     if tzname is not None and tzname != conn_tzname:
+-        sign_index = tzname.find('+') + tzname.find('-') + 1
+-        if sign_index > -1:
+-            sign = tzname[sign_index]
+-            tzname, offset = tzname.split(sign)
+-            if offset:
+-                hours, minutes = offset.split(':')
+-                offset_delta = datetime.timedelta(hours=int(hours), minutes=int(minutes))
+-                dt += offset_delta if sign == '+' else -offset_delta
++        match = _TZNAME_OFFSET_RE.match(tzname)
++        if match:
++            # tzname is a UTC offset, e.g. "+01:00", "-01:00" or "UTC+01:00".
++            hours = int(match['hours'])
++            minutes = int(match['minutes'] or 0)
++            offset_delta = datetime.timedelta(hours=hours, minutes=minutes)
++            if match['sign'] == '-':
++                offset_delta = -offset_delta
++            dt += offset_delta
++            tzname = match['name'] or 'UTC'
+         dt = timezone.localtime(dt, pytz.timezone(tzname))
+     return dt
+ 
+diff --git a/docs/releases/3.2.7.txt b/docs/releases/3.2.7.txt
+index 0219460649..3afb23252f 100644
+--- a/docs/releases/3.2.7.txt
++++ b/docs/releases/3.2.7.txt
+@@ -9,4 +9,8 @@ Django 3.2.7 fixes several bugs in 3.2.6.
+ Bugfixes
+ ========
+ 
+-* ...
++* Fixed a regression in Django 3.2 that caused incorrect results or crashes
++  when using the :class:`~django.db.models.functions.Trunc` and
++  :class:`~django.db.models.functions.Extract` database functions with a
++  time zone whose name contains a sign (e.g. ``Etc/GMT-10``)
++  (:ticket:`33087`).

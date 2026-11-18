@@ -1,0 +1,88 @@
+diff --git a/src/_pytest/mark/structures.py b/src/_pytest/mark/structures.py
+index 800a25c92..8f8849626 100644
+--- a/src/_pytest/mark/structures.py
++++ b/src/_pytest/mark/structures.py
+@@ -355,29 +355,66 @@ class MarkDecorator:
+         return self.with_args(*args, **kwargs)
+ 
+ 
+-def get_unpacked_marks(obj: object) -> Iterable[Mark]:
+-    """Obtain the unpacked marks that are stored on an object."""
+-    mark_list = getattr(obj, "pytestmark", [])
+-    if not isinstance(mark_list, list):
+-        mark_list = [mark_list]
+-    return normalize_mark_list(mark_list)
++def _get_class_pytestmark(obj: type) -> object:
++    """Return the marks directly applied to a class.
++
++    For backwards compatibility this also supports custom metaclasses which
++    expose ``pytestmark`` as a property.
++    """
++    if "pytestmark" in obj.__dict__:
++        return obj.__dict__["pytestmark"]
++    if hasattr(type(obj), "pytestmark"):
++        return getattr(obj, "pytestmark", [])
++    return []
++
++
++def get_unpacked_marks(
++    obj: Union[object, type],
++    *,
++    consider_mro: bool = True,
++) -> List[Mark]:
++    """Obtain the unpacked marks that are stored on an object.
++
++    If ``obj`` is a class and ``consider_mro`` is true, return marks applied to
++    the class and its MRO base classes.
++    """
++    if isinstance(obj, type):
++        bases = obj.__mro__ if consider_mro else (obj,)
++        mark_lists = [_get_class_pytestmark(base) for base in bases]
++    else:
++        mark_list = getattr(obj, "pytestmark", [])
++        if not isinstance(mark_list, list):
++            mark_list = [mark_list]
++        mark_lists = [mark_list]
++
++    marks: List[Union[Mark, MarkDecorator]] = []
++    for mark_list in mark_lists:
++        if not isinstance(mark_list, list):
++            mark_list = [mark_list]
++        marks.extend(mark_list)
++    return normalize_mark_list(marks)
+ 
+ 
+ def normalize_mark_list(
+     mark_list: Iterable[Union[Mark, MarkDecorator]]
+-) -> Iterable[Mark]:
++) -> List[Mark]:
+     """
+     Normalize an iterable of Mark or MarkDecorator objects into a list of marks
+     by retrieving the `mark` attribute on MarkDecorator instances.
+ 
++    Duplicate marks are removed, preserving the order of first occurrence.
++
+     :param mark_list: marks to normalize
+     :returns: A new list of the extracted Mark objects
+     """
++    mark_obj_list = []
+     for mark in mark_list:
+         mark_obj = getattr(mark, "mark", mark)
+         if not isinstance(mark_obj, Mark):
+             raise TypeError(f"got {repr(mark_obj)} instead of Mark")
+-        yield mark_obj
++        if mark_obj not in mark_obj_list:
++            mark_obj_list.append(mark_obj)
++    return mark_obj_list
+ 
+ 
+ def store_mark(obj, mark: Mark) -> None:
+@@ -388,7 +425,7 @@ def store_mark(obj, mark: Mark) -> None:
+     assert isinstance(mark, Mark), mark
+     # Always reassign name to avoid updating pytestmark in a reference that
+     # was only borrowed.
+-    obj.pytestmark = [*get_unpacked_marks(obj), mark]
++    obj.pytestmark = [*get_unpacked_marks(obj, consider_mro=False), mark]
+ 
+ 
+ # Typing for builtin pytest marks. This is cheating; it gives builtin marks

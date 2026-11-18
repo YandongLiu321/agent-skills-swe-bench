@@ -1,0 +1,162 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..e33c540cce 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -550,9 +550,157 @@ class Query(BaseExpression):
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        obj.strip_unused_annotations()
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 
++    def strip_unused_annotations(self):
++        """
++        Remove annotations that aren't referenced by filters, other
++        annotations, or ordering from the query.
++
++        Annotations are only evaluated to be returned to the caller, filtered
++        on, or used to order the results. As COUNT() queries don't return the
++        annotated values, annotations that aren't referenced by any of these
++        can be removed, avoiding unnecessary JOINs and GROUP BY clauses.
++        """
++        if not self.annotations:
++            return
++        referenced = self._get_referenced_annotations()
++        unused = set(self.annotations) - referenced
++        if not unused:
++            return
++        remaining = {
++            alias: expression
++            for alias, expression in self.annotations.items()
++            if alias not in unused
++        }
++        # Removing an aggregate annotation also removes the GROUP BY clause it
++        # required. If the remaining query contains a multi-valued join, doing
++        # so could change the number of rows COUNT() sees, so keep the
++        # annotations in that case.
++        if self._has_multivalued_joins(remaining):
++            return
++        for alias in unused:
++            del self.annotations[alias]
++        if self.annotation_select_mask is not None:
++            self.set_annotation_mask(self.annotation_select_mask - unused)
++        self._prune_unused_joins()
++
++    def _get_referenced_annotations(self):
++        """
++        Return the set of annotation aliases that are referenced by filters,
++        ordering, selected columns, or other referenced annotations.
++        """
++        annotations = self.annotations
++        expression_aliases = {}
++        for alias, expression in annotations.items():
++            expression_aliases.setdefault(id(expression), set()).add(alias)
++        referenced = set()
++        seen = set()
++
++        def visit(expression):
++            if expression is None or id(expression) in seen:
++                return
++            seen.add(id(expression))
++            if isinstance(expression, Ref) and expression.refs in annotations:
++                referenced.add(expression.refs)
++            referenced.update(expression_aliases.get(id(expression), ()))
++            if isinstance(expression, F) and expression.name in annotations:
++                referenced.add(expression.name)
++            if hasattr(expression, "get_source_expressions"):
++                for child in expression.get_source_expressions():
++                    visit(child)
++
++        def visit_order_by(entry):
++            if isinstance(entry, str):
++                name = entry.lstrip("+-")
++                if name in annotations:
++                    referenced.add(name)
++                    visit(annotations[name])
++            elif isinstance(entry, F):
++                if entry.name in annotations:
++                    referenced.add(entry.name)
++                    visit(annotations[entry.name])
++            else:
++                visit(entry)
++
++        visit(self.where)
++        having = getattr(self, "having", None)
++        if having is not None:
++            visit(having)
++        for expression in self.select:
++            visit(expression)
++        if isinstance(self.group_by, tuple):
++            for expression in self.group_by:
++                visit(expression)
++        for entry in self.order_by:
++            visit_order_by(entry)
++
++        # Annotations can be referenced by other annotations. Since annotation
++        # expressions are shared with the expressions that reference them,
++        # visiting the expression of a referenced annotation discovers any
++        # nested annotation references as well.
++        changed = True
++        while changed:
++            changed = False
++            for alias in list(referenced):
++                expression = annotations.get(alias)
++                if expression is None:
++                    continue
++                before = len(seen)
++                visit(expression)
++                if len(seen) != before:
++                    changed = True
++        return referenced
++
++    def _get_required_aliases(self, annotations):
++        """
++        Return the set of table aliases that are required by the query, given
++        the annotations that are still selected.
++        """
++        expressions = list(annotations.values()) + list(self.select)
++        expressions.append(self.where)
++        having = getattr(self, "having", None)
++        if having is not None:
++            expressions.append(having)
++        if isinstance(self.group_by, tuple):
++            expressions.extend(self.group_by)
++
++        required = set()
++        stack = [self.base_table]
++        for expression in expressions:
++            for col in self._gen_cols([expression], include_external=True):
++                stack.append(col.alias)
++        while stack:
++            alias = stack.pop()
++            if alias is None or alias in required:
++                continue
++            required.add(alias)
++            join = self.alias_map.get(alias)
++            parent_alias = getattr(join, "parent_alias", None)
++            if parent_alias is not None:
++                stack.append(parent_alias)
++        return required
++
++    def _has_multivalued_joins(self, annotations):
++        for alias in self._get_required_aliases(annotations):
++            join = self.alias_map.get(alias)
++            join_field = getattr(join, "join_field", None)
++            if getattr(join_field, "multiple", False):
++                return True
++        return False
++
++    def _prune_unused_joins(self):
++        """
++        Drop JOINs that are no longer referenced now that some annotations
++        have been removed.
++        """
++        required = self._get_required_aliases(self.annotations)
++        for alias in self.alias_refcount:
++            if alias not in required:
++                self.alias_refcount[alias] = 0
++
+     def has_filters(self):
+         return self.where
+ 

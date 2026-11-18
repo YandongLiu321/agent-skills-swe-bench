@@ -1,0 +1,101 @@
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index fa7f7b92f..4498d6154 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -209,16 +209,85 @@ def register_plugins(linter: PyLinter, directory: str) -> None:
+                     imported[base] = 1
+ 
+ 
++_OPENING_BRACKETS = {"(": ")", "[": "]", "{": "}"}
++
++
++def _split_on_separator(string: str, sep: str = ",") -> list[str]:
++    """Split `string` on `sep` while leaving separators that belong to a
++    regular expression untouched.
++
++    A separator is ignored when it is escaped with a backslash or when it is
++    part of a regular expression construct, i.e. enclosed in parentheses,
++    square brackets (character classes) or curly braces (quantifiers). This
++    makes it possible to use regular expressions such as ``(foo{1,3})`` in
++    comma separated options.
++
++    >>> _split_on_separator('a,b')
++    ['a', 'b']
++    >>> _split_on_separator('(foo{1,3})')
++    ['(foo{1,3})']
++    >>> _split_on_separator('a, (b, c), [d,e]')
++    ['a', ' (b, c)', ' [d,e]']
++    >>> _split_on_separator('a\\,b,c')
++    ['a,b', 'c']
++    """
++    parts: list[str] = []
++    current: list[str] = []
++    stack: list[str] = []
++    escaped = False
++    for char in string:
++        if escaped:
++            escaped = False
++            # Only the separator is unescaped, every other backslash sequence
++            # is kept as-is so that regular expressions are not mangled.
++            if char == sep:
++                current.append(char)
++            else:
++                current.append("\\")
++                current.append(char)
++            continue
++        if char == "\\":
++            escaped = True
++            continue
++        if stack and stack[-1] == "]":
++            # Inside a character class only the closing square bracket is
++            # special; every other character (including '(' or '{') is literal.
++            if char == "]":
++                stack.pop()
++            current.append(char)
++            continue
++        if char in _OPENING_BRACKETS:
++            stack.append(_OPENING_BRACKETS[char])
++            current.append(char)
++            continue
++        if char == sep and not stack:
++            parts.append("".join(current))
++            current = []
++            continue
++        if stack and char == stack[-1]:
++            stack.pop()
++        current.append(char)
++    if escaped:
++        current.append("\\")
++    parts.append("".join(current))
++    return parts
++
++
+ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     """Return a list of stripped string by splitting the string given as
+     argument on `sep` (',' by default), empty strings are discarded.
+ 
++    Separators that are part of a regular expression construct or that are
++    escaped are not used to split the string.
++
+     >>> _splitstrip('a, b, c   ,  4,,')
+     ['a', 'b', 'c', '4']
+     >>> _splitstrip('a')
+     ['a']
+     >>> _splitstrip('a,\nb,\nc,')
+     ['a', 'b', 'c']
++    >>> _splitstrip('(foo{1,3})')
++    ['(foo{1,3})']
+ 
+     :type string: str or unicode
+     :param string: a csv line
+@@ -229,7 +298,9 @@ def _splitstrip(string: str, sep: str = ",") -> list[str]:
+     :rtype: str or unicode
+     :return: the unquoted string (or the input string if it wasn't quoted)
+     """
+-    return [word.strip() for word in string.split(sep) if word.strip()]
++    return [
++        word.strip() for word in _split_on_separator(string, sep) if word.strip()
++    ]
+ 
+ 
+ def _unquote(string: str) -> str:

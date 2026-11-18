@@ -1,0 +1,44 @@
+diff --git a/django/core/servers/basehttp.py b/django/core/servers/basehttp.py
+index fef5532e58..b4eeea8e12 100644
+--- a/django/core/servers/basehttp.py
++++ b/django/core/servers/basehttp.py
+@@ -143,6 +143,25 @@ class ServerHandler(simple_server.ServerHandler):
+         if self.headers.get("Connection") == "close":
+             self.request_handler.close_connection = True
+ 
++    def write(self, data):
++        # Response bodies must not be sent for HEAD requests, see RFC 7230,
++        # section 3.3.2 (previously RFC 2616, section 4.3). The headers are
++        # still sent, including Content-Length, so determine it as usual.
++        if self.environ.get("REQUEST_METHOD") == "HEAD":
++            if not self.status:
++                raise AssertionError("write() before start_response()")
++            if not self.headers_sent:
++                # Before the first output, send the stored headers. Track the
++                # length of the body so that Content-Length can be set by
++                # set_content_length().
++                self.bytes_sent = len(data)
++                self.send_headers()
++            else:
++                self.bytes_sent += len(data)
++            self._flush()
++        else:
++            super().write(data)
++
+     def close(self):
+         self.get_stdin().read()
+         super().close()
+diff --git a/docs/releases/4.2.txt b/docs/releases/4.2.txt
+index 2f91282e73..f9115ec20e 100644
+--- a/docs/releases/4.2.txt
++++ b/docs/releases/4.2.txt
+@@ -463,6 +463,9 @@ Miscellaneous
+ 
+ * Support for ``PROJ`` < 5 is removed.
+ 
++* :djadmin:`runserver` no longer sends a response body for ``HEAD`` requests,
++  as required by :rfc:`9110#section-9.3.2`.
++
+ .. _`redis-py`: https://pypi.org/project/redis/
+ 
+ .. _deprecated-features-4.2:

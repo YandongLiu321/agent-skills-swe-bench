@@ -1,0 +1,167 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..3b3a678efe 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -545,11 +545,162 @@ class Query(BaseExpression):
+ 
+         return dict(zip(outer_query.annotation_select, result))
+ 
++    def _get_annotation_refs(self):
++        """
++        Return the set of annotation aliases that are referenced by the
++        current query's filters, ordering, grouping, or another referenced
++        annotation.
++        """
++        annotation_aliases = {
++            id(annotation): alias for alias, annotation in self.annotations.items()
++        }
++        refs = set()
++        seen = set()
++
++        def add_name(name):
++            if not isinstance(name, str):
++                return
++            if name.startswith("-"):
++                name = name[1:]
++            for alias in self.annotations:
++                if name == alias or name.startswith(alias + LOOKUP_SEP):
++                    refs.add(alias)
++                    return
++
++        def add_ref(expr):
++            if isinstance(expr, str):
++                add_name(expr)
++                return
++            if id(expr) in seen:
++                return
++            seen.add(id(expr))
++            if isinstance(expr, F):
++                add_name(expr.name)
++                return
++            if isinstance(expr, Ref):
++                add_name(expr.refs)
++            if id(expr) in annotation_aliases:
++                refs.add(annotation_aliases[id(expr)])
++            if hasattr(expr, "get_source_expressions"):
++                for source in expr.get_source_expressions():
++                    add_ref(source)
++
++        def walk(value):
++            if isinstance(value, (list, tuple)):
++                for item in value:
++                    walk(item)
++            elif value is not None and value is not True:
++                add_ref(value)
++
++        walk(self.where)
++        walk(self.order_by)
++        walk(self.group_by)
++        walk(self.select)
++        walk(self.distinct_fields)
++        walk(self.extra_order_by)
++        walk(self.values_select)
++        for filtered_relation in self._filtered_relations.values():
++            walk(getattr(filtered_relation, "condition", None))
++        return refs
++
++    def _get_used_aliases(self):
++        """
++        Return the set of table aliases referenced by the query, including
++        parent aliases required by the joins.
++        """
++        used_aliases = set()
++
++        def add_alias(alias):
++            while alias is not None and alias in self.alias_map:
++                used_aliases.add(alias)
++                alias = self.alias_map[alias].parent_alias
++
++        def collect(expr):
++            if expr is None or expr is True:
++                return
++            if isinstance(expr, (list, tuple)):
++                for item in expr:
++                    collect(item)
++                return
++            alias = getattr(expr, "alias", None)
++            if alias in self.alias_map:
++                add_alias(alias)
++            get_external_cols = getattr(expr, "get_external_cols", None)
++            if callable(get_external_cols):
++                for col in get_external_cols():
++                    if col.alias in self.alias_map:
++                        add_alias(col.alias)
++            if hasattr(expr, "get_source_expressions"):
++                for source in expr.get_source_expressions():
++                    collect(source)
++
++        collect(self.where)
++        collect(self.select)
++        collect(self.group_by)
++        collect(self.order_by)
++        collect(self.distinct_fields)
++        collect(self.extra_order_by)
++        collect(self.values_select)
++        collect(list(self.annotations.values()))
++        collect(list(self.extra_select.values()))
++        for filtered_relation in self._filtered_relations.values():
++            alias = getattr(filtered_relation, "alias", None)
++            if alias in self.alias_map:
++                add_alias(alias)
++            collect(getattr(filtered_relation, "condition", None))
++        return used_aliases
++
++    def _prune_unused_annotations(self):
++        """
++        Remove annotations that aren't referenced by the query. This allows
++        count() to avoid wrapping the query in an unnecessary subquery.
++        """
++        if not self.annotations:
++            return
++        referenced = self._get_annotation_refs()
++        if not referenced:
++            removed = list(self.annotations.values())
++            self.annotations.clear()
++        else:
++            removed = [
++                annotation
++                for alias, annotation in self.annotations.items()
++                if alias not in referenced
++            ]
++            for alias in set(self.annotations) - referenced:
++                del self.annotations[alias]
++        has_remaining_aggregate = any(
++            getattr(annotation, "contains_aggregate", False)
++            for annotation in self.annotations.values()
++        )
++        if removed and not has_remaining_aggregate:
++            # Rebuild the alias reference counts based on the remaining query
++            # parts. This drops joins that were only needed by the removed
++            # annotations, which may have been created implicitly (for example
++            # by subqueries using OuterRef()). Joins are left untouched when a
++            # remaining aggregate annotation may depend on the multiplicity
++            # they introduce.
++            used_aliases = self._get_used_aliases()
++            if self.group_by is True:
++                base_alias = self.base_table if self.alias_map else None
++                if used_aliases - {base_alias}:
++                    # The implicit grouping added by the removed aggregate
++                    # annotations is required to avoid counting duplicate rows
++                    # produced by joins that remain in the query.
++                    self.group_by = (self.model._meta.pk.name,)
++                else:
++                    self.group_by = None
++            self.reset_refcounts({alias: 1 for alias in used_aliases})
++        if self.annotation_select_mask is not None:
++            self.annotation_select_mask.intersection_update(self.annotations)
++        self._annotation_select_cache = None
++
+     def get_count(self, using):
+         """
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        obj._prune_unused_annotations()
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 

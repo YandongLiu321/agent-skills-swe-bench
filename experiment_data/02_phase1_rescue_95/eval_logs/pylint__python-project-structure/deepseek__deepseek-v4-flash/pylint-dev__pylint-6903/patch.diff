@@ -1,0 +1,33 @@
+diff --git a/pylint/lint/run.py b/pylint/lint/run.py
+index a7e5d557..11267c94 100644
+--- a/pylint/lint/run.py
++++ b/pylint/lint/run.py
+@@ -52,12 +52,16 @@ def _query_cpu() -> int | None:
+         with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us", encoding="utf-8") as file:
+             cpu_period = int(file.read().rstrip())
+         # Divide quota by period and you should get num of allotted CPU to the container, rounded down if fractional.
+-        avail_cpu = int(cpu_quota / cpu_period)
++        # A container might be limited to less than a single CPU, in which
++        # case at least one process is required to do any work.
++        avail_cpu = max(int(cpu_quota / cpu_period), 1)
+     elif Path("/sys/fs/cgroup/cpu/cpu.shares").is_file():
+         with open("/sys/fs/cgroup/cpu/cpu.shares", encoding="utf-8") as file:
+             cpu_shares = int(file.read().rstrip())
+         # For AWS, gives correct value * 1024.
+-        avail_cpu = int(cpu_shares / 1024)
++        # A container might be limited to less than a single CPU, in which
++        # case at least one process is required to do any work.
++        avail_cpu = max(int(cpu_shares / 1024), 1)
+     return avail_cpu
+ 
+ 
+@@ -76,7 +80,8 @@ def _cpu_count() -> int:
+     else:
+         cpu_count = 1
+     if cpu_share is not None:
+-        return min(cpu_share, cpu_count)
++        # The number of processes for multiprocessing needs to be at least 1.
++        return max(min(cpu_share, cpu_count), 1)
+     return cpu_count
+ 
+ 

@@ -1,0 +1,128 @@
+2026-10-07 04:34:20,832 - INFO - Creating container for pylint-dev__pylint-6903...
+2026-10-07 04:34:20,884 - INFO - Container for pylint-dev__pylint-6903 created: bf53cfb39e578bfbcc458fda9a4ae992c482bf645be984e3e004a4e38f2354f1
+2026-10-07 04:34:20,988 - INFO - Container for pylint-dev__pylint-6903 started: bf53cfb39e578bfbcc458fda9a4ae992c482bf645be984e3e004a4e38f2354f1
+2026-10-07 04:34:20,989 - INFO - Intermediate patch for pylint-dev__pylint-6903 written to logs\run_evaluation\pylint__python-pro\deepseek__deepseek-v4-flash\pylint-dev__pylint-6903\patch.diff, now applying to container...
+2026-10-07 04:34:21,074 - INFO - >>>>> Applied Patch:
+Checking patch pylint/lint/parallel.py...
+Checking patch pylint/lint/run.py...
+Applied patch pylint/lint/parallel.py cleanly.
+Applied patch pylint/lint/run.py cleanly.
+
+2026-10-07 04:34:21,216 - INFO - Git diff before:
+diff --git a/pylint/lint/parallel.py b/pylint/lint/parallel.py
+index 646d2699..2873701b 100644
+--- a/pylint/lint/parallel.py
++++ b/pylint/lint/parallel.py
+@@ -137,8 +137,10 @@ def check_parallel(
+     # is identical to the linter object here. This is required so that
+     # a custom PyLinter object can be used.
+     initializer = functools.partial(_worker_initialize, arguments=arguments)
++    # ``multiprocessing.Pool`` requires at least one process. Guard against a
++    # mis-detected CPU count (e.g. ``--jobs=0`` in a container) returning zero.
+     with multiprocessing.Pool(
+-        jobs, initializer=initializer, initargs=[dill.dumps(linter)]
++        max(1, jobs), initializer=initializer, initargs=[dill.dumps(linter)]
+     ) as pool:
+         linter.open()
+         all_stats = []
+diff --git a/pylint/lint/run.py b/pylint/lint/run.py
+index a7e5d557..4f0c6707 100644
+--- a/pylint/lint/run.py
++++ b/pylint/lint/run.py
+@@ -58,7 +58,13 @@ def _query_cpu() -> int | None:
+             cpu_shares = int(file.read().rstrip())
+         # For AWS, gives correct value * 1024.
+         avail_cpu = int(cpu_shares / 1024)
+-    return avail_cpu
++
++    if avail_cpu is not None:
++        # A container can be allotted less than one CPU (e.g. when
++        # ``cpu.shares`` is very small). ``multiprocessing`` requires a value
++        # of at least one, so never report zero.
++        return max(1, avail_cpu)
++    return None
+ 
+ 
+ def _cpu_count() -> int:
+@@ -76,7 +82,7 @@ def _cpu_count() -> int:
+     else:
+         cpu_count = 1
+     if cpu_share is not None:
+-        return min(cpu_share, cpu_count)
++        return max(1, min(cpu_share, cpu_count))
+     return cpu_count
+ 
+ 
+@@ -182,7 +188,7 @@ group are mutually exclusive.",
+                 )
+                 linter.set_option("jobs", 1)
+             elif linter.config.jobs == 0:
+-                linter.config.jobs = _cpu_count()
++                linter.config.jobs = max(1, _cpu_count())
+ 
+         if self._output:
+             try:
+2026-10-07 04:34:21,217 - INFO - Eval script for pylint-dev__pylint-6903 written to logs\run_evaluation\pylint__python-pro\deepseek__deepseek-v4-flash\pylint-dev__pylint-6903\eval.sh; copying to container...
+2026-10-07 04:34:30,314 - INFO - Test runtime: 9.06 seconds
+2026-10-07 04:34:30,316 - INFO - Test output for pylint-dev__pylint-6903 written to logs\run_evaluation\pylint__python-pro\deepseek__deepseek-v4-flash\pylint-dev__pylint-6903\test_output.txt
+2026-10-07 04:34:30,351 - INFO - Git diff after:
+diff --git a/pylint/lint/parallel.py b/pylint/lint/parallel.py
+index 646d2699..2873701b 100644
+--- a/pylint/lint/parallel.py
++++ b/pylint/lint/parallel.py
+@@ -137,8 +137,10 @@ def check_parallel(
+     # is identical to the linter object here. This is required so that
+     # a custom PyLinter object can be used.
+     initializer = functools.partial(_worker_initialize, arguments=arguments)
++    # ``multiprocessing.Pool`` requires at least one process. Guard against a
++    # mis-detected CPU count (e.g. ``--jobs=0`` in a container) returning zero.
+     with multiprocessing.Pool(
+-        jobs, initializer=initializer, initargs=[dill.dumps(linter)]
++        max(1, jobs), initializer=initializer, initargs=[dill.dumps(linter)]
+     ) as pool:
+         linter.open()
+         all_stats = []
+diff --git a/pylint/lint/run.py b/pylint/lint/run.py
+index a7e5d557..4f0c6707 100644
+--- a/pylint/lint/run.py
++++ b/pylint/lint/run.py
+@@ -58,7 +58,13 @@ def _query_cpu() -> int | None:
+             cpu_shares = int(file.read().rstrip())
+         # For AWS, gives correct value * 1024.
+         avail_cpu = int(cpu_shares / 1024)
+-    return avail_cpu
++
++    if avail_cpu is not None:
++        # A container can be allotted less than one CPU (e.g. when
++        # ``cpu.shares`` is very small). ``multiprocessing`` requires a value
++        # of at least one, so never report zero.
++        return max(1, avail_cpu)
++    return None
+ 
+ 
+ def _cpu_count() -> int:
+@@ -76,7 +82,7 @@ def _cpu_count() -> int:
+     else:
+         cpu_count = 1
+     if cpu_share is not None:
+-        return min(cpu_share, cpu_count)
++        return max(1, min(cpu_share, cpu_count))
+     return cpu_count
+ 
+ 
+@@ -182,7 +188,7 @@ group are mutually exclusive.",
+                 )
+                 linter.set_option("jobs", 1)
+             elif linter.config.jobs == 0:
+-                linter.config.jobs = _cpu_count()
++                linter.config.jobs = max(1, _cpu_count())
+ 
+         if self._output:
+             try:
+2026-10-07 04:34:30,351 - INFO - Grading answer for pylint-dev__pylint-6903...
+2026-10-07 04:34:30,351 - INFO - report: {'pylint-dev__pylint-6903': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_pylint_runners.py::test_pylint_run_jobs_equal_zero_dont_crash_with_cpu_fraction'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/test_pylint_runners.py::test_runner[run_epylint]', 'tests/test_pylint_runners.py::test_runner[run_pylint]', 'tests/test_pylint_runners.py::test_runner[run_pyreverse]', 'tests/test_pylint_runners.py::test_runner[run_symilar]', 'tests/test_pylint_runners.py::test_runner_with_arguments[run_epylint]', 'tests/test_pylint_runners.py::test_runner_with_arguments[run_pylint]', 'tests/test_pylint_runners.py::test_runner_with_arguments[run_pyreverse]', 'tests/test_pylint_runners.py::test_runner_with_arguments[run_symilar]'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-6903: resolved: True
+2026-10-07 04:34:30,352 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-6903.pylint__python-pro...
+2026-10-07 04:34:45,586 - INFO - Container sweb.eval.pylint-dev__pylint-6903.pylint__python-pro stopped successfully.
+2026-10-07 04:34:45,586 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-6903.pylint__python-pro...
+2026-10-07 04:34:45,683 - INFO - Container sweb.eval.pylint-dev__pylint-6903.pylint__python-pro removed successfully.

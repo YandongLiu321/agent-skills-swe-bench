@@ -1,0 +1,50 @@
+diff --git a/pylint/__init__.py b/pylint/__init__.py
+index 9f3dd74e..164e97cc 100644
+--- a/pylint/__init__.py
++++ b/pylint/__init__.py
+@@ -86,7 +86,11 @@ def modify_sys_path() -> None:
+     stdlib or pylint's own modules.
+     CPython issue: https://bugs.python.org/issue33053
+ 
+-    - Remove the first entry. This will always be either "" or the working directory
++    - Remove the first entry, but only if it is the working directory
++      (``""``, ``"."`` or ``os.getcwd()``). The first entry does not
++      necessarily point to the working directory, for instance when pylint is
++      run through ``runpy`` or embedded in another application. In that case it
++      has to be kept on ``sys.path``.
+     - Remove the working directory from the second and third entries
+       if PYTHONPATH includes a ":" at the beginning or the end.
+       https://github.com/PyCQA/pylint/issues/3636
+@@ -96,13 +100,29 @@ def modify_sys_path() -> None:
+       if pylint is installed in an editable configuration (as the last item).
+       https://github.com/PyCQA/pylint/issues/4161
+     """
+-    sys.path.pop(0)
+     env_pythonpath = os.environ.get("PYTHONPATH", "")
+     cwd = os.getcwd()
+-    if env_pythonpath.startswith(":") and env_pythonpath not in (f":{cwd}", ":."):
++    working_directory_entries = ("", ".", cwd)
++
++    # The interpreter adds the working directory as the first entry when pylint
++    # is run as a module (``python -m pylint``). Only remove it when it really
++    # is the working directory, so that an unrelated entry added by ``runpy``
++    # or an embedding application is preserved.
++    removed_first_entry = False
++    if sys.path and sys.path[0] in working_directory_entries:
+         sys.path.pop(0)
++        removed_first_entry = True
++
++    # A leading or trailing ":" in PYTHONPATH makes the interpreter add the
++    # working directory a second time, just after the first entry.
++    if env_pythonpath.startswith(":") and env_pythonpath not in (f":{cwd}", ":."):
++        index = 0 if removed_first_entry else 1
+     elif env_pythonpath.endswith(":") and env_pythonpath not in (f"{cwd}:", ".:"):
+-        sys.path.pop(1)
++        index = 1 if removed_first_entry else 2
++    else:
++        return
++    if len(sys.path) > index and sys.path[index] in working_directory_entries:
++        sys.path.pop(index)
+ 
+ 
+ version = __version__

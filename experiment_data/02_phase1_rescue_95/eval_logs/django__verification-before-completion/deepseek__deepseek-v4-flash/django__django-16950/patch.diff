@@ -1,0 +1,28 @@
+diff --git a/django/forms/models.py b/django/forms/models.py
+index 3fa04b821f..d5d608902b 100644
+--- a/django/forms/models.py
++++ b/django/forms/models.py
+@@ -1178,7 +1178,13 @@ class BaseInlineFormSet(BaseModelFormSet):
+             else:
+                 to_field = self.instance._meta.pk
+             if to_field.has_default():
+-                setattr(self.instance, to_field.attname, None)
++                if to_field is self.instance._meta.pk:
++                    setattr(self.instance, to_field.attname, None)
++                else:
++                    # If the to_field isn't the primary key, it won't be
++                    # regenerated on save, so keep the default value and
++                    # ignore it in the initial data of the inline field.
++                    kwargs["initial"] = None
+ 
+         form.fields[name] = InlineForeignKeyField(self.instance, **kwargs)
+ 
+@@ -1350,7 +1356,7 @@ class InlineForeignKeyField(Field):
+         self.parent_instance = parent_instance
+         self.pk_field = pk_field
+         self.to_field = to_field
+-        if self.parent_instance is not None:
++        if self.parent_instance is not None and "initial" not in kwargs:
+             if self.to_field:
+                 kwargs["initial"] = getattr(self.parent_instance, self.to_field)
+             else:

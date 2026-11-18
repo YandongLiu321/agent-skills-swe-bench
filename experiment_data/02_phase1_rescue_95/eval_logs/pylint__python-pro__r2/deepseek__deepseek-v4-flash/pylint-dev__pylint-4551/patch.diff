@@ -1,0 +1,146 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..bb2f8a29 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -76,6 +76,65 @@ class IdGeneratorMixIn:
+         return self.id_count
+ 
+ 
++def _get_args_annotations(node):
++    """Return the type annotations of a function's arguments.
++
++    :param node: the astroid.FunctionDef node to inspect
++    :return: a mapping from argument names to their annotation node
++    """
++    annotations = {}
++    arguments = node.args
++    for arg, annotation in zip(arguments.args, arguments.annotations):
++        if annotation is not None:
++            annotations[arg.name] = annotation
++    for arg, annotation in zip(
++        arguments.posonlyargs, arguments.posonlyargs_annotations
++    ):
++        if annotation is not None:
++            annotations[arg.name] = annotation
++    for arg, annotation in zip(arguments.kwonlyargs, arguments.kwonlyargs_annotations):
++        if annotation is not None:
++            annotations[arg.name] = annotation
++    if arguments.vararg and arguments.varargannotation is not None:
++        annotations[arguments.vararg] = arguments.varargannotation
++    if arguments.kwarg and arguments.kwargannotation is not None:
++        annotations[arguments.kwarg] = arguments.kwargannotation
++    return annotations
++
++
++def _get_assigned_annotation(node):
++    """Return the annotation node associated with an assignment target.
++
++    This handles annotated assignments (``x: int = 0`` and ``self.x: int``),
++    as well as assignments of an annotated function argument
++    (``self.x = x`` where ``x`` is annotated).
++    """
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign) and parent.annotation is not None:
++        return parent.annotation
++    if isinstance(parent, astroid.Assign) and isinstance(parent.value, astroid.Name):
++        frame = parent.value.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            return _get_args_annotations(frame).get(parent.value.name)
++    if isinstance(parent, astroid.Arguments):
++        frame = parent.parent
++        if isinstance(frame, astroid.FunctionDef):
++            return _get_args_annotations(frame).get(node.name)
++    return None
++
++
++def _infer_annotation(annotation):
++    """Infer the type(s) of an annotation node.
++
++    :param annotation: the astroid node used as a type annotation
++    :return: a set of inferred nodes, possibly empty
++    """
++    try:
++        return set(annotation.infer())
++    except astroid.InferenceError:
++        return set()
++
++
+ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+     """Walk on the project tree and resolve relationships.
+ 
+@@ -160,6 +219,20 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+             specializations = getattr(baseobj, "specializations", [])
+             specializations.append(node)
+             baseobj.specializations = specializations
++        # resolve class attributes that are only declared with a type
++        # annotation. This is notably the case for dataclasses where the
++        # annotated fields are not reachable as regular assignments.
++        for child in node.body:
++            if not isinstance(child, astroid.AnnAssign) or child.annotation is None:
++                continue
++            target = child.target
++            if not isinstance(target, astroid.AssignName):
++                continue
++            values = _infer_annotation(child.annotation)
++            if values:
++                node.locals_type[target.name] = list(
++                    set(node.locals_type[target.name]) | values
++                )
+         # resolve instance attributes
+         node.instance_attrs_type = collections.defaultdict(list)
+         for assignattrs in node.instance_attrs.values():
+@@ -218,7 +291,13 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            annotation = _get_assigned_annotation(node)
++            values = _infer_annotation(annotation) if annotation is not None else set()
++            if not values:
++                try:
++                    values = set(node.infer())
++                except astroid.InferenceError:
++                    pass
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -229,8 +308,14 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+ 
+         handle instance_attrs_type
+         """
++        annotation = _get_assigned_annotation(node)
+         try:
+-            values = set(node.infer())
++            if annotation is not None:
++                values = _infer_annotation(annotation)
++                if not values:
++                    values = set(node.infer())
++            else:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/writer.py b/pylint/pyreverse/writer.py
+index 0d80bb9c..1c4a0b39 100644
+--- a/pylint/pyreverse/writer.py
++++ b/pylint/pyreverse/writer.py
+@@ -134,10 +134,15 @@ class DotWriter(DiagramWriter):
+         if not self.config.only_classnames:
+             label = r"{}|{}\l|".format(label, r"\l".join(obj.attrs))
+             for func in obj.methods:
+-                if func.args.args:
+-                    args = [arg.name for arg in func.args.args if arg.name != "self"]
+-                else:
+-                    args = []
++                args = []
++                arguments = func.args
++                for arg, annotation in zip(arguments.args, arguments.annotations):
++                    if arg.name == "self":
++                        continue
++                    if annotation is not None:
++                        args.append("{} : {}".format(arg.name, annotation.as_string()))
++                    else:
++                        args.append(arg.name)
+                 label = r"{}{}({})\l".format(label, func.name, ", ".join(args))
+             label = "{%s}" % label
+         if is_exception(obj.node):

@@ -1,0 +1,67 @@
+diff --git a/sympy/core/relational.py b/sympy/core/relational.py
+index e2e0b7fbcc..ede1affd76 100644
+--- a/sympy/core/relational.py
++++ b/sympy/core/relational.py
+@@ -311,11 +311,14 @@ def _eval_simplify(self, **kwargs):
+             v = None
+             if dif.is_comparable:
+                 v = dif.n(2)
+-            elif dif.equals(0):  # XXX this is expensive
++            elif isinstance(dif, Expr) and dif.equals(0):
++                # XXX this is expensive
+                 v = S.Zero
+             if v is not None:
+                 r = r.func._eval_relation(v, S.Zero)
+             r = r.canonical
++            if not isinstance(dif, Expr):
++                return r
+             # If there is only one symbol in the expression,
+             # try to write it on a simplified form
+             free = list(filter(lambda x: x.is_real is not False, r.free_symbols))
+@@ -562,6 +565,8 @@ def _eval_simplify(self, **kwargs):
+         e = super()._eval_simplify(**kwargs)
+         if not isinstance(e, Equality):
+             return e
++        if not (isinstance(e.lhs, Expr) and isinstance(e.rhs, Expr)):
++            return e.canonical
+         free = self.free_symbols
+         if len(free) == 1:
+             try:
+diff --git a/sympy/sets/handlers/comparison.py b/sympy/sets/handlers/comparison.py
+index 6f7a19fccf..f88b0bfa5c 100644
+--- a/sympy/sets/handlers/comparison.py
++++ b/sympy/sets/handlers/comparison.py
+@@ -49,6 +49,14 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return tfn[fuzzy_and(map(fuzzy_bool, eqs))]
+ 
+ 
++@dispatch(ProductSet, FiniteSet) # type:ignore
++def _eval_is_eq(lhs, rhs): # noqa: F811
++    if lhs.is_finite_set is True:
++        return tfn[fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])]
++    elif lhs.is_finite_set is False:
++        return False
++
++
+ @dispatch(Set, Basic) # type:ignore
+ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return False
+diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py
+index 3c4aa86e36..fed5e9aba2 100644
+--- a/sympy/sets/sets.py
++++ b/sympy/sets/sets.py
+@@ -801,6 +801,14 @@ def _contains(self, element):
+ 
+         return fuzzy_and(s._contains(e) for s, e in zip(self.sets, element))
+ 
++    def _eval_is_subset(self, other):
++        if self.is_finite_set:
++            return fuzzy_and(other._contains(Tuple(*e)) for e in self)
++
++    def _eval_rewrite_as_FiniteSet(self, *args, **kwargs):
++        if self.is_finite_set:
++            return FiniteSet(*self)
++
+     def as_relational(self, *symbols):
+         symbols = [_sympify(s) for s in symbols]
+         if len(symbols) != len(self.sets) or not all(

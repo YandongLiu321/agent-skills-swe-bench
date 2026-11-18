@@ -1,0 +1,165 @@
+diff --git a/pylint/pyreverse/inspector.py b/pylint/pyreverse/inspector.py
+index 8fa12202..e66d032a 100644
+--- a/pylint/pyreverse/inspector.py
++++ b/pylint/pyreverse/inspector.py
+@@ -60,6 +60,55 @@ def interfaces(node, herited=True, handler_func=_iface_hdlr):
+         raise astroid.exceptions.InferenceError()
+ 
+ 
++def _get_argument_annotation(func_node, arg_name):
++    """Return the annotation node of the given function argument, if any.
++
++    The annotation may be found on regular, positional-only or keyword-only
++    arguments, as well as on ``*args`` and ``**kwargs``.
++    """
++    args = func_node.args
++    visitors = (
++        (args.posonlyargs or [], args.posonlyargs_annotations or []),
++        (args.args or [], args.annotations or []),
++        (args.kwonlyargs or [], args.kwonlyargs_annotations or []),
++    )
++    for arg_nodes, annotations in visitors:
++        for index, arg_node in enumerate(arg_nodes):
++            if (
++                isinstance(arg_node, astroid.AssignName)
++                and arg_node.name == arg_name
++                and index < len(annotations)
++            ):
++                return annotations[index]
++    if isinstance(args.vararg, astroid.AssignName) and args.vararg.name == arg_name:
++        return args.varargannotation
++    if isinstance(args.kwarg, astroid.AssignName) and args.kwarg.name == arg_name:
++        return args.kwargannotation
++    return None
++
++
++def _get_type_annotation(node):
++    """Return the type annotation node associated with the given assign node.
++
++    Only explicit annotations (``x: int``) and assignments from annotated
++    arguments (``self.x = x`` where ``x: int``) are considered.
++    """
++    parent = node.parent
++    if isinstance(parent, astroid.AnnAssign):
++        return parent.annotation
++    if isinstance(parent, astroid.Assign):
++        assigned = parent.value
++        if isinstance(assigned, astroid.Name):
++            frame = node.frame()
++            if isinstance(frame, astroid.FunctionDef):
++                return _get_argument_annotation(frame, assigned.name)
++    if isinstance(parent, astroid.Arguments):
++        frame = node.frame()
++        if isinstance(frame, astroid.FunctionDef):
++            return _get_argument_annotation(frame, node.name)
++    return None
++
++
+ class IdGeneratorMixIn:
+     """Mixin adding the ability to generate integer uid."""
+ 
+@@ -155,6 +204,14 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         node.locals_type = collections.defaultdict(list)
+         if self.tag:
+             node.uid = self.generate_id()
++        # resolve the annotations of class level assignments. This also
++        # covers fields that are not exposed as regular locals, as it
++        # happens for dataclasses.
++        for stmt in node.body:
++            if isinstance(stmt, astroid.AnnAssign) and isinstance(
++                stmt.target, astroid.AssignName
++            ):
++                self.visit_assignname(stmt.target)
+         # resolve ancestors
+         for baseobj in node.ancestors(recurs=False):
+             specializations = getattr(baseobj, "specializations", [])
+@@ -176,11 +233,30 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         """visit an astroid.Function node
+ 
+         * set the locals_type mapping
++        * attach the type annotations to the arguments
+         * optionally tag the node with a unique id
+         """
+         if hasattr(node, "locals_type"):
+             return
+         node.locals_type = collections.defaultdict(list)
++        # Astroid stores the annotations in lists parallel to the arguments;
++        # copy them on the argument nodes themselves so that they can be
++        # reused easily (e.g. by the diagram writers). Some inferred nodes
++        # (e.g. builtins) do not provide those lists.
++        for args, annotations in (
++            (node.args.args, node.args.annotations),
++            (node.args.posonlyargs, node.args.posonlyargs_annotations),
++            (node.args.kwonlyargs, node.args.kwonlyargs_annotations),
++        ):
++            for arg, annotation in zip(args or [], annotations or []):
++                if isinstance(arg, astroid.AssignName):
++                    arg.annotation = annotation
++        for arg, annotation in (
++            (node.args.vararg, node.args.varargannotation),
++            (node.args.kwarg, node.args.kwargannotation),
++        ):
++            if isinstance(arg, astroid.AssignName):
++                arg.annotation = annotation
+         if self.tag:
+             node.uid = self.generate_id()
+ 
+@@ -218,7 +294,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+                     self.visit_module(frame)
+ 
+             current = frame.locals_type[node.name]
+-            values = set(node.infer())
++            annotation = _get_type_annotation(node)
++            if annotation is not None:
++                values = set(annotation.infer())
++            else:
++                values = set(node.infer())
+             frame.locals_type[node.name] = list(set(current) | values)
+         except astroid.InferenceError:
+             pass
+@@ -230,7 +310,11 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
+         handle instance_attrs_type
+         """
+         try:
+-            values = set(node.infer())
++            annotation = _get_type_annotation(node)
++            if annotation is not None:
++                values = set(annotation.infer())
++            else:
++                values = set(node.infer())
+             current = set(parent.instance_attrs_type[node.attrname])
+             parent.instance_attrs_type[node.attrname] = list(current | values)
+         except astroid.InferenceError:
+diff --git a/pylint/pyreverse/writer.py b/pylint/pyreverse/writer.py
+index 0d80bb9c..0f4c7d5d 100644
+--- a/pylint/pyreverse/writer.py
++++ b/pylint/pyreverse/writer.py
+@@ -135,7 +135,11 @@ class DotWriter(DiagramWriter):
+             label = r"{}|{}\l|".format(label, r"\l".join(obj.attrs))
+             for func in obj.methods:
+                 if func.args.args:
+-                    args = [arg.name for arg in func.args.args if arg.name != "self"]
++                    args = [
++                        self.get_arg_name(arg)
++                        for arg in func.args.args
++                        if arg.name != "self"
++                    ]
+                 else:
+                     args = []
+                 label = r"{}{}({})\l".format(label, func.name, ", ".join(args))
+@@ -144,6 +148,15 @@ class DotWriter(DiagramWriter):
+             return dict(fontcolor="red", label=label, shape="record")
+         return dict(label=label, shape="record")
+ 
++    @staticmethod
++    def get_arg_name(arg):
++        """return the name of an argument, with its annotation if any"""
++        arg_name = arg.name
++        annotation = getattr(arg, "annotation", None)
++        if annotation is not None:
++            arg_name += " : {}".format(annotation.as_string())
++        return arg_name
++
+     def close_graph(self):
+         """print the dot graph into <file_name>"""
+         self.printer.generate(self.file_name)

@@ -1,0 +1,144 @@
+2026-10-04 09:25:04,941 - INFO - Creating container for django__django-15563...
+2026-10-04 09:25:05,018 - INFO - Container for django__django-15563 created: 56962a0c6055c971c53db095a0fe94dbd54f0627a4bd41fcf66eadce81f4e9a0
+2026-10-04 09:25:05,158 - INFO - Container for django__django-15563 started: 56962a0c6055c971c53db095a0fe94dbd54f0627a4bd41fcf66eadce81f4e9a0
+2026-10-04 09:25:05,160 - INFO - Intermediate patch for django__django-15563 written to logs\run_evaluation\django__baseline\deepseek__deepseek-v4-flash\django__django-15563\patch.diff, now applying to container...
+2026-10-04 09:25:05,293 - INFO - >>>>> Applied Patch:
+Checking patch django/db/models/sql/compiler.py...
+Checking patch django/db/models/sql/subqueries.py...
+Applied patch django/db/models/sql/compiler.py cleanly.
+Applied patch django/db/models/sql/subqueries.py cleanly.
+
+2026-10-04 09:25:06,896 - INFO - Git diff before:
+diff --git a/django/db/models/sql/compiler.py b/django/db/models/sql/compiler.py
+index 59a5d6abbb..a561fba09d 100644
+--- a/django/db/models/sql/compiler.py
++++ b/django/db/models/sql/compiler.py
+@@ -1836,7 +1836,14 @@ class SQLUpdateCompiler(SQLCompiler):
+         query.clear_ordering(force=True)
+         query.extra = {}
+         query.select = []
+-        query.add_fields([query.get_meta().pk.name])
++        select_fields = [query.get_meta().pk.name]
++        for model in self.query.related_updates:
++            parent_link_path = "__".join(
++                path_info.join_field.name
++                for path_info in query.get_meta().get_path_to_parent(model)
++            )
++            select_fields.append("%s__pk" % parent_link_path)
++        query.add_fields(select_fields)
+         super().pre_sql_setup()
+ 
+         must_pre_select = (
+@@ -1850,11 +1857,17 @@ class SQLUpdateCompiler(SQLCompiler):
+             # Either we're using the idents in multiple update queries (so
+             # don't want them to change), or the db backend doesn't support
+             # selecting from the updating table (e.g. MySQL).
++            related_models = list(self.query.related_updates)
++            related_ids = {model: [] for model in related_models}
+             idents = []
+             for rows in query.get_compiler(self.using).execute_sql(MULTI):
+-                idents.extend(r[0] for r in rows)
++                for row in rows:
++                    idents.append(row[0])
++                    for index, model in enumerate(related_models, 1):
++                        related_ids[model].append(row[index])
+             self.query.add_filter("pk__in", idents)
+-            self.query.related_ids = idents
++            if related_models:
++                self.query.related_ids = related_ids
+         else:
+             # The fast path. Filters and updates in one query.
+             self.query.add_filter("pk__in", query)
+diff --git a/django/db/models/sql/subqueries.py b/django/db/models/sql/subqueries.py
+index 04063f73bc..840e65facf 100644
+--- a/django/db/models/sql/subqueries.py
++++ b/django/db/models/sql/subqueries.py
+@@ -66,6 +66,8 @@ class UpdateQuery(Query):
+     def clone(self):
+         obj = super().clone()
+         obj.related_updates = self.related_updates.copy()
++        if self.related_ids is not None:
++            obj.related_ids = self.related_ids.copy()
+         return obj
+ 
+     def update_batch(self, pk_list, values, using):
+@@ -134,7 +136,7 @@ class UpdateQuery(Query):
+             query = UpdateQuery(model)
+             query.values = values
+             if self.related_ids is not None:
+-                query.add_filter("pk__in", self.related_ids)
++                query.add_filter("pk__in", self.related_ids[model])
+             result.append(query)
+         return result
+2026-10-04 09:25:06,899 - INFO - Eval script for django__django-15563 written to logs\run_evaluation\django__baseline\deepseek__deepseek-v4-flash\django__django-15563\eval.sh; copying to container...
+2026-10-04 09:25:12,142 - INFO - Test runtime: 5.17 seconds
+2026-10-04 09:25:12,145 - INFO - Test output for django__django-15563 written to logs\run_evaluation\django__baseline\deepseek__deepseek-v4-flash\django__django-15563\test_output.txt
+2026-10-04 09:25:12,203 - INFO - Git diff after:
+diff --git a/django/db/models/sql/compiler.py b/django/db/models/sql/compiler.py
+index 59a5d6abbb..a561fba09d 100644
+--- a/django/db/models/sql/compiler.py
++++ b/django/db/models/sql/compiler.py
+@@ -1836,7 +1836,14 @@ class SQLUpdateCompiler(SQLCompiler):
+         query.clear_ordering(force=True)
+         query.extra = {}
+         query.select = []
+-        query.add_fields([query.get_meta().pk.name])
++        select_fields = [query.get_meta().pk.name]
++        for model in self.query.related_updates:
++            parent_link_path = "__".join(
++                path_info.join_field.name
++                for path_info in query.get_meta().get_path_to_parent(model)
++            )
++            select_fields.append("%s__pk" % parent_link_path)
++        query.add_fields(select_fields)
+         super().pre_sql_setup()
+ 
+         must_pre_select = (
+@@ -1850,11 +1857,17 @@ class SQLUpdateCompiler(SQLCompiler):
+             # Either we're using the idents in multiple update queries (so
+             # don't want them to change), or the db backend doesn't support
+             # selecting from the updating table (e.g. MySQL).
++            related_models = list(self.query.related_updates)
++            related_ids = {model: [] for model in related_models}
+             idents = []
+             for rows in query.get_compiler(self.using).execute_sql(MULTI):
+-                idents.extend(r[0] for r in rows)
++                for row in rows:
++                    idents.append(row[0])
++                    for index, model in enumerate(related_models, 1):
++                        related_ids[model].append(row[index])
+             self.query.add_filter("pk__in", idents)
+-            self.query.related_ids = idents
++            if related_models:
++                self.query.related_ids = related_ids
+         else:
+             # The fast path. Filters and updates in one query.
+             self.query.add_filter("pk__in", query)
+diff --git a/django/db/models/sql/subqueries.py b/django/db/models/sql/subqueries.py
+index 04063f73bc..840e65facf 100644
+--- a/django/db/models/sql/subqueries.py
++++ b/django/db/models/sql/subqueries.py
+@@ -66,6 +66,8 @@ class UpdateQuery(Query):
+     def clone(self):
+         obj = super().clone()
+         obj.related_updates = self.related_updates.copy()
++        if self.related_ids is not None:
++            obj.related_ids = self.related_ids.copy()
+         return obj
+ 
+     def update_batch(self, pk_list, values, using):
+@@ -134,7 +136,7 @@ class UpdateQuery(Query):
+             query = UpdateQuery(model)
+             query.values = values
+             if self.related_ids is not None:
+-                query.add_filter("pk__in", self.related_ids)
++                query.add_filter("pk__in", self.related_ids[model])
+             result.append(query)
+         return result
+2026-10-04 09:25:12,203 - INFO - Grading answer for django__django-15563...
+2026-10-04 09:25:12,207 - INFO - report: {'django__django-15563': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_mti_update_grand_parent_through_child (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_mti_update_parent_through_child (model_inheritance_regress.tests.ModelInheritanceTest)'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_abstract_base_class_m2m_relation_inheritance (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_abstract_base_class_m2m_relation_inheritance_manager_reused (model_inheritance_regress.tests.ModelInheritanceTest)', 'verbose_name_plural correctly inherited from ABC if inheritance chain', 'Regression tests for #7588', 'Primary key set correctly with concrete->abstract->concrete inheritance.', 'test_create_new_instance_with_pk_equals_none (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_create_new_instance_with_pk_equals_none_multi_inheritance (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_filter_with_parent_fk (model_inheritance_regress.tests.ModelInheritanceTest)', 'Regression tests for #8076', 'test_id_field_update_on_ancestor_change (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_inheritance_joins (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_inheritance_resolve_columns (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_inheritance_select_related (model_inheritance_regress.tests.ModelInheritanceTest)', 'Regression test for #8825 and #9390', 'test_inherited_nullable_exclude (model_inheritance_regress.tests.ModelInheritanceTest)', 'A model which has different primary key for the parent model passes', 'Regression test for #11764', 'test_issue_21554 (model_inheritance_regress.tests.ModelInheritanceTest)', 'Regression test for #6755', 'test_issue_7105 (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_issue_7276 (model_inheritance_regress.tests.ModelInheritanceTest)', 'Regression test for #7853', 'test_model_inheritance (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_ptr_accessor_assigns_state (model_inheritance_regress.tests.ModelInheritanceTest)', 'test_queries_on_parent_access (model_inheritance_regress.tests.ModelInheritanceTest)', 'Regression test for #10362', 'test_related_filtering_query_efficiency_ticket_15844 (model_inheritance_regress.tests.ModelInheritanceTest)', 'The connector from child to parent need not be the pk on the child.', 'test_use_explicit_o2o_to_parent_from_abstract_model (model_inheritance_regress.tests.ModelInheritanceTest)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-15563: resolved: True
+2026-10-04 09:25:12,210 - INFO - Attempting to stop container sweb.eval.django__django-15563.django__baseline...
+2026-10-04 09:25:27,557 - INFO - Container sweb.eval.django__django-15563.django__baseline stopped successfully.
+2026-10-04 09:25:27,558 - INFO - Attempting to remove container sweb.eval.django__django-15563.django__baseline...
+2026-10-04 09:25:27,697 - INFO - Container sweb.eval.django__django-15563.django__baseline removed successfully.

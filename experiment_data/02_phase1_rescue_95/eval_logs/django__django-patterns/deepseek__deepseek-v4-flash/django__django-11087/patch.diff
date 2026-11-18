@@ -1,0 +1,79 @@
+diff --git a/django/contrib/admin/utils.py b/django/contrib/admin/utils.py
+index dd6b108ff3..a2012e59df 100644
+--- a/django/contrib/admin/utils.py
++++ b/django/contrib/admin/utils.py
+@@ -184,6 +184,8 @@ class NestedObjects(Collector):
+ 
+     def related_objects(self, related, objs):
+         qs = super().related_objects(related, objs)
++        if not self._has_signal_listeners(qs.model):
++            qs = qs.only('pk', related.field.name)
+         return qs.select_related(related.field.name)
+ 
+     def _nested(self, obj, seen, format_callback):
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..e7396d8381 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -116,6 +116,13 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def _has_signal_listeners(self, model):
++        return (
++            signals.pre_delete.has_listeners(model) or
++            signals.post_delete.has_listeners(model) or
++            signals.m2m_changed.has_listeners(model)
++        )
++
+     def can_fast_delete(self, objs, from_field=None):
+         """
+         Determine if the objects in the given queryset-like or single object
+@@ -135,9 +142,7 @@ class Collector:
+             model = objs.model
+         else:
+             return False
+-        if (signals.pre_delete.has_listeners(model) or
+-                signals.post_delete.has_listeners(model) or
+-                signals.m2m_changed.has_listeners(model)):
++        if self._has_signal_listeners(model):
+             return False
+         # The use of from_field comes from the need to avoid cascade back to
+         # parent when parent delete is cascading to child.
+@@ -188,6 +193,9 @@ class Collector:
+         if self.can_fast_delete(objs):
+             self.fast_deletes.append(objs)
+             return
++        if (hasattr(objs, 'only') and objs._result_cache is None and
++                not self._has_signal_listeners(objs.model)):
++            objs = objs.only('pk')
+         new_objs = self.add(objs, source, nullable,
+                             reverse_dependency=reverse_dependency)
+         if not new_objs:
+@@ -232,9 +240,12 @@ class Collector:
+         """
+         Get a QuerySet of objects related to `objs` via the relation `related`.
+         """
+-        return related.related_model._base_manager.using(self.using).filter(
++        qs = related.related_model._base_manager.using(self.using).filter(
+             **{"%s__in" % related.field.name: objs}
+         )
++        if not self._has_signal_listeners(qs.model):
++            qs = qs.only('pk')
++        return qs
+ 
+     def instances_with_model(self):
+         for model, instances in self.data.items():
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index 84236107f3..6a87535e36 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -696,6 +696,8 @@ class QuerySet:
+         del_query.query.clear_ordering(force_empty=True)
+ 
+         collector = Collector(using=del_query.db)
++        if not collector._has_signal_listeners(del_query.model):
++            del_query = del_query.only('pk')
+         collector.collect(del_query)
+         deleted, _rows_count = collector.delete()
+ 

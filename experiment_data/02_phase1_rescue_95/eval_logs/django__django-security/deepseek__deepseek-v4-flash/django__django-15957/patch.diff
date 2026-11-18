@@ -1,0 +1,125 @@
+diff --git a/django/db/models/fields/related_descriptors.py b/django/db/models/fields/related_descriptors.py
+index b192df4fbf..e7f6f8070a 100644
+--- a/django/db/models/fields/related_descriptors.py
++++ b/django/db/models/fields/related_descriptors.py
+@@ -64,8 +64,9 @@ and two directions (forward and reverse) for a total of six combinations.
+ """
+ 
+ from django.core.exceptions import FieldError
+-from django.db import connections, router, transaction
+-from django.db.models import Q, signals
++from django.db import NotSupportedError, connections, router, transaction
++from django.db.models import Q, Window, signals
++from django.db.models.functions import RowNumber
+ from django.db.models.query import QuerySet
+ from django.db.models.query_utils import DeferredAttribute
+ from django.db.models.utils import resolve_callables
+@@ -609,6 +610,33 @@ class ReverseManyToOneDescriptor:
+         )
+ 
+ 
++def _filter_prefetch_queryset(queryset, field_name, instances):
++    predicate = Q(**{"%s__in" % field_name: instances})
++    db = queryset._db or router.db_for_read(queryset.model)
++    if queryset.query.is_sliced:
++        if not connections[db].features.supports_over_clause:
++            raise NotSupportedError(
++                "Prefetching from a limited queryset is only supported on "
++                "backends that support window functions."
++            )
++        low_mark, high_mark = queryset.query.low_mark, queryset.query.high_mark
++        order_by = [
++            expr for expr, _ in queryset.query.get_compiler(using=db).get_order_by()
++        ]
++        queryset = queryset._chain()
++        queryset.query.clear_limits()
++        # Filter on the related instances before adding the window annotation
++        # so that the join created for ``field_name`` is reused instead of the
++        # window function introducing a second, conflicting join.
++        queryset = queryset.filter(predicate)
++        window = Window(RowNumber(), partition_by=field_name, order_by=order_by)
++        queryset = queryset.alias(_rank=window)
++        predicate = Q(_rank__gt=low_mark)
++        if high_mark is not None:
++            predicate &= Q(_rank__lte=high_mark)
++    return queryset.filter(predicate)
++
++
+ def create_reverse_many_to_one_manager(superclass, rel):
+     """
+     Create a manager for the reverse side of a many-to-one relation.
+@@ -718,8 +746,7 @@ def create_reverse_many_to_one_manager(superclass, rel):
+             rel_obj_attr = self.field.get_local_related_value
+             instance_attr = self.field.get_foreign_related_value
+             instances_dict = {instance_attr(inst): inst for inst in instances}
+-            query = {"%s__in" % self.field.name: instances}
+-            queryset = queryset.filter(**query)
++            queryset = _filter_prefetch_queryset(queryset, self.field.name, instances)
+ 
+             # Since we just bypassed this class' get_queryset(), we must manage
+             # the reverse relation manually.
+@@ -1051,8 +1078,9 @@ def create_forward_many_to_many_manager(superclass, rel, reverse):
+             queryset._add_hints(instance=instances[0])
+             queryset = queryset.using(queryset._db or self._db)
+ 
+-            query = {"%s__in" % self.query_field_name: instances}
+-            queryset = queryset._next_is_sticky().filter(**query)
++            queryset = _filter_prefetch_queryset(
++                queryset._next_is_sticky(), self.query_field_name, instances
++            )
+ 
+             # M2M: need to annotate the query in order to get the primary model
+             # that the secondary model was actually related to. We know that
+diff --git a/django/db/models/query.py b/django/db/models/query.py
+index be0deb90b0..3b7350cbcb 100644
+--- a/django/db/models/query.py
++++ b/django/db/models/query.py
+@@ -2520,7 +2520,16 @@ def prefetch_one_level(instances, prefetcher, lookup, level):
+             else:
+                 manager = getattr(obj, to_attr)
+                 if leaf and lookup.queryset is not None:
+-                    qs = manager._apply_rel_filters(lookup.queryset)
++                    if lookup.queryset.query.is_sliced:
++                        # The queryset has already been evaluated and sliced by
++                        # the prefetch machinery, remove the limits before
++                        # binding it to the related manager. ``vals`` carries
++                        # the sliced results through ``_result_cache``.
++                        queryset = lookup.queryset._chain()
++                        queryset.query.clear_limits()
++                        qs = manager._apply_rel_filters(queryset)
++                    else:
++                        qs = manager._apply_rel_filters(lookup.queryset)
+                 else:
+                     qs = manager.get_queryset()
+                 qs._result_cache = vals
+diff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt
+index 223bb452b0..a62f827932 100644
+--- a/docs/ref/models/querysets.txt
++++ b/docs/ref/models/querysets.txt
+@@ -1276,6 +1276,12 @@ applicable to reduce the number of queries even further:
+     >>> Pizza.objects.prefetch_related(
+     ...     Prefetch('restaurants', queryset=Restaurant.objects.select_related('best_pizza')))
+ 
++.. note::
++
++    Using a sliced queryset as the ``queryset`` of a
++    :class:`~django.db.models.Prefetch` object is only supported on database
++    backends that support :ref:`window functions <window-functions>`.
++
+ You can also assign the prefetched result to a custom attribute with the optional
+ ``to_attr`` argument. The result will be stored directly in a list.
+ 
+diff --git a/docs/releases/4.2.txt b/docs/releases/4.2.txt
+index ed00ee1350..3976597d1d 100644
+--- a/docs/releases/4.2.txt
++++ b/docs/releases/4.2.txt
+@@ -193,6 +193,9 @@ Models
+   :ref:`window-functions` with the exception of disjunctive filter lookups
+   against window functions when performing aggregation.
+ 
++* :class:`~django.db.models.Prefetch` now supports sliced querysets on
++  backends that support window functions.
++
+ Requests and Responses
+ ~~~~~~~~~~~~~~~~~~~~~~
+ 

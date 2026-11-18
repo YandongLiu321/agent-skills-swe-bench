@@ -1,0 +1,62 @@
+diff --git a/django/db/migrations/executor.py b/django/db/migrations/executor.py
+index aa2fe0883b..edee912bb1 100755
+--- a/django/db/migrations/executor.py
++++ b/django/db/migrations/executor.py
+@@ -88,6 +88,33 @@ class MigrationExecutor:
+                     migration.mutate_state(state, preserve=False)
+         return state
+ 
++    def _state_has_migratable_model(self, state):
++        """
++        Return True if the router allows migrating at least one model in the
++        given project state to this connection.
++        """
++        for (app_label, model_name), model_state in state.models.items():
++            options = model_state.options
++            if options.get('managed', True) is False or options.get('proxy', False):
++                continue
++            if router.allow_migrate(self.connection.alias, app_label, model_name=model_name):
++                return True
++        return False
++
++    def _migratable(self):
++        """
++        Return True if the router allows migrating at least one of the models
++        in the migrations to this connection.
++        """
++        if not router.routers:
++            return True
++        state = ProjectState(real_apps=self.loader.unmigrated_apps)
++        for migration, _ in self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True):
++            state = migration.mutate_state(state, preserve=False)
++            if self._state_has_migratable_model(state):
++                return True
++        return False
++
+     def migrate(self, targets, plan=None, state=None, fake=False, fake_initial=False):
+         """
+         Migrate the database up to the given targets.
+@@ -95,12 +122,19 @@ class MigrationExecutor:
+         Django first needs to create all project states before a migration is
+         (un)applied and in a second step run all the database operations.
+         """
+-        # The django_migrations table must be present to record applied
+-        # migrations.
+-        self.recorder.ensure_schema()
+-
+         if plan is None:
+             plan = self.migration_plan(targets)
++        # The django_migrations table must be present to record applied
++        # migrations, but don't create it if there are no migrations to apply
++        # or if the database router disallows migrating on this connection.
++        if not self._migratable():
++            if state is None:
++                # The resulting state should include applied migrations.
++                state = self._create_project_state(with_applied_migrations=True)
++            return state
++        if plan:
++            self.recorder.ensure_schema()
++
+         # Create the forwards plan Django would follow on an empty database
+         full_plan = self.migration_plan(self.loader.graph.leaf_nodes(), clean_start=True)
+ 

@@ -1,0 +1,206 @@
+2026-10-07 02:01:32,405 - INFO - Creating container for sphinx-doc__sphinx-11510...
+2026-10-07 02:01:32,473 - INFO - Container for sphinx-doc__sphinx-11510 created: 26d1c0f1d375127085692ecdcd354775904fb6dfa5b3c1ea076ce81798eebcda
+2026-10-07 02:01:32,597 - INFO - Container for sphinx-doc__sphinx-11510 started: 26d1c0f1d375127085692ecdcd354775904fb6dfa5b3c1ea076ce81798eebcda
+2026-10-07 02:01:32,597 - INFO - Intermediate patch for sphinx-doc__sphinx-11510 written to logs\run_evaluation\sphinx__python-error-handling\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-11510\patch.diff, now applying to container...
+2026-10-07 02:01:32,683 - INFO - >>>>> Applied Patch:
+Checking patch sphinx/directives/other.py...
+Checking patch sphinx/events.py...
+Applied patch sphinx/directives/other.py cleanly.
+Applied patch sphinx/events.py cleanly.
+
+2026-10-07 02:01:32,866 - INFO - Git diff before:
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..55676377d 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,10 +1,13 @@
+ from __future__ import annotations
+ 
++import os
+ import re
+ from typing import TYPE_CHECKING, Any, cast
+ 
+ from docutils import nodes
++from docutils.io import FileInput
+ from docutils.parsers.rst import directives
++from docutils.parsers.rst.directives import misc as rst_misc
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+ from docutils.parsers.rst.directives.misc import Class
+ from docutils.parsers.rst.directives.misc import Include as BaseInclude
+@@ -376,7 +379,37 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++
++        env = self.env
++
++        class SphinxIncludeFileInput(FileInput):
++            """A ``FileInput`` that emits source-read and include-read events."""
++
++            def read(self) -> str:
++                content = [super().read()]
++                docname = env.path2doc(self.source_path) or env.docname
++                env.events.emit('source-read', docname, content)
++                relative_path = os.path.relpath(self.source_path, env.srcdir)
++                env.events.emit('include-read', relative_path, env.docname, content)
++                return content[0]
++
++        # Patch the FileInput used by the docutils Include directive, so that
++        # content read by ``.. include::`` passes through Sphinx's events.
++        # Only the ``misc`` module's reference to ``io`` is replaced to avoid
++        # affecting other directives that read files.
++        _orig_io = rst_misc.io
++
++        class _IOProxy:
++            FileInput = SphinxIncludeFileInput
++
++            def __getattr__(self, name: str) -> Any:
++                return getattr(_orig_io, name)
++
++        rst_misc.io = _IOProxy()  # type: ignore[assignment]
++        try:
++            return super().run()
++        finally:
++            rst_misc.io = _orig_io
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:
+diff --git a/sphinx/events.py b/sphinx/events.py
+index c3fdb37c1..dad33aa63 100644
+--- a/sphinx/events.py
++++ b/sphinx/events.py
+@@ -38,6 +38,7 @@ core_events = {
+     'env-before-read-docs': 'env, docnames',
+     'env-check-consistency': 'env',
+     'source-read': 'docname, source text',
++    'include-read': 'relative path, parent docname, source text',
+     'doctree-read': 'the doctree before being pickled',
+     'env-merge-info': 'env, read docnames, other env instance',
+     'missing-reference': 'env, node, contnode',
+2026-10-07 02:01:32,867 - INFO - Eval script for sphinx-doc__sphinx-11510 written to logs\run_evaluation\sphinx__python-error-handling\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-11510\eval.sh; copying to container...
+2026-10-07 02:01:36,978 - INFO - Test runtime: 4.07 seconds
+2026-10-07 02:01:36,979 - INFO - Test output for sphinx-doc__sphinx-11510 written to logs\run_evaluation\sphinx__python-error-handling\deepseek__deepseek-v4-flash\sphinx-doc__sphinx-11510\test_output.txt
+2026-10-07 02:01:37,016 - INFO - Git diff after:
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..55676377d 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,10 +1,13 @@
+ from __future__ import annotations
+ 
++import os
+ import re
+ from typing import TYPE_CHECKING, Any, cast
+ 
+ from docutils import nodes
++from docutils.io import FileInput
+ from docutils.parsers.rst import directives
++from docutils.parsers.rst.directives import misc as rst_misc
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+ from docutils.parsers.rst.directives.misc import Class
+ from docutils.parsers.rst.directives.misc import Include as BaseInclude
+@@ -376,7 +379,37 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++
++        env = self.env
++
++        class SphinxIncludeFileInput(FileInput):
++            """A ``FileInput`` that emits source-read and include-read events."""
++
++            def read(self) -> str:
++                content = [super().read()]
++                docname = env.path2doc(self.source_path) or env.docname
++                env.events.emit('source-read', docname, content)
++                relative_path = os.path.relpath(self.source_path, env.srcdir)
++                env.events.emit('include-read', relative_path, env.docname, content)
++                return content[0]
++
++        # Patch the FileInput used by the docutils Include directive, so that
++        # content read by ``.. include::`` passes through Sphinx's events.
++        # Only the ``misc`` module's reference to ``io`` is replaced to avoid
++        # affecting other directives that read files.
++        _orig_io = rst_misc.io
++
++        class _IOProxy:
++            FileInput = SphinxIncludeFileInput
++
++            def __getattr__(self, name: str) -> Any:
++                return getattr(_orig_io, name)
++
++        rst_misc.io = _IOProxy()  # type: ignore[assignment]
++        try:
++            return super().run()
++        finally:
++            rst_misc.io = _orig_io
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:
+diff --git a/sphinx/events.py b/sphinx/events.py
+index c3fdb37c1..dad33aa63 100644
+--- a/sphinx/events.py
++++ b/sphinx/events.py
+@@ -38,6 +38,7 @@ core_events = {
+     'env-before-read-docs': 'env, docnames',
+     'env-check-consistency': 'env',
+     'source-read': 'docname, source text',
++    'include-read': 'relative path, parent docname, source text',
+     'doctree-read': 'the doctree before being pickled',
+     'env-merge-info': 'env, read docnames, other env instance',
+     'missing-reference': 'env, node, contnode',
+diff --git a/tests/test_directive_other.py b/tests/test_directive_other.py
+index f221db075..45bd03304 100644
+--- a/tests/test_directive_other.py
++++ b/tests/test_directive_other.py
+@@ -148,3 +148,40 @@ def test_toctree_twice(app):
+     assert_node(doctree[0][0],
+                 entries=[(None, 'foo'), (None, 'foo')],
+                 includefiles=['foo', 'foo'])
++
++
++@pytest.mark.sphinx(testroot='directive-include')
++def test_include_source_read_event(app):
++    sources_reported = {}
++
++    def source_read_handler(app, doc, source):
++        sources_reported[doc] = source[0]
++
++    app.connect("source-read", source_read_handler)
++    text = (".. include:: baz/baz.rst\n"
++            "   :start-line: 4\n\n"
++            ".. include:: text.txt\n"
++            "   :literal:    \n")
++    app.env.find_files(app.config, app.builder)
++    restructuredtext.parse(app, text, 'index')
++    assert "index" in sources_reported
++    assert "text.txt" not in sources_reported  # text was included as literal, no rst parsing
++    assert "baz/baz" in sources_reported
++    assert sources_reported["baz/baz"] == "\nBaz was here."
++
++
++@pytest.mark.sphinx(testroot='directive-include')
++def test_include_source_read_event_nested_includes(app):
++
++    def source_read_handler(app, doc, source):
++        text = source[0].replace("#magical", "amazing")
++        source[0] = text
++
++    app.connect("source-read", source_read_handler)
++    text = (".. include:: baz/baz.rst\n")
++    app.env.find_files(app.config, app.builder)
++    doctree = restructuredtext.parse(app, text, 'index')
++    assert_node(doctree, addnodes.document)
++    assert len(doctree.children) == 3
++    assert_node(doctree.children[1], nodes.paragraph)
++    assert doctree.children[1].rawsource == "The amazing foo."
+2026-10-07 02:01:37,016 - INFO - Git diff changed after running eval script
+2026-10-07 02:01:37,016 - INFO - Grading answer for sphinx-doc__sphinx-11510...
+2026-10-07 02:01:37,017 - INFO - report: {'sphinx-doc__sphinx-11510': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_directive_other.py::test_include_source_read_event_nested_includes'], 'failure': ['tests/test_directive_other.py::test_include_source_read_event']}, 'PASS_TO_PASS': {'success': ['tests/test_directive_other.py::test_toctree', 'tests/test_directive_other.py::test_relative_toctree', 'tests/test_directive_other.py::test_toctree_urls_and_titles', 'tests/test_directive_other.py::test_toctree_glob', 'tests/test_directive_other.py::test_toctree_glob_and_url', 'tests/test_directive_other.py::test_reversed_toctree', 'tests/test_directive_other.py::test_toctree_twice'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-11510: resolved: False
+2026-10-07 02:01:37,018 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-11510.sphinx__python-error-handling...
+2026-10-07 02:01:52,258 - INFO - Container sweb.eval.sphinx-doc__sphinx-11510.sphinx__python-error-handling stopped successfully.
+2026-10-07 02:01:52,258 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-11510.sphinx__python-error-handling...
+2026-10-07 02:01:52,333 - INFO - Container sweb.eval.sphinx-doc__sphinx-11510.sphinx__python-error-handling removed successfully.

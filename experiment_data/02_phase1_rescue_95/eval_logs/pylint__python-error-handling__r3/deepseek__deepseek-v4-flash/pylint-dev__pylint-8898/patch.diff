@@ -1,0 +1,72 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..8957d8cef 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,66 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++def _split_regexps(value: str) -> list[str]:
++    """Split a comma separated list of regular expressions.
++
++    Commas located inside a regular expression group, character class or
++    repetition quantifier are part of the pattern instead of being used as
++    separators. A comma can also be escaped with a backslash in order to
++    include it in a pattern (e.g. ``foo\\,bar``).
++    """
++    patterns: list[str] = []
++    current: list[str] = []
++    depth = 0
++    in_character_class = False
++    at_character_class_start = False
++    escaped = False
++    for char in value:
++        if escaped:
++            current.append(char)
++            escaped = False
++            continue
++        if char == "\\":
++            current.append(char)
++            escaped = True
++            continue
++        if in_character_class:
++            current.append(char)
++            if at_character_class_start:
++                if char == "^":
++                    continue
++                at_character_class_start = False
++                if char == "]":
++                    continue
++            if char == "]":
++                in_character_class = False
++                depth -= 1
++            continue
++        if char == "[":
++            in_character_class = True
++            at_character_class_start = True
++            depth += 1
++        elif char in "({":
++            depth += 1
++        elif char in ")}":
++            depth = max(depth - 1, 0)
++        elif char == "," and depth == 0:
++            patterns.append("".join(current))
++            current = []
++            continue
++        current.append(char)
++    patterns.append("".join(current))
++    return [
++        pylint_utils._unquote(pattern).strip()
++        for pattern in patterns
++        if pylint_utils._unquote(pattern).strip()
++    ]
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regexps(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 

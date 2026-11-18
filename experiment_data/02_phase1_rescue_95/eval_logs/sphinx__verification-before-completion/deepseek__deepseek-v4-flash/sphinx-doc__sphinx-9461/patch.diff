@@ -1,0 +1,158 @@
+diff --git a/CHANGES b/CHANGES
+index 5658cc43f..7b972c33f 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -13,6 +13,9 @@ Deprecated
+ Features added
+ --------------
+ 
++* #9449: autodoc: Support class properties (``@classmethod`` and ``@property``
++  decorated methods)
++
+ Bugs fixed
+ ----------
+ 
+diff --git a/doc/usage/restructuredtext/domains.rst b/doc/usage/restructuredtext/domains.rst
+index 23844886e..1c432d2e1 100644
+--- a/doc/usage/restructuredtext/domains.rst
++++ b/doc/usage/restructuredtext/domains.rst
+@@ -329,6 +329,13 @@ The following directives are provided for module and class contents:
+ 
+       Indicate the property is abstract.
+ 
++   .. rst:directive:option:: classmethod
++      :type: no value
++
++      Indicate the property is a classmethod.
++
++      .. versionadded:: 4.2
++
+    .. rst:directive:option:: type: type of the property
+       :type: text
+ 
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..81dcd2626 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -865,9 +866,12 @@ class PyProperty(PyObject):
+         return fullname, prefix
+ 
+     def get_signature_prefix(self, sig: str) -> str:
+-        prefix = ['property']
++        prefix = []
+         if 'abstractmethod' in self.options:
+-            prefix.insert(0, 'abstract')
++            prefix.append('abstract')
++        if 'classmethod' in self.options:
++            prefix.append('class')
++        prefix.append('property')
+ 
+         return ' '.join(prefix) + ' '
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..70564afb2 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -25,7 +25,7 @@ from sphinx.config import ENUM, Config
+ from sphinx.deprecation import RemovedInSphinx50Warning, RemovedInSphinx60Warning
+ from sphinx.environment import BuildEnvironment
+ from sphinx.ext.autodoc.importer import (get_class_members, get_object_members, import_module,
+-                                         import_object)
++                                         import_object, mangle)
+ from sphinx.ext.autodoc.mock import ismock, mock, undecorate
+ from sphinx.locale import _, __
+ from sphinx.pycode import ModuleAnalyzer, PycodeError
+@@ -2661,7 +2661,12 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+     @classmethod
+     def can_document_member(cls, member: Any, membername: str, isattr: bool, parent: Any
+                             ) -> bool:
+-        return inspect.isproperty(member) and isinstance(parent, ClassDocumenter)
++        if inspect.isproperty(member):
++            return isinstance(parent, ClassDocumenter)
++        elif isinstance(member, classmethod):
++            return inspect.isproperty(member.__func__) and isinstance(parent, ClassDocumenter)
++        else:
++            return False
+ 
+     def document_members(self, all_members: bool = False) -> None:
+         pass
+@@ -2670,11 +2675,40 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         real_modname = self.get_attr(self.parent or self.object, '__module__', None)
+         return real_modname or self.modname
+ 
++    def get_descriptor(self) -> Any:
++        """Get the raw descriptor of the target from the class hierarchy.
++
++        This is needed to detect a classmethod-wrapped property because accessing
++        it on the class evaluates the underlying property.
++        """
++        for cls in inspect.getmro(self.parent):
++            for name in (self.object_name, mangle(cls, self.object_name)):
++                if name in cls.__dict__:
++                    return cls.__dict__[name]
++
++        return self.object
++
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++        if not ret:
++            return ret
++
++        # A classmethod-wrapped property is evaluated when it is accessed on the
++        # class.  Restore the underlying property object to retrieve its docstring.
++        obj = self.get_descriptor()
++        if isinstance(obj, classmethod) and inspect.isproperty(obj.__func__):
++            self.object = obj.__func__
++
++        return ret
++
+     def add_directive_header(self, sig: str) -> None:
+         super().add_directive_header(sig)
+         sourcename = self.get_sourcename()
++        obj = self.get_descriptor()
+         if inspect.isabstractmethod(self.object):
+             self.add_line('   :abstractmethod:', sourcename)
++        if inspect.isclassmethod(obj):
++            self.add_line('   :classmethod:', sourcename)
+ 
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..66f6715b1 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -18,7 +18,7 @@ from sphinx.ext.autodoc.mock import ismock, undecorate
+ from sphinx.pycode import ModuleAnalyzer, PycodeError
+ from sphinx.util import logging
+ from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isenumclass,
+-                                 safe_getattr)
++                                 isproperty, safe_getattr)
+ 
+ if False:
+     # For type annotation
+@@ -280,6 +280,17 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+ 
+             unmangled = unmangle(subject, name)
+             if unmangled and unmangled not in members:
++                # Handle a classmethod-wrapped property (ex. ``@classmethod @property``).
++                # Since Python 3.9, accessing such an attribute on the class evaluates
++                # the underlying property, so we have to look up the raw descriptor
++                # from the class to be able to document it as a property.
++                for cls in getmro(subject):
++                    if name in cls.__dict__:
++                        obj = cls.__dict__[name]
++                        if isinstance(obj, classmethod) and isproperty(obj.__func__):
++                            value = obj.__func__
++                        break
++
+                 if name in obj_dict:
+                     members[unmangled] = ObjectMember(unmangled, value, class_=subject)
+                 else:

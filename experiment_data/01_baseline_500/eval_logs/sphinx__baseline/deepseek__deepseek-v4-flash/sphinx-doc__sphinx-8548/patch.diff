@@ -1,0 +1,101 @@
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index ddfd2b365..667f26291 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -69,6 +69,26 @@ def identity(x: Any) -> Any:
+     return x
+ 
+ 
++def get_class_attr_docs(analyzer: ModuleAnalyzer, cls: Any, name: str) -> Optional[List[str]]:
++    """Get the doc comment for *name* attribute of *cls* or its super classes.
++
++    The attribute documentation is stored in ModuleAnalyzer with a
++    ``(namespace, attrname)`` tuple.  For an inherited attribute, the doc
++    comment is stored under the namespace of the class where the attribute is
++    defined; not under the namespace of the derived class.
++    """
++    attr_docs = analyzer.find_attr_docs()
++    for parent in inspect.getmro(cls):
++        qualname = safe_getattr(parent, '__qualname__', None)
++        if qualname and (qualname, name) in attr_docs:
++            return list(attr_docs[qualname, name])
++        if name in safe_getattr(parent, '__dict__', {}):
++            # the attribute is defined in this class, but has no doc comment
++            break
++
++    return None
++
++
+ class _All:
+     """A special value for :*-members: that matches to any member."""
+ 
+@@ -599,10 +619,19 @@ class Documenter:
+             if self.objpath:
+                 key = ('.'.join(self.objpath[:-1]), self.objpath[-1])
+                 if key in attr_docs:
++                    comment = list(attr_docs[key])
++                elif inspect.isclass(self.parent):
++                    # the attribute might be inherited from a super class
++                    comment = get_class_attr_docs(self.analyzer, self.parent,
++                                                  self.objpath[-1])
++                else:
++                    comment = None
++
++                if comment is not None:
+                     no_docstring = True
+                     # make a copy of docstring for attributes to avoid cache
+                     # the change of autodoc-process-docstring event.
+-                    docstrings = [list(attr_docs[key])]
++                    docstrings = [comment]
+ 
+                     for i, line in enumerate(self.process_doc(docstrings)):
+                         self.add_line(line, sourcename, i)
+@@ -698,6 +727,16 @@ class Documenter:
+             else:
+                 isattr = False
+ 
++            # check the member is documented by an attribute comment.  The comment
++            # might be stored under the namespace of a super class (cf. #741).
++            if (namespace, membername) in attr_docs:
++                is_attr_doc = True
++            elif self.analyzer and inspect.isclass(self.object):
++                is_attr_doc = (get_class_attr_docs(self.analyzer, self.object,
++                                                   membername) is not None)
++            else:
++                is_attr_doc = False
++
+             doc = getdoc(member, self.get_attr, self.config.autodoc_inherit_docstrings,
+                          self.parent, self.object_name)
+             if not isinstance(doc, str):
+@@ -746,7 +785,7 @@ class Documenter:
+                         keep = has_doc or self.options.undoc_members
+                 else:
+                     keep = False
+-            elif (namespace, membername) in attr_docs:
++            elif is_attr_doc:
+                 if want_all and isprivate:
+                     if self.options.private_members is None:
+                         keep = False
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index d6e73d36a..a4b85a2a7 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -315,6 +315,18 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable,
+                 members[name] = ClassAttribute(subject, name, INSTANCEATTR,
+                                                '\n'.join(docstring))
+ 
++        # append instance attributes (cf. self.attr1) defined in a super class
++        # (cf. #741)
++        for cls in getmro(subject):
++            namespace = safe_getattr(cls, '__qualname__', None)
++            if not namespace:
++                continue
++
++            for (ns, name), docstring in analyzer.attr_docs.items():
++                if ns == namespace and name not in members:
++                    members[name] = ClassAttribute(cls, name, INSTANCEATTR,
++                                                   '\n'.join(docstring))
++
+     return members
+ 
+ 

@@ -1,0 +1,176 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..0ef10c92a7 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -545,11 +545,171 @@ class Query(BaseExpression):
+ 
+         return dict(zip(outer_query.annotation_select, result))
+ 
++    def _get_used_annotation_aliases(self):
++        """
++        Return the aliases of the annotations that are referenced by filters,
++        ordering, grouping, selected columns, or other used annotations.
++        """
++        annotations = self.annotations
++        aliases_by_expr = {}
++        for alias, expr in annotations.items():
++            aliases_by_expr.setdefault(id(expr), []).append(alias)
++
++        def collect(expr, found):
++            if expr is None:
++                return
++            if isinstance(expr, Ref) and expr.refs in annotations:
++                found.add(expr.refs)
++            for alias in aliases_by_expr.get(id(expr), ()):
++                found.add(alias)
++            get_sources = getattr(expr, "get_source_expressions", None)
++            if get_sources is not None:
++                for source in get_sources():
++                    collect(source, found)
++
++        used = set()
++        if self.annotation_select_mask is not None:
++            # Explicitly selected annotations (e.g. through values()) must be
++            # kept as they take part in the SELECT clause.
++            used.update(self.annotation_select)
++        roots = [self.where]
++        roots.extend(self.select)
++        if isinstance(self.group_by, tuple):
++            roots.extend(self.group_by)
++        for expr in self.order_by:
++            if isinstance(expr, str):
++                name = expr[1:] if expr.startswith("-") else expr
++                if name in annotations:
++                    used.add(name)
++            else:
++                roots.append(expr)
++        for root in roots:
++            collect(root, used)
++        # Annotations referenced by used annotations must be kept as well.
++        queue = list(used)
++        while queue:
++            found = set()
++            collect(annotations[queue.pop()], found)
++            for alias in found:
++                if alias not in used:
++                    used.add(alias)
++                    queue.append(alias)
++        return used
++
++    def _is_multivalued_join(self, alias):
++        """Return True if the join chain rooted at alias can duplicate rows."""
++        seen = set()
++        while alias is not None and alias not in seen:
++            seen.add(alias)
++            join = self.alias_map.get(alias)
++            if not isinstance(join, Join):
++                break
++            join_field = join.join_field
++            if getattr(join_field, "many_to_many", False) or getattr(
++                join_field, "one_to_many", False
++            ):
++                return True
++            alias = join.parent_alias
++        return False
++
++    def _contains_query(self, expr):
++        """Return True if expr embeds a Query (e.g. a Subquery)."""
++        if isinstance(expr, Query):
++            return True
++        get_sources = getattr(expr, "get_source_expressions", None)
++        if get_sources is not None:
++            return any(
++                source is not None and self._contains_query(source)
++                for source in get_sources()
++            )
++        return False
++
++    def _is_safe_to_remove(self, annotation):
++        """
++        Return True if removing the non-aggregate annotation can't change the
++        number of rows the query returns.
++        """
++        if self._contains_query(annotation):
++            return False
++        return not any(
++            self._is_multivalued_join(alias)
++            for alias in self._gen_col_aliases([annotation])
++        )
++
++    def _strip_unused_annotations(self):
++        """
++        Remove the annotations that aren't referenced by the query so they
++        aren't included in the query produced by count().
++
++        Removing an annotation can change the number of rows the query returns,
++        e.g. when it implies a GROUP BY on the model's primary key or joins a
++        multi-valued relation, so those annotations are kept.
++        """
++        if not self.annotations or self.extra:
++            return
++        used = self._get_used_annotation_aliases()
++        removable = {
++            alias
++            for alias, annotation in self.annotations.items()
++            if alias not in used
++            and (annotation.contains_aggregate or self._is_safe_to_remove(annotation))
++        }
++        if not removable:
++            return
++        aggregates = {
++            alias for alias in removable if self.annotations[alias].contains_aggregate
++        }
++        if aggregates and not any(
++            annotation.contains_aggregate
++            for alias, annotation in self.annotations.items()
++            if alias not in removable
++        ):
++            # Removing the aggregate annotations would also remove the GROUP BY
++            # on the model's primary key they imply. This is only safe when no
++            # annotations are left and the remaining filters can't duplicate
++            # rows through multi-valued relations.
++            if removable != set(self.annotations):
++                removable -= aggregates
++            else:
++                remaining_exprs = [self.where]
++                remaining_exprs.extend(self.select)
++                if isinstance(self.group_by, tuple):
++                    remaining_exprs.extend(self.group_by)
++                if any(
++                    self._is_multivalued_join(alias)
++                    for alias in self._gen_col_aliases(remaining_exprs)
++                ):
++                    removable -= aggregates
++        if not removable:
++            return
++        for alias in removable:
++            for col_alias in self._gen_col_aliases([self.annotations[alias]]):
++                current = col_alias
++                seen = set()
++                while current is not None and current not in seen:
++                    seen.add(current)
++                    join = self.alias_map.get(current)
++                    if not isinstance(join, Join):
++                        break
++                    if self.alias_refcount.get(current):
++                        self.alias_refcount[current] -= 1
++                    current = join.parent_alias
++        for alias in removable:
++            del self.annotations[alias]
++            if self.annotation_select_mask is not None:
++                self.annotation_select_mask.discard(alias)
++        self._annotation_select_cache = None
++        if self.group_by is True and not any(
++            annotation.contains_aggregate for annotation in self.annotations.values()
++        ):
++            self.group_by = None
++
+     def get_count(self, using):
+         """
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        obj._strip_unused_annotations()
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 

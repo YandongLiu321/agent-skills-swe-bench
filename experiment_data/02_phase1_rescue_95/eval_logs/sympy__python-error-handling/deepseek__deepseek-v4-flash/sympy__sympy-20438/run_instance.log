@@ -1,0 +1,158 @@
+2026-10-07 01:26:39,879 - INFO - Creating container for sympy__sympy-20438...
+2026-10-07 01:26:39,931 - INFO - Container for sympy__sympy-20438 created: d03a3affd58178806fe6268213d76396df936af2e1dbf6bd838f6b70db8f942e
+2026-10-07 01:26:40,041 - INFO - Container for sympy__sympy-20438 started: d03a3affd58178806fe6268213d76396df936af2e1dbf6bd838f6b70db8f942e
+2026-10-07 01:26:40,042 - INFO - Intermediate patch for sympy__sympy-20438 written to logs\run_evaluation\sympy__python-error-handling\deepseek__deepseek-v4-flash\sympy__sympy-20438\patch.diff, now applying to container...
+2026-10-07 01:26:40,131 - INFO - >>>>> Applied Patch:
+Checking patch sympy/core/relational.py...
+Checking patch sympy/sets/handlers/comparison.py...
+Checking patch sympy/sets/sets.py...
+Applied patch sympy/core/relational.py cleanly.
+Applied patch sympy/sets/handlers/comparison.py cleanly.
+Applied patch sympy/sets/sets.py cleanly.
+
+2026-10-07 01:26:40,693 - INFO - Git diff before:
+diff --git a/sympy/core/relational.py b/sympy/core/relational.py
+index e2e0b7fbcc..ede1affd76 100644
+--- a/sympy/core/relational.py
++++ b/sympy/core/relational.py
+@@ -311,11 +311,14 @@ def _eval_simplify(self, **kwargs):
+             v = None
+             if dif.is_comparable:
+                 v = dif.n(2)
+-            elif dif.equals(0):  # XXX this is expensive
++            elif isinstance(dif, Expr) and dif.equals(0):
++                # XXX this is expensive
+                 v = S.Zero
+             if v is not None:
+                 r = r.func._eval_relation(v, S.Zero)
+             r = r.canonical
++            if not isinstance(dif, Expr):
++                return r
+             # If there is only one symbol in the expression,
+             # try to write it on a simplified form
+             free = list(filter(lambda x: x.is_real is not False, r.free_symbols))
+@@ -562,6 +565,8 @@ def _eval_simplify(self, **kwargs):
+         e = super()._eval_simplify(**kwargs)
+         if not isinstance(e, Equality):
+             return e
++        if not (isinstance(e.lhs, Expr) and isinstance(e.rhs, Expr)):
++            return e.canonical
+         free = self.free_symbols
+         if len(free) == 1:
+             try:
+diff --git a/sympy/sets/handlers/comparison.py b/sympy/sets/handlers/comparison.py
+index 6f7a19fccf..f88b0bfa5c 100644
+--- a/sympy/sets/handlers/comparison.py
++++ b/sympy/sets/handlers/comparison.py
+@@ -49,6 +49,14 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return tfn[fuzzy_and(map(fuzzy_bool, eqs))]
+ 
+ 
++@dispatch(ProductSet, FiniteSet) # type:ignore
++def _eval_is_eq(lhs, rhs): # noqa: F811
++    if lhs.is_finite_set is True:
++        return tfn[fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])]
++    elif lhs.is_finite_set is False:
++        return False
++
++
+ @dispatch(Set, Basic) # type:ignore
+ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return False
+diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py
+index 3c4aa86e36..fed5e9aba2 100644
+--- a/sympy/sets/sets.py
++++ b/sympy/sets/sets.py
+@@ -801,6 +801,14 @@ def _contains(self, element):
+ 
+         return fuzzy_and(s._contains(e) for s, e in zip(self.sets, element))
+ 
++    def _eval_is_subset(self, other):
++        if self.is_finite_set:
++            return fuzzy_and(other._contains(Tuple(*e)) for e in self)
++
++    def _eval_rewrite_as_FiniteSet(self, *args, **kwargs):
++        if self.is_finite_set:
++            return FiniteSet(*self)
++
+     def as_relational(self, *symbols):
+         symbols = [_sympify(s) for s in symbols]
+         if len(symbols) != len(self.sets) or not all(
+2026-10-07 01:26:40,694 - INFO - Eval script for sympy__sympy-20438 written to logs\run_evaluation\sympy__python-error-handling\deepseek__deepseek-v4-flash\sympy__sympy-20438\eval.sh; copying to container...
+2026-10-07 01:27:04,583 - INFO - Test runtime: 23.84 seconds
+2026-10-07 01:27:04,584 - INFO - Test output for sympy__sympy-20438 written to logs\run_evaluation\sympy__python-error-handling\deepseek__deepseek-v4-flash\sympy__sympy-20438\test_output.txt
+2026-10-07 01:27:04,625 - INFO - Git diff after:
+diff --git a/sympy/core/relational.py b/sympy/core/relational.py
+index e2e0b7fbcc..ede1affd76 100644
+--- a/sympy/core/relational.py
++++ b/sympy/core/relational.py
+@@ -311,11 +311,14 @@ def _eval_simplify(self, **kwargs):
+             v = None
+             if dif.is_comparable:
+                 v = dif.n(2)
+-            elif dif.equals(0):  # XXX this is expensive
++            elif isinstance(dif, Expr) and dif.equals(0):
++                # XXX this is expensive
+                 v = S.Zero
+             if v is not None:
+                 r = r.func._eval_relation(v, S.Zero)
+             r = r.canonical
++            if not isinstance(dif, Expr):
++                return r
+             # If there is only one symbol in the expression,
+             # try to write it on a simplified form
+             free = list(filter(lambda x: x.is_real is not False, r.free_symbols))
+@@ -562,6 +565,8 @@ def _eval_simplify(self, **kwargs):
+         e = super()._eval_simplify(**kwargs)
+         if not isinstance(e, Equality):
+             return e
++        if not (isinstance(e.lhs, Expr) and isinstance(e.rhs, Expr)):
++            return e.canonical
+         free = self.free_symbols
+         if len(free) == 1:
+             try:
+diff --git a/sympy/sets/handlers/comparison.py b/sympy/sets/handlers/comparison.py
+index 6f7a19fccf..f88b0bfa5c 100644
+--- a/sympy/sets/handlers/comparison.py
++++ b/sympy/sets/handlers/comparison.py
+@@ -49,6 +49,14 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return tfn[fuzzy_and(map(fuzzy_bool, eqs))]
+ 
+ 
++@dispatch(ProductSet, FiniteSet) # type:ignore
++def _eval_is_eq(lhs, rhs): # noqa: F811
++    if lhs.is_finite_set is True:
++        return tfn[fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])]
++    elif lhs.is_finite_set is False:
++        return False
++
++
+ @dispatch(Set, Basic) # type:ignore
+ def _eval_is_eq(lhs, rhs): # noqa: F811
+     return False
+diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py
+index 3c4aa86e36..fed5e9aba2 100644
+--- a/sympy/sets/sets.py
++++ b/sympy/sets/sets.py
+@@ -801,6 +801,14 @@ def _contains(self, element):
+ 
+         return fuzzy_and(s._contains(e) for s, e in zip(self.sets, element))
+ 
++    def _eval_is_subset(self, other):
++        if self.is_finite_set:
++            return fuzzy_and(other._contains(Tuple(*e)) for e in self)
++
++    def _eval_rewrite_as_FiniteSet(self, *args, **kwargs):
++        if self.is_finite_set:
++            return FiniteSet(*self)
++
+     def as_relational(self, *symbols):
+         symbols = [_sympify(s) for s in symbols]
+         if len(symbols) != len(self.sets) or not all(
+2026-10-07 01:27:04,626 - INFO - Grading answer for sympy__sympy-20438...
+2026-10-07 01:27:04,626 - INFO - report: {'sympy__sympy-20438': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_issue_19378'], 'failure': ['test_Eq']}, 'PASS_TO_PASS': {'success': ['test_imageset', 'test_is_empty', 'test_is_finiteset', 'test_deprecated_is_EmptySet', 'test_interval_arguments', 'test_interval_symbolic_end_points', 'test_interval_is_empty', 'test_union', 'test_union_iter', 'test_union_is_empty', 'test_difference', 'test_Complement', 'test_set_operations_nonsets', 'test_complement', 'test_intersect1', 'test_intersection', 'test_issue_9623', 'test_is_disjoint', 'test_ProductSet__len__', 'test_ProductSet', 'test_ProductSet_of_single_arg_is_not_arg', 'test_ProductSet_is_empty', 'test_interval_subs', 'test_interval_to_mpi', 'test_set_evalf', 'test_measure', 'test_is_subset', 'test_is_proper_subset', 'test_is_superset', 'test_is_proper_superset', 'test_contains', 'test_interval_symbolic', 'test_union_contains', 'test_is_number', 'test_Interval_is_left_unbounded', 'test_Interval_is_right_unbounded', 'test_Interval_as_relational', 'test_Finite_as_relational', 'test_Union_as_relational', 'test_Intersection_as_relational', 'test_Complement_as_relational', 'test_SymmetricDifference_as_relational', 'test_EmptySet', 'test_finite_basic', 'test_product_basic', 'test_real', 'test_supinf', 'test_universalset', 'test_Union_of_ProductSets_shares', 'test_Interval_free_symbols', 'test_image_interval', 'test_image_piecewise', 'test_image_FiniteSet', 'test_image_Union', 'test_image_EmptySet', 'test_issue_5724_7680', 'test_boundary', 'test_boundary_Union', 'test_boundary_ProductSet', 'test_boundary_ProductSet_line', 'test_is_open', 'test_is_closed', 'test_closure', 'test_interior', 'test_issue_7841', 'test_SymmetricDifference', 'test_issue_9536', 'test_issue_9637', 'test_issue_9808', 'test_issue_9956', 'test_issue_Symbol_inter', 'test_issue_11827', 'test_issue_10113', 'test_issue_10248', 'test_issue_9447', 'test_issue_10337', 'test_issue_10326', 'test_issue_2799', 'test_issue_9706', 'test_issue_8257', 'test_issue_10931', 'test_issue_11174', 'test_issue_18505', 'test_finite_set_intersection', 'test_union_intersection_constructor', 'test_Union_contains', 'test_DisjointUnion', 'test_DisjointUnion_is_empty', 'test_DisjointUnion_is_iterable', 'test_DisjointUnion_contains', 'test_DisjointUnion_iter', 'test_DisjointUnion_len', 'test_issue_20089'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sympy__sympy-20438: resolved: False
+2026-10-07 01:27:04,628 - INFO - Attempting to stop container sweb.eval.sympy__sympy-20438.sympy__python-error-handling...
+2026-10-07 01:27:19,921 - INFO - Container sweb.eval.sympy__sympy-20438.sympy__python-error-handling stopped successfully.
+2026-10-07 01:27:19,921 - INFO - Attempting to remove container sweb.eval.sympy__sympy-20438.sympy__python-error-handling...
+2026-10-07 01:27:20,012 - INFO - Container sweb.eval.sympy__sympy-20438.sympy__python-error-handling removed successfully.

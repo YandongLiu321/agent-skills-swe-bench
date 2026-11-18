@@ -1,0 +1,156 @@
+diff --git a/pylint/lint/expand_modules.py b/pylint/lint/expand_modules.py
+index b20cd873..428405f7 100644
+--- a/pylint/lint/expand_modules.py
++++ b/pylint/lint/expand_modules.py
+@@ -12,6 +12,7 @@ from re import Pattern
+ from astroid import modutils
+ 
+ from pylint.typing import ErrorDescriptionDict, ModuleDescriptionDict
++from pylint.utils.utils import _is_ignored_file, _is_in_ignore_list_re
+ 
+ 
+ def _modpath_from_file(filename: str, is_namespace: bool, path: list[str]) -> list[str]:
+@@ -41,11 +42,6 @@ def get_python_path(filepath: str) -> str:
+             return os.getcwd()
+ 
+ 
+-def _is_in_ignore_list_re(element: str, ignore_list_re: list[Pattern[str]]) -> bool:
+-    """Determines if the element is matched in a regex ignore-list."""
+-    return any(file_pattern.match(element) for file_pattern in ignore_list_re)
+-
+-
+ def expand_modules(
+     files_or_modules: Sequence[str],
+     ignore_list: list[str],
+@@ -61,10 +57,11 @@ def expand_modules(
+ 
+     for something in files_or_modules:
+         basename = os.path.basename(something)
+-        if (
+-            basename in ignore_list
+-            or _is_in_ignore_list_re(os.path.basename(something), ignore_list_re)
+-            or _is_in_ignore_list_re(something, ignore_list_paths_re)
++        if _is_ignored_file(
++            something,
++            ignore_list,
++            ignore_list_re,
++            ignore_list_paths_re,
+         ):
+             continue
+         module_path = get_python_path(something)
+@@ -128,9 +125,12 @@ def expand_modules(
+             ):
+                 if filepath == subfilepath:
+                     continue
+-                if _is_in_ignore_list_re(
+-                    os.path.basename(subfilepath), ignore_list_re
+-                ) or _is_in_ignore_list_re(subfilepath, ignore_list_paths_re):
++                if _is_ignored_file(
++                    subfilepath,
++                    ignore_list,
++                    ignore_list_re,
++                    ignore_list_paths_re,
++                ):
+                     continue
+ 
+                 modpath = _modpath_from_file(
+diff --git a/pylint/lint/pylinter.py b/pylint/lint/pylinter.py
+index 53345a6b..0657453f 100644
+--- a/pylint/lint/pylinter.py
++++ b/pylint/lint/pylinter.py
+@@ -564,8 +564,7 @@ class PyLinter(
+             if not msg.may_be_emitted():
+                 self._msgs_state[msg.msgid] = False
+ 
+-    @staticmethod
+-    def _discover_files(files_or_modules: Sequence[str]) -> Iterator[str]:
++    def _discover_files(self, files_or_modules: Sequence[str]) -> Iterator[str]:
+         """Discover python modules and packages in sub-directory.
+ 
+         Returns iterator of paths to discovered modules and packages.
+@@ -575,10 +574,32 @@ class PyLinter(
+                 os.path.join(something, "__init__.py")
+             ):
+                 skip_subtrees: list[str] = []
+-                for root, _, files in os.walk(something):
++                for root, dirs, files in os.walk(something):
+                     if any(root.startswith(s) for s in skip_subtrees):
+                         # Skip subtree of already discovered package.
+                         continue
++
++                    if utils._is_ignored_file(
++                        root,
++                        self.config.ignore,
++                        self.config.ignore_patterns,
++                        self.config.ignore_paths,
++                    ):
++                        continue
++
++                    # Filter the directories to fix the path, so as to
++                    # avoid linting modules in ignored directories.
++                    dirs[:] = [
++                        d
++                        for d in dirs
++                        if not utils._is_ignored_file(
++                            os.path.join(root, d),
++                            self.config.ignore,
++                            self.config.ignore_patterns,
++                            self.config.ignore_paths,
++                        )
++                    ]
++
+                     if "__init__.py" in files:
+                         skip_subtrees.append(root)
+                         yield root
+diff --git a/pylint/utils/__init__.py b/pylint/utils/__init__.py
+index bc5011db..fe099da0 100644
+--- a/pylint/utils/__init__.py
++++ b/pylint/utils/__init__.py
+@@ -15,6 +15,7 @@ from pylint.utils.utils import (
+     IsortDriver,
+     _check_csv,
+     _format_option_value,
++    _is_ignored_file,
+     _splitstrip,
+     _unquote,
+     decoding_stream,
+@@ -35,6 +36,7 @@ __all__ = [
+     "IsortDriver",
+     "_check_csv",
+     "_format_option_value",
++    "_is_ignored_file",
+     "_splitstrip",
+     "_unquote",
+     "decoding_stream",
+diff --git a/pylint/utils/utils.py b/pylint/utils/utils.py
+index f56fc8eb..4a2444bb 100644
+--- a/pylint/utils/utils.py
++++ b/pylint/utils/utils.py
+@@ -131,6 +131,27 @@ def get_module_and_frameid(node: nodes.NodeNG) -> tuple[str, str]:
+     return module, ".".join(obj)
+ 
+ 
++def _is_in_ignore_list_re(element: str, ignore_list_re: list[Pattern[str]]) -> bool:
++    """Determines if the element is matched in a regex ignore-list."""
++    return any(file_pattern.match(element) for file_pattern in ignore_list_re)
++
++
++def _is_ignored_file(
++    element: str,
++    ignore_list: list[str],
++    ignore_list_re: list[Pattern[str]],
++    ignore_list_paths_re: list[Pattern[str]],
++) -> bool:
++    """Return true if the file or directory should be ignored."""
++    element = os.path.normpath(element)
++    basename = os.path.basename(element)
++    return (
++        basename in ignore_list
++        or _is_in_ignore_list_re(basename, ignore_list_re)
++        or _is_in_ignore_list_re(element, ignore_list_paths_re)
++    )
++
++
+ def get_rst_title(title: str, character: str) -> str:
+     """Permit to get a title formatted as ReStructuredText test (underlined with a chosen character)."""
+     return f"{title}\n{character * len(title)}\n"

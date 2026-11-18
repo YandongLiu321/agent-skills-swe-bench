@@ -1,0 +1,85 @@
+diff --git a/astropy/utils/introspection.py b/astropy/utils/introspection.py
+index 3e784f9fc..ad8b26a1c 100644
+--- a/astropy/utils/introspection.py
++++ b/astropy/utils/introspection.py
+@@ -4,6 +4,7 @@
+ 
+ 
+ import inspect
++import re
+ import types
+ import importlib
+ from distutils.version import LooseVersion
+@@ -88,6 +89,57 @@ def resolve_name(name, *additional_parts):
+     return ret
+ 
+ 
++_NUMERIC_VERSION_RE = re.compile(r'^[0-9]+(?:\.[0-9]+)*$')
++
++
++def _loose_version(version):
++    """Create a `~distutils.version.LooseVersion` from *version*.
++
++    This strips any non-numeric part from the version string, which is needed
++    because `~distutils.version.LooseVersion` raises a `TypeError` when such
++    parts are compared with numeric components.  Trailing zeros are stripped
++    so that, e.g., ``'1.2'`` and ``'1.2.0'`` compare as equal.
++    """
++    match = re.match(r'^[0-9]+(?:\.[0-9]+)*', version)
++    version = match.group(0) if match else '0'
++    parts = version.split('.')
++    while len(parts) > 1 and parts[-1] == '0':
++        parts.pop()
++    return LooseVersion('.'.join(parts))
++
++
++def _parse_versions(have_version, version):
++    """Parse version strings into comparable objects.
++
++    For plain numeric versions, `~distutils.version.LooseVersion` is used
++    directly.  Otherwise, `packaging.version.parse` or
++    `pkg_resources.parse_version` is used if available, as these handle
++    suffixes such as ``dev`` or ``rc`` correctly.
++    """
++    have_version = str(have_version)
++    version = str(version)
++
++    if (_NUMERIC_VERSION_RE.match(have_version) and
++            _NUMERIC_VERSION_RE.match(version)):
++        return _loose_version(have_version), _loose_version(version)
++
++    try:
++        from packaging.version import parse as parse_version
++    except ImportError:
++        try:
++            from pkg_resources import parse_version
++        except ImportError:
++            parse_version = None
++
++    if parse_version is not None:
++        try:
++            return parse_version(have_version), parse_version(version)
++        except Exception:
++            pass
++
++    return _loose_version(have_version), _loose_version(version)
++
++
+ def minversion(module, version, inclusive=True, version_path='__version__'):
+     """
+     Returns `True` if the specified Python module satisfies a minimum version
+@@ -139,10 +191,12 @@ def minversion(module, version, inclusive=True, version_path='__version__'):
+     else:
+         have_version = resolve_name(module.__name__, version_path)
+ 
++    have_version, version = _parse_versions(have_version, version)
++
+     if inclusive:
+-        return LooseVersion(have_version) >= LooseVersion(version)
++        return have_version >= version
+     else:
+-        return LooseVersion(have_version) > LooseVersion(version)
++        return have_version > version
+ 
+ 
+ def find_current_module(depth=1, finddiff=False):

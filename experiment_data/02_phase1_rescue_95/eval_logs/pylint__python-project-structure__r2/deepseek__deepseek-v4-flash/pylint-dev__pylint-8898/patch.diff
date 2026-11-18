@@ -1,0 +1,90 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 30a5fd175..9b4a55723 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -111,10 +111,75 @@ def _regex_transformer(value: str) -> Pattern[str]:
+         raise argparse.ArgumentTypeError(msg) from e
+ 
+ 
++def _split_regex_patterns(value: str) -> Sequence[str]:
++    """Split a comma separated list of regular expressions.
++
++    Commas are only treated as separators when they are not escaped and not
++    inside a regular expression group (or a character class / quantifier).
++    """
++    patterns: list[str] = []
++    pattern: list[str] = []
++    stack: list[str] = []
++
++    i = 0
++    while i < len(value):
++        char = value[i]
++
++        if char == "\\":
++            if i + 1 < len(value):
++                next_char = value[i + 1]
++                if next_char == ",":
++                    # An escaped comma is part of the regex, not a separator.
++                    pattern.append(",")
++                else:
++                    pattern.extend((char, next_char))
++                i += 2
++            else:
++                pattern.append(char)
++                i += 1
++            continue
++
++        if stack and stack[-1] == "]":
++            # Inside a character class, only an unescaped closing bracket matters.
++            if char == "]":
++                stack.pop()
++            pattern.append(char)
++            i += 1
++            continue
++
++        if char == ",":
++            if stack:
++                pattern.append(char)
++            else:
++                stripped_pattern = "".join(pattern).strip()
++                if stripped_pattern:
++                    patterns.append(stripped_pattern)
++                pattern = []
++            i += 1
++            continue
++
++        if char == "(":
++            stack.append(")")
++        elif char == "[":
++            stack.append("]")
++        elif char == "{":
++            stack.append("}")
++        elif stack and stack[-1] == char:
++            stack.pop()
++        pattern.append(char)
++        i += 1
++
++    stripped_pattern = "".join(pattern).strip()
++    if stripped_pattern:
++        patterns.append(stripped_pattern)
++
++    return patterns
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regex_patterns(value):
+         patterns.append(_regex_transformer(pattern))
+     return patterns
+ 
+@@ -122,7 +187,7 @@ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions paths."""
+     patterns: list[Pattern[str]] = []
+-    for pattern in _csv_transformer(value):
++    for pattern in _split_regex_patterns(value):
+         patterns.append(
+             re.compile(
+                 str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")

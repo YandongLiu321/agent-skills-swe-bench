@@ -1,0 +1,71 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index aaf35ee37c..6ef21a8b97 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -604,7 +604,11 @@ class Query(BaseExpression):
+             # If the left side of the join was already relabeled, use the
+             # updated alias.
+             join = join.relabeled_clone(change_map)
+-            new_alias = self.join(join, reuse=reuse)
++            # Avoid reusing an alias that is also used by the rhs query, as
++            # this would result in an alias being relabeled twice. The current
++            # alias can be reused if it is unchanged.
++            join_reuse = {a for a in reuse if a == alias or a not in rhs.alias_map}
++            new_alias = self.join(join, reuse=join_reuse, aliases=rhs.alias_map)
+             if join.join_type == INNER:
+                 rhs_votes.add(new_alias)
+             # We can't reuse the same join again in the query. If we have two
+@@ -745,7 +749,7 @@ class Query(BaseExpression):
+             for model, values in seen.items():
+                 callback(target, model, values)
+ 
+-    def table_alias(self, table_name, create=False, filtered_relation=None):
++    def table_alias(self, table_name, create=False, filtered_relation=None, aliases=None):
+         """
+         Return a table alias for the given table_name and whether this is a
+         new alias or not.
+@@ -761,7 +765,12 @@ class Query(BaseExpression):
+ 
+         # Create a new alias for this table.
+         if alias_list:
+-            alias = '%s%d' % (self.alias_prefix, len(self.alias_map) + 1)
++            alias_num = len(self.alias_map) + 1
++            while True:
++                alias = '%s%d' % (self.alias_prefix, alias_num)
++                if alias not in self.alias_map and (aliases is None or alias not in aliases):
++                    break
++                alias_num += 1
+             alias_list.append(alias)
+         else:
+             # The first occurrence of a table uses the table name directly.
+@@ -948,7 +957,7 @@ class Query(BaseExpression):
+         """
+         return len([1 for count in self.alias_refcount.values() if count])
+ 
+-    def join(self, join, reuse=None):
++    def join(self, join, reuse=None, aliases=None):
+         """
+         Return an alias for the 'join', either reusing an existing alias for
+         that join or creating a new one. 'join' is either a base_table_class or
+@@ -957,6 +966,9 @@ class Query(BaseExpression):
+         The 'reuse' parameter can be either None which means all joins are
+         reusable, or it can be a set containing the aliases that can be reused.
+ 
++        The 'aliases' parameter can be used to prevent the creation of an alias
++        that is already used by another query.
++
+         A join is always created as LOUTER if the lhs alias is LOUTER to make
+         sure chains like t1 LOUTER t2 INNER t3 aren't generated. All new
+         joins are created as LOUTER if the join is nullable.
+@@ -976,7 +988,10 @@ class Query(BaseExpression):
+             return reuse_alias
+ 
+         # No reuse is possible, so we need a new alias.
+-        alias, _ = self.table_alias(join.table_name, create=True, filtered_relation=join.filtered_relation)
++        alias, _ = self.table_alias(
++            join.table_name, create=True, filtered_relation=join.filtered_relation,
++            aliases=aliases,
++        )
+         if join.join_type:
+             if self.alias_map[join.parent_alias].join_type == LOUTER or join.nullable:
+                 join_type = LOUTER

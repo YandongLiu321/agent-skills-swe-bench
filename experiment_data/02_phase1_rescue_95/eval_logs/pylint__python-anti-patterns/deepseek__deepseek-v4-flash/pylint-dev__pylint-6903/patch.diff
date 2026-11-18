@@ -1,0 +1,31 @@
+diff --git a/pylint/lint/run.py b/pylint/lint/run.py
+index a7e5d557..9131e6bc 100644
+--- a/pylint/lint/run.py
++++ b/pylint/lint/run.py
+@@ -58,6 +58,13 @@ def _query_cpu() -> int | None:
+             cpu_shares = int(file.read().rstrip())
+         # For AWS, gives correct value * 1024.
+         avail_cpu = int(cpu_shares / 1024)
++
++    # The number of CPUs is rounded down, it can be 0 for very small
++    # quotas or shares. Multiprocessing requires at least one process,
++    # so make sure we never return 0.
++    if avail_cpu == 0:
++        return 1
++
+     return avail_cpu
+ 
+ 
+@@ -76,8 +83,10 @@ def _cpu_count() -> int:
+     else:
+         cpu_count = 1
+     if cpu_share is not None:
+-        return min(cpu_share, cpu_count)
+-    return cpu_count
++        # Ensure at least one CPU is returned, as a value of 0 makes
++        # multiprocessing.Pool crash.
++        return max(1, min(cpu_share, cpu_count))
++    return max(1, cpu_count)
+ 
+ 
+ UNUSED_PARAM_SENTINEL = object()

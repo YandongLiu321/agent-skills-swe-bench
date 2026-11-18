@@ -1,0 +1,66 @@
+diff --git a/sympy/concrete/summations.py b/sympy/concrete/summations.py
+index 372487664..46a9664b3 100755
+--- a/sympy/concrete/summations.py
++++ b/sympy/concrete/summations.py
+@@ -866,6 +866,31 @@ def eval_sum(f, limits):
+                     return None
+                 newargs.append((newexpr, arg.cond))
+             return f.func(*newargs)
++        elif (len(f.args) == 2 and f.args[1] == (S.Zero, True) and
++                i in f.args[0][1].free_symbols):
++            # If the condition depends on the summation variable, try to
++            # determine the intervals in which each expression is valid and
++            # sum over those intervals.  This handles, for example,
++            # Sum(Piecewise((1, (0 <= j) & (j <= n - 1)), (0, True)),
++            #     (j, 0, n - 1)) == n
++            from sympy.core.relational import Relational, LessThan, GreaterThan
++            cond = f.args[0][1]
++            rels = cond.atoms(Relational)
++            if rels and all(isinstance(rel, (LessThan, GreaterThan))
++                            for rel in rels):
++                try:
++                    intervals = f._sort_expr_cond(i, a, b)
++                except (AttributeError, NotImplementedError):
++                    intervals = None
++                if intervals is not None:
++                    newargs = []
++                    for lower, upper, expr in intervals:
++                        newexpr = eval_sum(expr, (i, lower, upper))
++                        if newexpr is None:
++                            break
++                        newargs.append(newexpr)
++                    else:
++                        return Add(*newargs)
+ 
+     if f.has(KroneckerDelta) and _has_simple_delta(f, limits[0]):
+         return deltasummation(f, limits)
+diff --git a/sympy/matrices/expressions/matexpr.py b/sympy/matrices/expressions/matexpr.py
+index b4d759836..cd6770d69 100755
+--- a/sympy/matrices/expressions/matexpr.py
++++ b/sympy/matrices/expressions/matexpr.py
+@@ -476,10 +476,8 @@ def conjugate(self):
+         return self
+ 
+     def _entry(self, i, j):
+-        if i == j:
+-            return S.One
+-        else:
+-            return S.Zero
++        from sympy import KroneckerDelta
++        return KroneckerDelta(i, j)
+ 
+     def _eval_determinant(self):
+         return S.One
+diff --git a/sympy/matrices/expressions/matmul.py b/sympy/matrices/expressions/matmul.py
+index 79f3035f9..d2ad9be0f 100755
+--- a/sympy/matrices/expressions/matmul.py
++++ b/sympy/matrices/expressions/matmul.py
+@@ -284,7 +284,7 @@ def refine_MatMul(expr, assumptions):
+             last = arg
+     newargs.append(last)
+ 
+-    return MatMul(*newargs)
++    return MatMul(*newargs).doit()
+ 
+ 
+ handlers_dict['MatMul'] = refine_MatMul

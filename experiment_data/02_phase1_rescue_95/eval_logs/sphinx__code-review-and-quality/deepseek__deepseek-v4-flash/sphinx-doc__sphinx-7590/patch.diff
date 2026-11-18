@@ -1,0 +1,112 @@
+diff --git a/CHANGES b/CHANGES
+index 3942c4240..33c641fc2 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -63,6 +63,7 @@ Features added
+ * #7543: html theme: Add top and bottom margins to tables
+ * C and C++: allow semicolon in the end of declarations.
+ * C++, parse parameterized noexcept specifiers.
++* #7294: C++, parse expressions with user-defined literals.
+ * #7143: py domain: Add ``:final:`` option to :rst:dir:`py:class:`,
+   :rst:dir:`py:exception:` and :rst:dir:`py:method:` directives
+ 
+diff --git a/sphinx/domains/cpp.py b/sphinx/domains/cpp.py
+index fe52d881d..b945b5d5d 100644
+--- a/sphinx/domains/cpp.py
++++ b/sphinx/domains/cpp.py
+@@ -299,6 +299,8 @@ T = TypeVar('T')
+ _string_re = re.compile(r"[LuU8]?('([^'\\]*(?:\\.[^'\\]*)*)'"
+                         r'|"([^"\\]*(?:\\.[^"\\]*)*)")', re.S)
+ _visibility_re = re.compile(r'\b(public|private|protected)\b')
++# user-defined literal suffix (identifier immediately following a literal)
++_udl_suffix_re = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+ _operator_re = re.compile(r'''(?x)
+         \[\s*\]
+     |   \(\s*\)
+@@ -882,6 +884,25 @@ class ASTCharLiteral(ASTLiteral):
+         signode.append(nodes.Text(txt, txt))
+ 
+ 
++class ASTUserDefinedLiteral(ASTLiteral):
++    def __init__(self, literal: ASTLiteral, ident: ASTIdentifier) -> None:
++        self.literal = literal
++        self.ident = ident
++
++    def _stringify(self, transform: StringifyTransform) -> str:
++        return transform(self.literal) + transform(self.ident)
++
++    def get_id(self, version: int) -> str:
++        # TODO: this is not the correct mangling, but the ABI does not
++        # specify how to mangle user-defined literal expressions.
++        return self.literal.get_id(version) + self.ident.get_id(version)
++
++    def describe_signature(self, signode: TextElement, mode: str,
++                           env: "BuildEnvironment", symbol: "Symbol") -> None:
++        self.literal.describe_signature(signode, mode, env, symbol)
++        signode.append(nodes.Text(str(self.ident)))
++
++
+ class ASTThisLiteral(ASTExpression):
+     def _stringify(self, transform: StringifyTransform) -> str:
+         return "this"
+@@ -4658,32 +4679,42 @@ class DefinitionParser(BaseParser):
+             return ASTBooleanLiteral(True)
+         if self.skip_word('false'):
+             return ASTBooleanLiteral(False)
++        literal = None  # type: ASTLiteral
+         for regex in [float_literal_re, binary_literal_re, hex_literal_re,
+                       integer_literal_re, octal_literal_re]:
+             pos = self.pos
+             if self.match(regex):
+                 while self.current_char in 'uUlLfF':
+                     self.pos += 1
+-                return ASTNumberLiteral(self.definition[pos:self.pos])
++                literal = ASTNumberLiteral(self.definition[pos:self.pos])
++                break
+ 
+-        string = self._parse_string()
+-        if string is not None:
+-            return ASTStringLiteral(string)
++        if literal is None:
++            string = self._parse_string()
++            if string is not None:
++                literal = ASTStringLiteral(string)
+ 
+-        # character-literal
+-        if self.match(char_literal_re):
+-            prefix = self.last_match.group(1)  # may be None when no prefix
+-            data = self.last_match.group(2)
+-            try:
+-                return ASTCharLiteral(prefix, data)
+-            except UnicodeDecodeError as e:
+-                self.fail("Can not handle character literal. Internal error was: %s" % e)
+-            except UnsupportedMultiCharacterCharLiteral:
+-                self.fail("Can not handle character literal"
+-                          " resulting in multiple decoded characters.")
+-
+-        # TODO: user-defined lit
+-        return None
++        if literal is None:
++            # character-literal
++            if self.match(char_literal_re):
++                prefix = self.last_match.group(1)  # may be None when no prefix
++                data = self.last_match.group(2)
++                try:
++                    literal = ASTCharLiteral(prefix, data)
++                except UnicodeDecodeError as e:
++                    self.fail("Can not handle character literal. "
++                              "Internal error was: %s" % e)
++                except UnsupportedMultiCharacterCharLiteral:
++                    self.fail("Can not handle character literal"
++                              " resulting in multiple decoded characters.")
++
++        if literal is None:
++            return None
++
++        # user-defined-literal
++        if self.match(_udl_suffix_re):
++            return ASTUserDefinedLiteral(literal, ASTIdentifier(self.matched_text))
++        return literal
+ 
+     def _parse_fold_or_paren_expression(self) -> ASTExpression:
+         # "(" expression ")"

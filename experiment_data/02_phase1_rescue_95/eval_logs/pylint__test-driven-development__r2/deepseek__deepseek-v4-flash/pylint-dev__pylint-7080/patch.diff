@@ -1,0 +1,106 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 3c295151..6bd419d4 100755
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -11,7 +11,6 @@ from __future__ import annotations
+ 
+ import argparse
+ import os
+-import pathlib
+ import re
+ import sys
+ from collections.abc import Callable
+@@ -111,16 +110,21 @@ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions paths."""
+     patterns: list[Pattern[str]] = []
+     for pattern in _csv_transformer(value):
+-        patterns.append(
+-            re.compile(
+-                str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+-                + "|"
+-                + pathlib.PureWindowsPath(pattern).as_posix()
+-            )
+-        )
++        patterns.append(re.compile(_normalize_path_separators(pattern)))
+     return patterns
+ 
+ 
++def _normalize_path_separators(pattern: str) -> str:
++    """Make a path regular expression match any kind of path separator.
++
++    Pylint can encounter paths that mix Posix and Windows separators (for
++    example when walking a directory given with a forward slash on Windows).
++    Each separator in the pattern is replaced by a character class matching
++    both ``/`` and ``\\`` so that mixed paths are matched as well.
++    """
++    return re.sub(r"[/\\]", lambda _: r"[/\\]", pattern)
++
++
+ _TYPE_TRANSFORMERS: dict[str, Callable[[str], _ArgumentTypes]] = {
+     "choice": str,
+     "csv": _csv_transformer,
+diff --git a/pylint/config/option.py b/pylint/config/option.py
+index 5043fe76..d87ad60f 100755
+--- a/pylint/config/option.py
++++ b/pylint/config/option.py
+@@ -6,7 +6,6 @@ from __future__ import annotations
+ 
+ import copy
+ import optparse  # pylint: disable=deprecated-module
+-import pathlib
+ import re
+ import warnings
+ from re import Pattern
+@@ -38,16 +37,21 @@ def _regexp_paths_csv_validator(
+         return value
+     patterns = []
+     for val in _csv_validator(_, name, value):
+-        patterns.append(
+-            re.compile(
+-                str(pathlib.PureWindowsPath(val)).replace("\\", "\\\\")
+-                + "|"
+-                + pathlib.PureWindowsPath(val).as_posix()
+-            )
+-        )
++        patterns.append(re.compile(_normalize_path_separators(val)))
+     return patterns
+ 
+ 
++def _normalize_path_separators(pattern: str) -> str:
++    """Make a path regular expression match any kind of path separator.
++
++    Pylint can encounter paths that mix Posix and Windows separators (for
++    example when walking a directory given with a forward slash on Windows).
++    Each separator in the pattern is replaced by a character class matching
++    both ``/`` and ``\\`` so that mixed paths are matched as well.
++    """
++    return re.sub(r"[/\\]", lambda _: r"[/\\]", pattern)
++
++
+ def _choice_validator(choices, name, value):
+     if value not in choices:
+         msg = "option %s: invalid value: %r, should be in %s"
+diff --git a/pylint/lint/expand_modules.py b/pylint/lint/expand_modules.py
+index 5cacc037..98db6e50 100755
+--- a/pylint/lint/expand_modules.py
++++ b/pylint/lint/expand_modules.py
+@@ -42,8 +42,17 @@ def get_python_path(filepath: str) -> str:
+ 
+ 
+ def _is_in_ignore_list_re(element: str, ignore_list_re: list[Pattern[str]]) -> bool:
+-    """Determines if the element is matched in a regex ignore-list."""
+-    return any(file_pattern.match(element) for file_pattern in ignore_list_re)
++    """Determines if the element is matched in a regex ignore-list.
++
++    Both Posix and Windows path separators are accepted, as well as paths
++    that mix them (which can happen when walking directories on Windows).
++    """
++    candidates = {element, element.replace("\\", "/"), element.replace("/", "\\")}
++    return any(
++        file_pattern.match(candidate)
++        for file_pattern in ignore_list_re
++        for candidate in candidates
++    )
+ 
+ 
+ def _is_ignored_file(

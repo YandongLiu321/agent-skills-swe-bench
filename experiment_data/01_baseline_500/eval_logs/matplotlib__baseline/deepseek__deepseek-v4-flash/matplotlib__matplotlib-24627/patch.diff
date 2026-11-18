@@ -1,0 +1,95 @@
+diff --git a/lib/matplotlib/artist.py b/lib/matplotlib/artist.py
+index 99577ece53..b93fbe593a 100644
+--- a/lib/matplotlib/artist.py
++++ b/lib/matplotlib/artist.py
+@@ -190,6 +190,23 @@ class Artist:
+         d['stale_callback'] = None
+         return d
+ 
++    def _deparent(self):
++        """
++        Remove the artist's references to its parent Axes and Figure.
++
++        This is called both when the artist is explicitly removed and when its
++        parent Axes or Figure is cleared.
++        """
++        # clear stale callback
++        self.stale_callback = None
++        if hasattr(self, 'axes') and self.axes:
++            # remove from the mouse hit list
++            self.axes._mouseover_set.discard(self)
++            self.axes.stale = True
++            self.axes = None  # decouple the artist from the Axes
++        if self.figure:
++            self.figure = None
++
+     def remove(self):
+         """
+         Remove the artist from the figure if possible.
+@@ -210,21 +227,7 @@ class Artist:
+         # callback has one parameter, which is the child to be removed.
+         if self._remove_method is not None:
+             self._remove_method(self)
+-            # clear stale callback
+-            self.stale_callback = None
+-            _ax_flag = False
+-            if hasattr(self, 'axes') and self.axes:
+-                # remove from the mouse hit list
+-                self.axes._mouseover_set.discard(self)
+-                self.axes.stale = True
+-                self.axes = None  # decouple the artist from the Axes
+-                _ax_flag = True
+-
+-            if self.figure:
+-                self.figure = None
+-                if not _ax_flag:
+-                    self.figure = True
+-
++            self._deparent()
+         else:
+             raise NotImplementedError('cannot remove artist')
+         # TODO: the fix for the collections relim problem is to move the
+diff --git a/lib/matplotlib/axes/_base.py b/lib/matplotlib/axes/_base.py
+index 90b0bf117e..6c3b7d63a2 100644
+--- a/lib/matplotlib/axes/_base.py
++++ b/lib/matplotlib/axes/_base.py
+@@ -1308,6 +1308,15 @@ class _AxesBase(martist.Artist):
+         self._get_patches_for_fill = _process_plot_var_args(self, 'fill')
+ 
+         self._gridOn = mpl.rcParams['axes.grid']
++        # Detach the children, so that they do not keep a reference to this
++        # Axes (and its Figure) once they have been removed from it.  Note
++        # that some of these attributes do not exist yet when clear() is
++        # called from __init__.
++        for child in [*self._children,
++                      *getattr(self, 'child_axes', []),
++                      *([self.legend_] if getattr(self, 'legend_', None)
++                        is not None else [])]:
++            child._deparent()
+         self._children = []
+         self._mouseover_set = _OrderedSet()
+         self.child_axes = []
+diff --git a/lib/matplotlib/figure.py b/lib/matplotlib/figure.py
+index 6c18ba1a64..e4f149837f 100644
+--- a/lib/matplotlib/figure.py
++++ b/lib/matplotlib/figure.py
+@@ -943,12 +943,19 @@ default: %(va)s
+         # first clear the axes in any subfigures
+         for subfig in self.subfigs:
+             subfig.clear(keep_observers=keep_observers)
++            subfig._deparent()
+         self.subfigs = []
+ 
+         for ax in tuple(self.axes):  # Iterate over the copy.
+             ax.clear()
+             self.delaxes(ax)  # Remove ax from self._axstack.
++            ax._deparent()
+ 
++        # Detach the figure-level artists so that they do not keep a
++        # reference to this Figure once they have been removed from it.
++        for artist in [*self.artists, *self.lines, *self.patches, *self.texts,
++                       *self.images, *self.legends]:
++            artist._deparent()
+         self.artists = []
+         self.lines = []
+         self.patches = []

@@ -1,0 +1,102 @@
+diff --git a/CHANGES b/CHANGES
+index ce1185c76..dcfd1e077 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -72,6 +72,9 @@ Bugs fixed
+   Patch by Bénédikt Tran.
+ * #10930: Highlight all search terms on the search results page.
+   Patch by Dmitry Shachnev.
++* #10657: Emit the :event:`source-read` event for files loaded by the
++  ``include`` directive, so that source transformations are applied to
++  included files as well.
+ 
+ Testing
+ -------
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..131b2a7d3 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,8 +1,11 @@
+ from __future__ import annotations
+ 
++import os
+ import re
++from contextlib import contextmanager
+ from typing import TYPE_CHECKING, Any, cast
+ 
++from docutils import io as docutils_io
+ from docutils import nodes
+ from docutils.parsers.rst import directives
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+@@ -19,9 +22,12 @@ from sphinx.util.matching import Matcher, patfilter
+ from sphinx.util.nodes import explicit_title_re
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Callable, Iterator
++
+     from docutils.nodes import Element, Node
+ 
+     from sphinx.application import Sphinx
++    from sphinx.environment import BuildEnvironment
+     from sphinx.util.typing import OptionSpec
+ 
+ 
+@@ -362,6 +368,48 @@ class Only(SphinxDirective):
+             memo.section_level = surrounding_section_level
+ 
+ 
++class _SourceReadFileInput(docutils_io.FileInput):
++    """A file input that emits the :event:`source-read` event after reading.
++
++    The :event:`source-read` event is normally emitted by Sphinx when a
++    document is read.  Files pulled in by the ``include`` directive are read
++    directly by docutils, so the event has to be emitted here in order for
++    source transformations to be applied to them as well.
++    """
++
++    _callback: Callable[[str, str], str] | None = None
++
++    def read(self) -> str:
++        content = super().read()
++        callback = type(self)._callback
++        if callback is not None and self.source_path is not None:
++            content = callback(self.source_path, content)
++        return content
++
++
++@contextmanager
++def _emit_source_read(env: BuildEnvironment, filename: str) -> Iterator[None]:
++    """Emit the :event:`source-read` event for *filename* while it is read."""
++    original_file_input = docutils_io.FileInput
++    original_callback = _SourceReadFileInput._callback
++
++    def callback(source_path: str, content: str) -> str:
++        if os.path.abspath(source_path) == os.path.abspath(filename):
++            source = [content]
++            docname = env.path2doc(filename) or env.docname
++            env.events.emit('source-read', docname, source)
++            return source[0]
++        return content
++
++    _SourceReadFileInput._callback = callback
++    docutils_io.FileInput = _SourceReadFileInput
++    try:
++        yield
++    finally:
++        docutils_io.FileInput = original_file_input
++        _SourceReadFileInput._callback = original_callback
++
++
+ class Include(BaseInclude, SphinxDirective):
+     """
+     Like the standard "Include" directive, but interprets absolute paths
+@@ -376,7 +424,8 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++        with _emit_source_read(self.env, filename):
++            return super().run()
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:

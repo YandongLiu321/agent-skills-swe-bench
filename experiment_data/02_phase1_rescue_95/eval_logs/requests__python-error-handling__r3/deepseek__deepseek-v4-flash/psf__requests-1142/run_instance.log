@@ -1,0 +1,216 @@
+2026-10-07 06:49:35,156 - INFO - Creating container for psf__requests-1142...
+2026-10-07 06:49:35,229 - INFO - Container for psf__requests-1142 created: 8e0e962f42aadede9815c7d03eaa189da9abc0710ab3fe450625ad23a3863367
+2026-10-07 06:49:35,367 - INFO - Container for psf__requests-1142 started: 8e0e962f42aadede9815c7d03eaa189da9abc0710ab3fe450625ad23a3863367
+2026-10-07 06:49:35,369 - INFO - Intermediate patch for psf__requests-1142 written to logs\run_evaluation\requests__python-error-handling__r3\deepseek__deepseek-v4-flash\psf__requests-1142\patch.diff, now applying to container...
+2026-10-07 06:49:35,469 - INFO - >>>>> Applied Patch:
+Checking patch requests/models.py...
+Checking patch requests/utils.py...
+Applied patch requests/models.py cleanly.
+Applied patch requests/utils.py cleanly.
+
+2026-10-07 06:49:35,546 - INFO - Git diff before:
+diff --git a/requests/models.py b/requests/models.py
+index 9926045..f0d422a 100644
+--- a/requests/models.py
++++ b/requests/models.py
+@@ -348,7 +348,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         ])
+ 
+         try:
+-            length = str(super_len(data))
++            length = super_len(data)
+         except (TypeError, AttributeError):
+             length = False
+ 
+@@ -359,7 +359,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+                 raise NotImplementedError('Streamed bodies and files are mutually exclusive.')
+ 
+             if length:
+-                self.headers['Content-Length'] = length
++                self.headers['Content-Length'] = str(length)
+             else:
+                 self.headers['Transfer-Encoding'] = 'chunked'
+         # Check if file, fo, generator, iterator.
+@@ -386,13 +386,16 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         self.body = body
+ 
+     def prepare_content_length(self, body):
+-        self.headers['Content-Length'] = '0'
+-        if hasattr(body, 'seek') and hasattr(body, 'tell'):
+-            body.seek(0, 2)
+-            self.headers['Content-Length'] = str(body.tell())
+-            body.seek(0, 0)
+-        elif body is not None:
+-            self.headers['Content-Length'] = str(len(body))
++        """Prepare Content-Length header based on request method and body."""
++
++        if body is None:
++            if (self.method not in ('GET', 'HEAD') and
++                    self.headers.get('Content-Length') is None):
++                self.headers['Content-Length'] = '0'
++        else:
++            length = super_len(body)
++            if length:
++                self.headers['Content-Length'] = str(length)
+ 
+     def prepare_auth(self, auth):
+         """Prepares the given HTTP auth data."""
+diff --git a/requests/utils.py b/requests/utils.py
+index 34d92d2..d99e1f5 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -39,12 +39,41 @@ def dict_to_sequence(d):
+     return d
+ 
+ def super_len(o):
++    total_length = None
++    current_position = 0
++
+     if hasattr(o, '__len__'):
+-        return len(o)
+-    if hasattr(o, 'len'):
+-        return o.len
+-    if hasattr(o, 'fileno'):
+-        return os.fstat(o.fileno()).st_size
++        total_length = len(o)
++    elif hasattr(o, 'len'):
++        total_length = o.len
++    elif hasattr(o, 'fileno'):
++        try:
++            fileno = o.fileno()
++        except (OSError, ValueError, AttributeError):
++            pass
++        else:
++            total_length = os.fstat(fileno).st_size
++
++    if hasattr(o, 'tell'):
++        try:
++            current_position = o.tell()
++        except (OSError, ValueError):
++            if total_length is not None:
++                current_position = total_length
++        else:
++            if hasattr(o, 'seek') and total_length is None:
++                try:
++                    # StringIO and BytesIO have seek but no usable fileno.
++                    o.seek(0, 2)
++                    total_length = o.tell()
++                    o.seek(current_position)
++                except (OSError, ValueError):
++                    total_length = 0
++
++    if total_length is None:
++        total_length = 0
++
++    return max(0, total_length - current_position)
+ 
+ def get_netrc_auth(url):
+     """Returns the Requests tuple auth for a given url from netrc."""
+2026-10-07 06:49:35,547 - INFO - Eval script for psf__requests-1142 written to logs\run_evaluation\requests__python-error-handling__r3\deepseek__deepseek-v4-flash\psf__requests-1142\eval.sh; copying to container...
+2026-10-07 06:49:37,733 - INFO - Test runtime: 2.14 seconds
+2026-10-07 06:49:37,734 - INFO - Test output for psf__requests-1142 written to logs\run_evaluation\requests__python-error-handling__r3\deepseek__deepseek-v4-flash\psf__requests-1142\test_output.txt
+2026-10-07 06:49:37,769 - INFO - Git diff after:
+diff --git a/requests/models.py b/requests/models.py
+index 9926045..f0d422a 100644
+--- a/requests/models.py
++++ b/requests/models.py
+@@ -348,7 +348,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         ])
+ 
+         try:
+-            length = str(super_len(data))
++            length = super_len(data)
+         except (TypeError, AttributeError):
+             length = False
+ 
+@@ -359,7 +359,7 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+                 raise NotImplementedError('Streamed bodies and files are mutually exclusive.')
+ 
+             if length:
+-                self.headers['Content-Length'] = length
++                self.headers['Content-Length'] = str(length)
+             else:
+                 self.headers['Transfer-Encoding'] = 'chunked'
+         # Check if file, fo, generator, iterator.
+@@ -386,13 +386,16 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         self.body = body
+ 
+     def prepare_content_length(self, body):
+-        self.headers['Content-Length'] = '0'
+-        if hasattr(body, 'seek') and hasattr(body, 'tell'):
+-            body.seek(0, 2)
+-            self.headers['Content-Length'] = str(body.tell())
+-            body.seek(0, 0)
+-        elif body is not None:
+-            self.headers['Content-Length'] = str(len(body))
++        """Prepare Content-Length header based on request method and body."""
++
++        if body is None:
++            if (self.method not in ('GET', 'HEAD') and
++                    self.headers.get('Content-Length') is None):
++                self.headers['Content-Length'] = '0'
++        else:
++            length = super_len(body)
++            if length:
++                self.headers['Content-Length'] = str(length)
+ 
+     def prepare_auth(self, auth):
+         """Prepares the given HTTP auth data."""
+diff --git a/requests/utils.py b/requests/utils.py
+index 34d92d2..d99e1f5 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -39,12 +39,41 @@ def dict_to_sequence(d):
+     return d
+ 
+ def super_len(o):
++    total_length = None
++    current_position = 0
++
+     if hasattr(o, '__len__'):
+-        return len(o)
+-    if hasattr(o, 'len'):
+-        return o.len
+-    if hasattr(o, 'fileno'):
+-        return os.fstat(o.fileno()).st_size
++        total_length = len(o)
++    elif hasattr(o, 'len'):
++        total_length = o.len
++    elif hasattr(o, 'fileno'):
++        try:
++            fileno = o.fileno()
++        except (OSError, ValueError, AttributeError):
++            pass
++        else:
++            total_length = os.fstat(fileno).st_size
++
++    if hasattr(o, 'tell'):
++        try:
++            current_position = o.tell()
++        except (OSError, ValueError):
++            if total_length is not None:
++                current_position = total_length
++        else:
++            if hasattr(o, 'seek') and total_length is None:
++                try:
++                    # StringIO and BytesIO have seek but no usable fileno.
++                    o.seek(0, 2)
++                    total_length = o.tell()
++                    o.seek(current_position)
++                except (OSError, ValueError):
++                    total_length = 0
++
++    if total_length is None:
++        total_length = 0
++
++    return max(0, total_length - current_position)
+ 
+ def get_netrc_auth(url):
+     """Returns the Requests tuple auth for a given url from netrc."""
+2026-10-07 06:49:37,769 - INFO - Grading answer for psf__requests-1142...
+2026-10-07 06:49:37,772 - INFO - report: {'psf__requests-1142': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_requests.py::RequestsTestCase::test_no_content_length'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_requests.py::RequestsTestCase::test_basic_building', 'test_requests.py::RequestsTestCase::test_entry_points', 'test_requests.py::RequestsTestCase::test_invalid_url', 'test_requests.py::RequestsTestCase::test_params_are_added_before_fragment', 'test_requests.py::RequestsTestCase::test_path_is_not_double_encoded'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for psf__requests-1142: resolved: True
+2026-10-07 06:49:37,773 - INFO - Attempting to stop container sweb.eval.psf__requests-1142.requests__python-error-handling__r3...
+2026-10-07 06:49:53,036 - INFO - Container sweb.eval.psf__requests-1142.requests__python-error-handling__r3 stopped successfully.
+2026-10-07 06:49:53,037 - INFO - Attempting to remove container sweb.eval.psf__requests-1142.requests__python-error-handling__r3...
+2026-10-07 06:49:53,125 - INFO - Container sweb.eval.psf__requests-1142.requests__python-error-handling__r3 removed successfully.

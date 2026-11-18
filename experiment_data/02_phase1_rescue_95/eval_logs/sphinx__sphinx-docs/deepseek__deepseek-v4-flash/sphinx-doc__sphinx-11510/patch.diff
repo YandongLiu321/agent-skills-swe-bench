@@ -1,0 +1,92 @@
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..f4c6fa7c5 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,10 +1,12 @@
+ from __future__ import annotations
+ 
++import contextlib
+ import re
+-from typing import TYPE_CHECKING, Any, cast
++from typing import TYPE_CHECKING, Any, Iterator, cast
+ 
+-from docutils import nodes
++from docutils import io, nodes
+ from docutils.parsers.rst import directives
++from docutils.parsers.rst.directives import misc as docutils_misc
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+ from docutils.parsers.rst.directives.misc import Class
+ from docutils.parsers.rst.directives.misc import Include as BaseInclude
+@@ -22,6 +24,7 @@ if TYPE_CHECKING:
+     from docutils.nodes import Element, Node
+ 
+     from sphinx.application import Sphinx
++    from sphinx.environment import BuildEnvironment
+     from sphinx.util.typing import OptionSpec
+ 
+ 
+@@ -362,6 +365,53 @@ class Only(SphinxDirective):
+             memo.section_level = surrounding_section_level
+ 
+ 
++class _SourceReadIO:
++    """A stand-in for :mod:`docutils.io` used by the include directive.
++
++    It returns a :class:`docutils.io.FileInput` subclass emitting the
++    ``source-read`` event, while delegating every other attribute to the real
++    :mod:`docutils.io` module.
++    """
++
++    def __init__(self, file_input: type[io.FileInput]) -> None:
++        self.FileInput = file_input
++
++    def __getattr__(self, name: str) -> Any:
++        return getattr(io, name)
++
++
++@contextlib.contextmanager
++def _emit_source_read_for_include(env: BuildEnvironment, docname: str) -> Iterator[None]:
++    """Emit the ``source-read`` event for files read by the include directive.
++
++    Docutils reads the contents of included files itself, bypassing the
++    ``SphinxStandaloneReader`` which normally emits ``source-read``.  To allow
++    extensions to transform the content of included files, the ``FileInput``
++    class used by docutils' include directive is replaced by a subclass that
++    emits the event while the contents are being read.
++    """
++    # avoid replacing the file input class when nobody is listening
++    if not env.events.listeners.get('source-read'):
++        yield
++        return
++
++    class SourceReadFileInput(io.FileInput):
++        def read(self) -> str:
++            content = super().read()
++
++            # emit "source-read" event
++            arg = [content]
++            env.events.emit('source-read', docname, arg)
++            return arg[0]
++
++    original_io = docutils_misc.io
++    docutils_misc.io = _SourceReadIO(SourceReadFileInput)
++    try:
++        yield
++    finally:
++        docutils_misc.io = original_io
++
++
+ class Include(BaseInclude, SphinxDirective):
+     """
+     Like the standard "Include" directive, but interprets absolute paths
+@@ -376,7 +426,9 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++        docname = self.env.path2doc(filename) or rel_filename
++        with _emit_source_read_for_include(self.env, docname):
++            return super().run()
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:

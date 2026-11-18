@@ -1,0 +1,81 @@
+diff --git a/doc/faq.rst b/doc/faq.rst
+index c817855f..c685d775 100644
+--- a/doc/faq.rst
++++ b/doc/faq.rst
+@@ -93,10 +93,10 @@ localized using the following rules:
+ 
+ * value of the PYLINTHOME environment variable if set
+ 
+-* ".pylint.d" subdirectory of the user's home directory if it is found
+-	(not always findable on Windows platforms)
+-
+-* ".pylint.d" directory in the current directory
++* the platform-specific user cache directory as returned by
++  ``platformdirs.user_cache_dir("pylint")`` (for example
++  ``~/.cache/pylint`` on Linux, ``~/Library/Caches/pylint`` on macOS and
++  ``%LOCALAPPDATA%\\pylint`` on Windows)
+ 
+ 3.3 How do I find the option name (for pylintrc) corresponding to a specific command line option?
+ --------------------------------------------------------------------------------------------------------
+diff --git a/doc/whatsnew/2.10.rst b/doc/whatsnew/2.10.rst
+index e94530bf..b20159a1 100644
+--- a/doc/whatsnew/2.10.rst
++++ b/doc/whatsnew/2.10.rst
+@@ -21,6 +21,12 @@ Other Changes
+ =============
+ 
+ 
++* The persistent data directory (``PYLINTHOME``) now follows the XDG Base
++  Directory Specification. When the ``PYLINTHOME`` environment variable is not
++  set, the data is stored in the platform-specific user cache directory as
++  returned by ``platformdirs.user_cache_dir("pylint")`` (for example
++  ``~/.cache/pylint`` on Linux) instead of ``~/.pylint.d``.
++
+ * Performance of the Similarity checker has been improved.
+ 
+ * Added ``time.clock`` to deprecated functions/methods for python 3.3
+diff --git a/pylint/config/__init__.py b/pylint/config/__init__.py
+index 84774d0e..7960fd91 100644
+--- a/pylint/config/__init__.py
++++ b/pylint/config/__init__.py
+@@ -36,6 +36,8 @@ import os
+ import pickle
+ import sys
+ 
++from platformdirs import user_cache_dir
++
+ from pylint.config.configuration_mixin import ConfigurationMixIn
+ from pylint.config.find_default_config_files import find_default_config_files
+ from pylint.config.man_help_formatter import _ManHelpFormatter
+@@ -60,10 +62,8 @@ if "PYLINTHOME" in os.environ:
+     PYLINT_HOME = os.environ["PYLINTHOME"]
+     if USER_HOME == "~":
+         USER_HOME = os.path.dirname(PYLINT_HOME)
+-elif USER_HOME == "~":
+-    PYLINT_HOME = ".pylint.d"
+ else:
+-    PYLINT_HOME = os.path.join(USER_HOME, ".pylint.d")
++    PYLINT_HOME = user_cache_dir("pylint")
+ 
+ 
+ def _get_pdata_path(base_name, recurs):
+@@ -83,7 +83,7 @@ def load_results(base):
+ def save_results(results, base):
+     if not os.path.exists(PYLINT_HOME):
+         try:
+-            os.mkdir(PYLINT_HOME)
++            os.makedirs(PYLINT_HOME)
+         except OSError:
+             print("Unable to create directory %s" % PYLINT_HOME, file=sys.stderr)
+     data_file = _get_pdata_path(base, 1)
+@@ -110,8 +110,8 @@ ENV_HELP = (
+ The following environment variables are used:
+     * PYLINTHOME
+     Path to the directory where persistent data for the run will be stored. If
+-not found, it defaults to ~/.pylint.d/ or .pylint.d (in the current working
+-directory).
++not found, it defaults to the user cache directory, e.g. ~/.cache/pylint on
++Linux.
+     * PYLINTRC
+     Path to the configuration file. See the documentation for the method used
+ to search for configuration file.

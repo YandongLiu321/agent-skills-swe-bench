@@ -1,0 +1,37 @@
+diff --git a/astropy/io/fits/card.py b/astropy/io/fits/card.py
+index 1b3285ddc..12181b3b7 100644
+--- a/astropy/io/fits/card.py
++++ b/astropy/io/fits/card.py
+@@ -66,7 +66,6 @@ class Card(_Verify):
+     # followed by an optional comment
+     _strg = r"\'(?P<strg>([ -~]+?|\'\'|) *?)\'(?=$|/| )"
+     _comm_field = r"(?P<comm_field>(?P<sepr>/ *)(?P<comm>(.|\n)*))"
+-    _strg_comment_RE = re.compile(f"({_strg})? *{_comm_field}?")
+ 
+     # FSC commentary card string which must contain printable ASCII characters.
+     # Note: \Z matches the end of the string without allowing newlines
+@@ -853,13 +852,21 @@ class Card(_Verify):
+                     continue
+ 
+                 # Should match a string followed by a comment; if not it
+-                # might be an invalid Card, so we just take it verbatim
+-                m = self._strg_comment_RE.match(vc)
++                # might be an invalid Card, so we just take it verbatim.
++                # An anchored regex is used to match the value so that a
++                # doubled single quote followed by a space is not mistaken
++                # for the end of the string.
++                m = self._value_NFSC_RE.match(vc)
+                 if not m:
+                     return kw, vc
+ 
++                # Keep the string value as-is, including the doubled
++                # single quotes used to escape literal single quotes.  The
++                # same escaping is expected by _parse_value, which is what
++                # ultimately decodes the reconstructed value; unescaping
++                # here as well would decode the quotes twice.
+                 value = m.group("strg") or ""
+-                value = value.rstrip().replace("''", "'")
++                value = value.rstrip()
+                 if value and value[-1] == "&":
+                     value = value[:-1]
+                 values.append(value)

@@ -1,0 +1,100 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..d7271bc740 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -545,11 +545,95 @@ class Query(BaseExpression):
+ 
+         return dict(zip(outer_query.annotation_select, result))
+ 
++    def _get_annotations_for_count(self):
++        """
++        Return the set of annotation aliases that are referenced by filters,
++        grouping, ordering, or other annotations.
++        """
++        aliases = set(self.annotations)
++        if not aliases:
++            return set()
++
++        annotation_ids = {
++            id(annotation): alias for alias, annotation in self.annotations.items()
++        }
++        referenced_aliases = set()
++
++        def collect(exprs):
++            for expr in exprs:
++                stack = [expr]
++                seen = set()
++                while stack:
++                    node = stack.pop()
++                    if id(node) in seen:
++                        continue
++                    seen.add(id(node))
++                    alias = annotation_ids.get(id(node))
++                    if alias is not None:
++                        referenced_aliases.add(alias)
++                    elif isinstance(node, Ref) and node.refs in aliases:
++                        referenced_aliases.add(node.refs)
++                    elif (
++                        isinstance(node, F)
++                        and isinstance(node.name, str)
++                        and node.name in aliases
++                    ):
++                        referenced_aliases.add(node.name)
++                    if hasattr(node, "get_source_expressions"):
++                        stack.extend(node.get_source_expressions())
++
++        collect([self.where])
++        collect(self.select)
++        if isinstance(self.group_by, (tuple, list)):
++            for item in self.group_by:
++                if isinstance(item, str):
++                    if item in aliases:
++                        referenced_aliases.add(item)
++                else:
++                    collect([item])
++        for item in self.order_by:
++            if isinstance(item, str):
++                name = item[1:] if item.startswith("-") else item
++                if name in aliases:
++                    referenced_aliases.add(name)
++            else:
++                collect([item])
++        for item in self.extra_order_by:
++            if isinstance(item, str):
++                name = item[1:] if item.startswith("-") else item
++                if name in aliases:
++                    referenced_aliases.add(name)
++            else:
++                collect([item])
++        for item in self.distinct_fields:
++            if isinstance(item, str):
++                name = item[1:] if item.startswith("-") else item
++                if name in aliases:
++                    referenced_aliases.add(name)
++            else:
++                collect([item])
++
++        # Include annotations referenced by other referenced annotations.
++        previous = None
++        while previous != len(referenced_aliases):
++            previous = len(referenced_aliases)
++            collect(self.annotations[alias] for alias in list(referenced_aliases))
++
++        # Selected annotations may contribute to the result's distinctness or
++        # to combined queries.
++        if self.distinct or self.combinator:
++            referenced_aliases.update(aliases)
++
++        return referenced_aliases
++
+     def get_count(self, using):
+         """
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        obj.set_annotation_mask(
++            set(obj.annotation_select) & obj._get_annotations_for_count()
++        )
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 

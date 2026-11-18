@@ -1,0 +1,44 @@
+diff --git a/sympy/sets/handlers/comparison.py b/sympy/sets/handlers/comparison.py
+index 6f7a19fccf..1cf50166d9 100644
+--- a/sympy/sets/handlers/comparison.py
++++ b/sympy/sets/handlers/comparison.py
+@@ -56,4 +56,6 @@ def _eval_is_eq(lhs, rhs): # noqa: F811
+ 
+ @dispatch(Set, Set) # type:ignore
+ def _eval_is_eq(lhs, rhs): # noqa: F811
++    if lhs.is_finite_set and rhs.is_finite_set:
++        return fuzzy_and([lhs.is_subset(rhs), rhs.is_subset(lhs)])
+     return None
+diff --git a/sympy/sets/handlers/issubset.py b/sympy/sets/handlers/issubset.py
+index fdca06025a..49c70a7edc 100644
+--- a/sympy/sets/handlers/issubset.py
++++ b/sympy/sets/handlers/issubset.py
+@@ -10,6 +10,13 @@
+ 
+ @dispatch(Set, Set)  # type: ignore # noqa:F811
+ def is_subset_sets(a, b): # noqa:F811
++    if a.is_finite_set and b.is_finite_set:
++        try:
++            return fuzzy_and(b.contains(x) for x in a)
++        except TypeError:
++            # The iteration of a finite set can fail if membership in
++            # another set cannot be decided.
++            return None
+     return None
+ 
+ @dispatch(Interval, Interval)  # type: ignore # noqa:F811
+diff --git a/sympy/sets/sets.py b/sympy/sets/sets.py
+index 3c4aa86e36..7d63e84629 100644
+--- a/sympy/sets/sets.py
++++ b/sympy/sets/sets.py
+@@ -775,7 +775,9 @@ def _flatten(sets):
+                     yield s
+         return ProductSet(*_flatten(self.sets))
+ 
+-
++    def _eval_rewrite_as_FiniteSet(self, *args, **kwargs):
++        if self.is_finite_set:
++            return FiniteSet(*self)
+ 
+     def _contains(self, element):
+         """

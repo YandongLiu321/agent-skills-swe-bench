@@ -1,0 +1,126 @@
+diff --git a/sphinx/domains/python.py b/sphinx/domains/python.py
+index d79de154e..4708104e3 100644
+--- a/sphinx/domains/python.py
++++ b/sphinx/domains/python.py
+@@ -852,6 +852,7 @@ class PyProperty(PyObject):
+     option_spec = PyObject.option_spec.copy()
+     option_spec.update({
+         'abstractmethod': directives.flag,
++        'classmethod': directives.flag,
+         'type': directives.unchanged,
+     })
+ 
+@@ -865,9 +866,12 @@ class PyProperty(PyObject):
+         return fullname, prefix
+ 
+     def get_signature_prefix(self, sig: str) -> str:
+-        prefix = ['property']
++        prefix = []
+         if 'abstractmethod' in self.options:
+-            prefix.insert(0, 'abstract')
++            prefix.append('abstract')
++        if 'classmethod' in self.options:
++            prefix.append('classmethod')
++        prefix.append('property')
+ 
+         return ' '.join(prefix) + ' '
+ 
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 1cecb1f79..923d31558 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -2663,6 +2663,24 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+                             ) -> bool:
+         return inspect.isproperty(member) and isinstance(parent, ClassDocumenter)
+ 
++    def import_object(self, raiseerror: bool = False) -> bool:
++        ret = super().import_object(raiseerror)
++        if not ret:
++            return ret
++
++        # A classmethod wrapping a property is evaluated by getattr().  Get the
++        # property from the class dictionary instead and remember that it is a
++        # classmethod to render the correct directive option.
++        for cls in inspect.getmro(self.parent):
++            if self.object_name in cls.__dict__:
++                obj = cls.__dict__[self.object_name]
++                if inspect.isclassmethod(obj) and inspect.isproperty(obj.__func__):
++                    self.object = obj.__func__
++                    self._is_classmethod = True
++                break
++
++        return ret
++
+     def document_members(self, all_members: bool = False) -> None:
+         pass
+ 
+@@ -2675,6 +2693,8 @@ class PropertyDocumenter(DocstringStripSignatureMixin, ClassLevelDocumenter):  #
+         sourcename = self.get_sourcename()
+         if inspect.isabstractmethod(self.object):
+             self.add_line('   :abstractmethod:', sourcename)
++        if getattr(self, '_is_classmethod', False):
++            self.add_line('   :classmethod:', sourcename)
+ 
+         if safe_getattr(self.object, 'fget', None) and self.config.autodoc_typehints != 'none':
+             try:
+diff --git a/sphinx/ext/autodoc/importer.py b/sphinx/ext/autodoc/importer.py
+index 1a8ea0973..bb891a59c 100644
+--- a/sphinx/ext/autodoc/importer.py
++++ b/sphinx/ext/autodoc/importer.py
+@@ -17,8 +17,8 @@ from sphinx.deprecation import RemovedInSphinx50Warning
+ from sphinx.ext.autodoc.mock import ismock, undecorate
+ from sphinx.pycode import ModuleAnalyzer, PycodeError
+ from sphinx.util import logging
+-from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isenumclass,
+-                                 safe_getattr)
++from sphinx.util.inspect import (getannotations, getmro, getslots, isclass, isclassmethod,
++                                 isenumclass, isproperty, safe_getattr)
+ 
+ if False:
+     # For type annotation
+@@ -237,6 +237,15 @@ def get_object_members(subject: Any, objpath: List[str], attrgetter: Callable,
+     return members
+ 
+ 
++def _get_class_member(subject: Any, name: str) -> Any:
++    """Get a class member without invoking its descriptor."""
++    for cls in getmro(subject):
++        if name in cls.__dict__:
++            return cls.__dict__[name]
++
++    return None
++
++
+ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+                       ) -> Dict[str, "ObjectMember"]:
+     """Get members and attributes of target class."""
+@@ -274,7 +283,15 @@ def get_class_members(subject: Any, objpath: List[str], attrgetter: Callable
+     # other members
+     for name in dir(subject):
+         try:
+-            value = attrgetter(subject, name)
++            # A classmethod wrapping a property is a descriptor, but accessing it
++            # via getattr() evaluates the property.  Use the wrapped property
++            # instead so that it can be documented by PropertyDocumenter.
++            raw = _get_class_member(subject, name)
++            if isclassmethod(raw) and isproperty(raw.__func__):
++                value = raw.__func__
++            else:
++                value = attrgetter(subject, name)
++
+             if ismock(value):
+                 value = undecorate(value)
+ 
+diff --git a/sphinx/util/inspect.py b/sphinx/util/inspect.py
+index 23dd9e930..dae7da407 100644
+--- a/sphinx/util/inspect.py
++++ b/sphinx/util/inspect.py
+@@ -385,6 +385,8 @@ def iscoroutinefunction(obj: Any) -> bool:
+ 
+ def isproperty(obj: Any) -> bool:
+     """Check if the object is property."""
++    obj = unwrap_all(obj)
++
+     if sys.version_info >= (3, 8):
+         from functools import cached_property  # cached_property is available since py3.8
+         if isinstance(obj, cached_property):

@@ -1,0 +1,154 @@
+diff --git a/django/db/models/sql/query.py b/django/db/models/sql/query.py
+index 9735ce10c8..b2f4c3a606 100644
+--- a/django/db/models/sql/query.py
++++ b/django/db/models/sql/query.py
+@@ -545,11 +545,149 @@ class Query(BaseExpression):
+ 
+         return dict(zip(outer_query.annotation_select, result))
+ 
++    def _get_annotation_references(self):
++        """
++        Return the aliases of annotations that are referenced by this query's
++        filters, ordering, grouping, distinct fields, selected columns or
++        other annotations.
++        """
++        annotations = self.annotations
++        if not annotations:
++            return set()
++        alias_by_id = {
++            id(annotation): alias for alias, annotation in annotations.items()
++        }
++        referenced = set()
++
++        def collect(expr, seen):
++            if expr is None or id(expr) in seen:
++                return
++            seen.add(id(expr))
++            alias = alias_by_id.get(id(expr))
++            if alias is not None:
++                referenced.add(alias)
++            if isinstance(expr, Ref) and expr.refs in annotations:
++                referenced.add(expr.refs)
++            source_expressions = getattr(expr, "get_source_expressions", None)
++            if source_expressions is not None:
++                for source in source_expressions():
++                    collect(source, seen)
++            elif isinstance(expr, Node):
++                for child in expr.children:
++                    collect(child, seen)
++
++        collect(self.where, set())
++        for ordering in self.order_by:
++            if isinstance(ordering, str):
++                name = ordering.lstrip("-+")
++                # Ordering by a transform of an annotation references the
++                # annotation through the first lookup component.
++                name = name.split(LOOKUP_SEP)[0]
++                if name in annotations:
++                    referenced.add(name)
++            else:
++                collect(ordering, set())
++        for ordering in self.extra_order_by:
++            if isinstance(ordering, str) and ordering in annotations:
++                referenced.add(ordering)
++        if isinstance(self.group_by, tuple):
++            for expr in self.group_by:
++                if isinstance(expr, str):
++                    if expr in annotations:
++                        referenced.add(expr)
++                elif isinstance(expr, Ref):
++                    if expr.refs in annotations:
++                        referenced.add(expr.refs)
++                else:
++                    collect(expr, set())
++        for field in self.distinct_fields or ():
++            if field in annotations:
++                referenced.add(field)
++        for expr in self.select:
++            collect(expr, set())
++        for name in self.values_select:
++            if name in annotations:
++                referenced.add(name)
++        if self.annotation_select_mask is not None:
++            # Annotations explicitly selected, e.g. through values(), must be
++            # kept as they take part in the grouping of the query.
++            referenced.update(annotations.keys() & self.annotation_select_mask)
++        for join in self.alias_map.values():
++            filtered_relation = getattr(join, "filtered_relation", None)
++            if filtered_relation is not None:
++                collect(filtered_relation.condition, set())
++        return referenced
++
++    def _get_used_aliases(self):
++        """
++        Return the aliases that are referenced by the query, including the
++        aliases required to join to them.
++        """
++        expressions = [self.where, *self.annotations.values(), *self.select]
++        expressions.extend(
++            ordering for ordering in self.order_by if not isinstance(ordering, str)
++        )
++        if isinstance(self.group_by, tuple):
++            expressions.extend(
++                expression
++                for expression in self.group_by
++                if not isinstance(expression, str)
++            )
++        for join in self.alias_map.values():
++            filtered_relation = getattr(join, "filtered_relation", None)
++            if filtered_relation is not None:
++                expressions.append(filtered_relation.condition)
++
++        collected = set()
++        seen = set()
++
++        def walk(expression):
++            if expression is None or id(expression) in seen:
++                return
++            seen.add(id(expression))
++            if isinstance(expression, Col):
++                collected.add(expression.alias)
++                return
++            source_expressions = getattr(expression, "get_source_expressions", None)
++            if source_expressions is not None:
++                for source in source_expressions():
++                    walk(source)
++            elif hasattr(expression, "children"):
++                for child in expression.children:
++                    walk(child)
++
++        for expression in expressions:
++            walk(expression)
++
++        aliases = {self.base_table}
++        for alias in collected:
++            while alias is not None and alias in self.alias_map:
++                aliases.add(alias)
++                alias = self.alias_map[alias].parent_alias
++        return aliases
++
+     def get_count(self, using):
+         """
+         Perform a COUNT() query using the current filter constraints.
+         """
+         obj = self.clone()
++        if obj.annotations and not obj.combinator:
++            referenced = obj._get_annotation_references()
++            unused = set(obj.annotations).difference(referenced)
++            if unused:
++                for alias in unused:
++                    del obj.annotations[alias]
++                if obj.annotation_select_mask is None:
++                    obj.set_annotation_mask(None)
++                else:
++                    obj.set_annotation_mask(obj.annotation_select_mask - unused)
++                # Joins that were only needed by the removed annotations are
++                # now unused, drop them so that they aren't included in the
++                # query.
++                used_aliases = obj._get_used_aliases()
++                for alias in list(obj.alias_map):
++                    if alias not in used_aliases:
++                        obj.alias_refcount[alias] = 0
+         obj.add_annotation(Count("*"), alias="__count", is_summary=True)
+         return obj.get_aggregation(using, ["__count"])["__count"]
+ 

@@ -1,0 +1,221 @@
+diff --git a/django/core/exceptions.py b/django/core/exceptions.py
+index 7be4e16bc5..317e61960f 100644
+--- a/django/core/exceptions.py
++++ b/django/core/exceptions.py
+@@ -233,6 +233,12 @@ class EmptyResultSet(Exception):
+     pass
+ 
+ 
++class FullResultSet(Exception):
++    """A database query predicate is guaranteed to match all rows."""
++
++    pass
++
++
+ class SynchronousOnlyOperation(Exception):
+     """The user tried to call a sync-only function from an async context."""
+ 
+diff --git a/django/db/backends/mysql/compiler.py b/django/db/backends/mysql/compiler.py
+index a8ab03a55e..12b973d7a4 100644
+--- a/django/db/backends/mysql/compiler.py
++++ b/django/db/backends/mysql/compiler.py
+@@ -1,4 +1,4 @@
+-from django.core.exceptions import FieldError
++from django.core.exceptions import FieldError, FullResultSet
+ from django.db.models.expressions import Col
+ from django.db.models.sql import compiler
+ 
+@@ -39,7 +39,10 @@ class SQLDeleteCompiler(compiler.SQLDeleteCompiler, SQLCompiler):
+         ]
+         from_sql, from_params = self.get_from_clause()
+         result.extend(from_sql)
+-        where_sql, where_params = self.compile(where)
++        try:
++            where_sql, where_params = self.compile(where)
++        except FullResultSet:
++            where_sql, where_params = "", []
+         if where_sql:
+             result.append("WHERE %s" % where_sql)
+         return " ".join(result), tuple(from_params) + tuple(where_params)
+diff --git a/django/db/models/expressions.py b/django/db/models/expressions.py
+index 822968ef56..049c14e2ed 100644
+--- a/django/db/models/expressions.py
++++ b/django/db/models/expressions.py
+@@ -7,7 +7,7 @@ from collections import defaultdict
+ from decimal import Decimal
+ from uuid import UUID
+ 
+-from django.core.exceptions import EmptyResultSet, FieldError
++from django.core.exceptions import EmptyResultSet, FieldError, FullResultSet
+ from django.db import DatabaseError, NotSupportedError, connection
+ from django.db.models import fields
+ from django.db.models.constants import LOOKUP_SEP
+@@ -1388,9 +1388,15 @@ class Case(SQLiteNumericMixin, Expression):
+                 case_sql, case_params = compiler.compile(case)
+             except EmptyResultSet:
+                 continue
++            except FullResultSet:
++                # The condition is always true and subsequent cases are
++                # unreachable, so it can be used as the default.
++                default_sql, default_params = compiler.compile(case.result)
++                break
+             case_parts.append(case_sql)
+             sql_params.extend(case_params)
+-        default_sql, default_params = compiler.compile(self.default)
++        else:
++            default_sql, default_params = compiler.compile(self.default)
+         if not case_parts:
+             return default_sql, default_params
+         case_joiner = case_joiner or self.case_joiner
+diff --git a/django/db/models/query_utils.py b/django/db/models/query_utils.py
+index d566cc1883..e353dcec4a 100644
+--- a/django/db/models/query_utils.py
++++ b/django/db/models/query_utils.py
+@@ -10,7 +10,7 @@ import inspect
+ import logging
+ from collections import namedtuple
+ 
+-from django.core.exceptions import FieldError
++from django.core.exceptions import FieldError, FullResultSet
+ from django.db import DEFAULT_DB_ALIAS, DatabaseError
+ from django.db.models.constants import LOOKUP_SEP
+ from django.utils import tree
+@@ -377,4 +377,7 @@ class FilteredRelation:
+         # Resolve the condition in Join.filtered_relation.
+         query = compiler.query
+         where = query.build_filtered_relation_q(self.condition, reuse=set(self.path))
+-        return compiler.compile(where)
++        try:
++            return compiler.compile(where)
++        except FullResultSet:
++            return "", []
+diff --git a/django/db/models/sql/compiler.py b/django/db/models/sql/compiler.py
+index cfac22a019..a9fbe433bc 100644
+--- a/django/db/models/sql/compiler.py
++++ b/django/db/models/sql/compiler.py
+@@ -4,7 +4,7 @@ import re
+ from functools import partial
+ from itertools import chain
+ 
+-from django.core.exceptions import EmptyResultSet, FieldError
++from django.core.exceptions import EmptyResultSet, FieldError, FullResultSet
+ from django.db import DatabaseError, NotSupportedError
+ from django.db.models.constants import LOOKUP_SEP
+ from django.db.models.expressions import F, OrderBy, RawSQL, Ref, Value
+@@ -155,7 +155,10 @@ class SQLCompiler:
+         expressions = self.collapse_group_by(expressions, having_group_by)
+ 
+         for expr in expressions:
+-            sql, params = self.compile(expr)
++            try:
++                sql, params = self.compile(expr)
++            except FullResultSet:
++                sql, params = "", ()
+             sql, params = expr.select_format(self, sql, params)
+             params_hash = make_hashable(params)
+             if (sql, params_hash) not in seen:
+@@ -299,6 +302,8 @@ class SQLCompiler:
+                     sql, params = "0", ()
+                 else:
+                     sql, params = self.compile(Value(empty_result_set_value))
++            except FullResultSet:
++                sql, params = "1", ()
+             else:
+                 sql, params = col.select_format(self, sql, params)
+             ret.append((col, (sql, params), alias))
+@@ -620,9 +625,16 @@ class SQLCompiler:
+                         raise
+                     # Use a predicate that's always False.
+                     where, w_params = "0 = 1", []
+-                having, h_params = (
+-                    self.compile(self.having) if self.having is not None else ("", [])
+-                )
++                except FullResultSet:
++                    where, w_params = "", []
++                try:
++                    having, h_params = (
++                        self.compile(self.having)
++                        if self.having is not None
++                        else ("", [])
++                    )
++                except FullResultSet:
++                    having, h_params = "", []
+                 result = ["SELECT"]
+                 params = []
+ 
+@@ -1717,7 +1729,10 @@ class SQLDeleteCompiler(SQLCompiler):
+ 
+     def _as_sql(self, query):
+         result = ["DELETE FROM %s" % self.quote_name_unless_alias(query.base_table)]
+-        where, params = self.compile(query.where)
++        try:
++            where, params = self.compile(query.where)
++        except FullResultSet:
++            where, params = "", []
+         if where:
+             result.append("WHERE %s" % where)
+         return " ".join(result), tuple(params)
+@@ -1805,7 +1820,10 @@ class SQLUpdateCompiler(SQLCompiler):
+             "UPDATE %s SET" % qn(table),
+             ", ".join(values),
+         ]
+-        where, params = self.compile(self.query.where)
++        try:
++            where, params = self.compile(self.query.where)
++        except FullResultSet:
++            where, params = "", []
+         if where:
+             result.append("WHERE %s" % where)
+         return " ".join(result), tuple(update_params + params)
+diff --git a/django/db/models/sql/where.py b/django/db/models/sql/where.py
+index 42a4b054a5..0c32fd3b52 100644
+--- a/django/db/models/sql/where.py
++++ b/django/db/models/sql/where.py
+@@ -4,7 +4,7 @@ Code to manage the creation and SQL rendering of 'where' constraints.
+ import operator
+ from functools import reduce
+ 
+-from django.core.exceptions import EmptyResultSet
++from django.core.exceptions import EmptyResultSet, FullResultSet
+ from django.db.models.expressions import Case, When
+ from django.db.models.lookups import Exact
+ from django.utils import tree
+@@ -81,9 +81,9 @@ class WhereNode(tree.Node):
+     def as_sql(self, compiler, connection):
+         """
+         Return the SQL version of the where clause and the value to be
+-        substituted in. Return '', [] if this node matches everything,
+-        None, [] if this node is empty, and raise EmptyResultSet if this
+-        node can't match anything.
++        substituted in. Return '', [] if this node is empty, and raise
++        EmptyResultSet if this node can't match anything. Raise FullResultSet
++        if this node matches everything.
+         """
+         result = []
+         result_params = []
+@@ -112,6 +112,8 @@ class WhereNode(tree.Node):
+                 sql, params = compiler.compile(child)
+             except EmptyResultSet:
+                 empty_needed -= 1
++            except FullResultSet:
++                full_needed -= 1
+             else:
+                 if sql:
+                     result.append(sql)
+@@ -125,14 +127,14 @@ class WhereNode(tree.Node):
+             # counts.
+             if empty_needed == 0:
+                 if self.negated:
+-                    return "", []
++                    raise FullResultSet
+                 else:
+                     raise EmptyResultSet
+             if full_needed == 0:
+                 if self.negated:
+                     raise EmptyResultSet
+                 else:
+-                    return "", []
++                    raise FullResultSet
+         conn = " %s " % self.connector
+         sql_string = conn.join(result)
+         if sql_string:

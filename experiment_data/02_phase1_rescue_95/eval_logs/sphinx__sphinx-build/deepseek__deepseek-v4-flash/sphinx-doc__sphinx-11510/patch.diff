@@ -1,0 +1,98 @@
+diff --git a/CHANGES b/CHANGES
+index ce1185c76..50f8a0201 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -52,6 +52,8 @@ Features added
+ Bugs fixed
+ ----------
+ 
++* #10617: Emit the ``source-read`` event for files included by the
++  ``include`` directive.
+ * #11077: graphviz: Fix relative links from within the graph.
+   Patch by Ralf Grubenmann.
+ * #11529: Line Block in LaTeX builder outputs spurious empty token.
+diff --git a/sphinx/directives/other.py b/sphinx/directives/other.py
+index 19f7c0a8d..b9f3a3db8 100644
+--- a/sphinx/directives/other.py
++++ b/sphinx/directives/other.py
+@@ -1,9 +1,12 @@
+ from __future__ import annotations
+ 
++import os
+ import re
++from contextlib import contextmanager
++from io import StringIO
+ from typing import TYPE_CHECKING, Any, cast
+ 
+-from docutils import nodes
++from docutils import io, nodes
+ from docutils.parsers.rst import directives
+ from docutils.parsers.rst.directives.admonitions import BaseAdmonition
+ from docutils.parsers.rst.directives.misc import Class
+@@ -19,6 +22,8 @@ from sphinx.util.matching import Matcher, patfilter
+ from sphinx.util.nodes import explicit_title_re
+ 
+ if TYPE_CHECKING:
++    from collections.abc import Iterator
++
+     from docutils.nodes import Element, Node
+ 
+     from sphinx.application import Sphinx
+@@ -362,6 +367,30 @@ class Only(SphinxDirective):
+             memo.section_level = surrounding_section_level
+ 
+ 
++@contextmanager
++def _replace_include_source(filename: str, content: str) -> Iterator[None]:
++    """Temporarily redirect reads of *filename* to *content*.
++
++    This allows the ``source-read`` event to transform the contents of an
++    included file without having to write the transformed contents back to
++    the source tree.
++    """
++    original_file_input = io.FileInput
++    expected = os.path.normcase(os.path.abspath(filename))
++
++    def file_input(source=None, source_path=None, *args, **kwargs):
++        if source is None and source_path is not None and \
++                os.path.normcase(os.path.abspath(source_path)) == expected:
++            source = StringIO(content)
++        return original_file_input(source, source_path, *args, **kwargs)
++
++    io.FileInput = file_input
++    try:
++        yield
++    finally:
++        io.FileInput = original_file_input
++
++
+ class Include(BaseInclude, SphinxDirective):
+     """
+     Like the standard "Include" directive, but interprets absolute paths
+@@ -376,7 +405,25 @@ class Include(BaseInclude, SphinxDirective):
+         rel_filename, filename = self.env.relfn2path(self.arguments[0])
+         self.arguments[0] = filename
+         self.env.note_included(filename)
+-        return super().run()
++
++        # Read the source of the included file and emit the ``source-read``
++        # event so that extensions can transform its contents.
++        settings = self.state.document.settings
++        encoding = self.options.get('encoding', settings.input_encoding)
++        error_handler = settings.input_encoding_error_handler
++        try:
++            content = io.FileInput(source_path=filename, encoding=encoding,
++                                   error_handler=error_handler).read()
++        except (OSError, UnicodeError):
++            # Let the standard include directive report the error.
++            return super().run()
++
++        source = [content]
++        docname = self.env.path2doc(filename) or rel_filename
++        self.env.events.emit('source-read', docname, source)
++
++        with _replace_include_source(filename, source[0]):
++            return super().run()
+ 
+ 
+ def setup(app: Sphinx) -> dict[str, Any]:
